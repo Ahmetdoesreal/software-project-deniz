@@ -1,0 +1,285 @@
+"""
+Server -- HTTP + WebSocket on a single port.
+
+Features:
+  - GET /health            -> simple HTTP health check
+  - WS  /ws                -> WebSocket endpoint
+      - assigns each client a unique ID on connect ("welcome" event)
+      - echoes back any "ping" event the client sends
+      - broadcasts the current time to ALL clients every 10 seconds
+"""
+
+import argparse
+import asyncio
+import sys
+import uuid
+
+from aiohttp import web, WSMsgType
+
+import shared
+import events
+from discovery import ServerAnnouncer, check_duplicate_server
+
+
+# -- State -----------------------------------------------------------------
+# clients: full_id -> { "ws": WebSocketResponse, "short_id": str, "ip": str }
+clients: dict[str, dict] = {}
+
+
+# -- HTTP Routes -----------------------------------------------------------
+async def health(request: web.Request) -> web.Response:
+    return web.json_response({
+        "status": "ok",
+        "server_id": request.app["server_id"],
+        "clients_connected": len(clients),
+    })
+
+
+# -- WebSocket Handler -----------------------------------------------------
+async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    # Assign an ID and register the client
+    # Use provided ID or generate a new one
+    client_id = request.query.get("id") or str(uuid.uuid4())
+    short_id = client_id[:8]
+    ip = request.remote
+
+    clients[client_id] = {
+        "ws": ws,
+        "short_id": short_id,
+        "ip": ip
+    }
+    print(f"[+] Client connected: {client_id} (short: {short_id}, ip: {ip})")
+
+    # Send welcome with their ID
+    await ws.send_str(events.welcome(client_id, request.app["server_id"]))
+
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                event, data = shared.decode(msg.data)
+
+                if event == events.PING:
+                    # Echo back with the same data
+                    await ws.send_str(events.echo(data, shared.now_iso()))
+                else:
+                    await ws.send_str(events.error(f"unknown event: {event}"))
+
+            elif msg.type == WSMsgType.ERROR:
+                print(f"[!] Client {client_id} error: {ws.exception()}")
+    finally:
+        # Unregister on disconnect
+        clients.pop(client_id, None)
+        print(f"[-] Client {client_id} disconnected  ({len(clients)} total)")
+
+    return ws
+
+
+# -- Background: broadcast time every N seconds ----------------------------
+async def time_broadcaster(app: web.Application):
+    """Background task that sends the current time to every connected client."""
+    try:
+        while True:
+            await asyncio.sleep(app["broadcast_interval"])
+            if clients:
+                payload = events.time_broadcast(shared.now_iso())
+                dead = []
+                for cid, ws in clients.items():
+                    try:
+                        await ws.send_str(payload)
+                    except ConnectionResetError:
+                        dead.append(cid)
+                for cid in dead:
+                    clients.pop(cid, None)
+                print(f"[TIME] Broadcasted time to {len(clients)} client(s)")
+    except asyncio.CancelledError:
+        pass
+
+
+# -- Server console: operator commands -------------------------------------
+def resolve_client(target: str):
+    """
+    Find a client by:
+    1. Full UUID
+    2. Short ID (first 8 chars)
+    3. IP Address
+    Returns (full_id, client_data) or (None, None)
+    """
+    # 1. Check Full ID
+    if target in clients:
+        return target, clients[target]
+
+    # 2. Check Short ID and IP
+    for cid, data in clients.items():
+        if data["short_id"] == target or data["ip"] == target:
+            return cid, data
+
+    return None, None
+
+
+async def send_to_client(target: str, payload: str) -> bool:
+    """Send a payload to a specific client (by UUID, short ID, or IP)."""
+    cid, data = resolve_client(target)
+    if not data:
+        return False
+
+    ws = data["ws"]
+    try:
+        await ws.send_str(payload)
+        return True
+    except (ConnectionResetError, RuntimeError):
+        clients.pop(cid, None)
+        return False
+
+
+async def broadcast_to_all(payload: str) -> int:
+    """Send a payload to every connected client. Returns count sent."""
+    dead = []
+    sent = 0
+    for cid, data in clients.items():
+        ws = data["ws"]
+        try:
+            await ws.send_str(payload)
+            sent += 1
+        except (ConnectionResetError, RuntimeError):
+            dead.append(cid)
+    for cid in dead:
+        clients.pop(cid, None)
+    return sent
+
+
+async def console_reader(app: web.Application):
+    """Reads stdin for operator commands."""
+    loop = asyncio.get_event_loop()
+    try:
+        while True:
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if not line:
+                break
+            parts = line.strip().split()
+            if not parts:
+                continue
+            cmd = parts[0].lower()
+
+            if cmd == "/clients":
+                if clients:
+                    print(f"[CMD] {len(clients)} client(s) connected:")
+                    for cid, data in clients.items():
+                        print(f"       - UUID:  {cid}")
+                        print(f"         Short: {data['short_id']}")
+                        print(f"         IP:    {data['ip']}")
+                        print()
+                else:
+                    print("[CMD] No clients connected.")
+
+            elif cmd == "/savescreen":
+                if len(parts) < 2:
+                    print("[CMD] Usage: /savescreen <client_id>  or  /savescreen all")
+                elif parts[1].lower() == "all":
+                    count = await broadcast_to_all(events.savescreen())
+                    print(f"[CMD] Sent SAVESCREEN to {count} client(s)")
+                else:
+                    target = parts[1]
+                    if await send_to_client(target, events.savescreen()):
+                        print(f"[CMD] Sent SAVESCREEN to client {target}")
+                    else:
+                        print(f"[CMD] Client '{target}' not found (tried UUID, short ID, IP).")
+                        print("      Type /clients to list available targets.")
+
+            elif cmd == "/help":
+                print("  /clients              - List connected clients")
+                print("  /savescreen <id>      - Save replay on a specific client")
+                print("  /savescreen all       - Save replay on ALL clients")
+                print("  /help                 - Show this help")
+            else:
+                print(f"[CMD] Unknown command: {cmd}  (type /help)")
+    except asyncio.CancelledError:
+        pass
+
+
+async def start_background_tasks(app: web.Application):
+    app["time_broadcaster"] = asyncio.create_task(time_broadcaster(app))
+    app["console_reader"] = asyncio.create_task(console_reader(app))
+    # Start UDP discovery announcer
+    announcer = ServerAnnouncer(server_host=app["host"], server_port=app["port"],
+                                server_id=app["server_id"],
+                                interval=app["announce_interval"])
+    await announcer.start()
+    app["announcer"] = announcer
+
+
+async def cleanup_background_tasks(app: web.Application):
+    app["time_broadcaster"].cancel()
+    await app["time_broadcaster"]
+    app["console_reader"].cancel()
+    await app["announcer"].stop()
+
+
+# -- App Setup -------------------------------------------------------------
+def create_app(args) -> web.Application:
+    app = web.Application()
+    app["server_id"] = args.id
+    app["host"] = args.host
+    app["port"] = args.port
+    app["broadcast_interval"] = args.interval
+    app["announce_interval"] = args.announce
+    app.router.add_get("/health", health)
+    app.router.add_get("/ws", websocket_handler)
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+    return app
+
+
+# -- Validation ------------------------------------------------------------
+def validate_args(args):
+    errors = []
+    if not 1 <= args.port <= 65535:
+        errors.append(f"--port must be 1-65535, got {args.port}")
+    if args.interval <= 0:
+        errors.append(f"--interval must be > 0, got {args.interval}")
+    if args.announce <= 0:
+        errors.append(f"--announce must be > 0, got {args.announce}")
+    if not args.id.strip():
+        errors.append("--id cannot be empty")
+    if errors:
+        for e in errors:
+            print(f"[ERROR] {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Server")
+    parser.add_argument("--id",       default="default", help="Server identifier (clients must match)")
+    parser.add_argument("--host",     default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    parser.add_argument("--port",     default=8080, type=int, help="Port to listen on (default: 8080)")
+    parser.add_argument("--interval", default=10, type=float, help="Time broadcast interval in seconds (default: 10)")
+    parser.add_argument("--announce", default=3, type=float, help="Discovery beacon interval in seconds (default: 3)")
+    args = parser.parse_args()
+
+    validate_args(args)
+
+    # Check for duplicate server with same ID
+    dup = asyncio.run(check_duplicate_server(args.id, timeout=5.0))
+    if dup:
+        host, port = dup
+        print(f"[ERROR] A server with id '{args.id}' is already running at {host}:{port}")
+        print("[ERROR] Use a different --id or stop the other server first.")
+        sys.exit(1)
+    print(f"[CHECK] No duplicate found, safe to start.\n")
+
+    print(f"Starting server '{args.id}' on http://{args.host}:{args.port}")
+    print(f"  HTTP  ->  GET /health")
+    print(f"  WS    ->  ws://{args.host}:{args.port}/ws")
+
+    try:
+        web.run_app(create_app(args), host=args.host, port=args.port)
+    except OSError as e:
+        if "address already in use" in str(e).lower() or "10048" in str(e):
+            print(f"\n[ERROR] Port {args.port} is already in use.")
+            print(f"[ERROR] Use --port to pick a different port.")
+        else:
+            print(f"\n[ERROR] {e}")
+        sys.exit(1)
+
