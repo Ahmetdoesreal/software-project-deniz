@@ -25,8 +25,8 @@ class ReplayRecorder:
                  segment_time=5, total_duration=60):
         self.session_uuid = session_uuid
         self.base_dir = base_dir
-        self.cache_dir = os.path.join(session_uuid, base_dir, "cache")
-        self.output_dir = os.path.join(session_uuid, base_dir, "replays")
+        self.cache_dir = os.path.join("data", "client", session_uuid, base_dir, "cache")
+        self.output_dir = os.path.join("data", "client", session_uuid, base_dir, "replays")
         self.segment_time = segment_time
         self.total_duration = total_duration
         self.max_segments = total_duration // segment_time

@@ -47,7 +47,7 @@ class MacReplayRecorder:
     ):
         self.session_uuid = session_uuid
         self.base_dir = base_dir
-        self.root_dir = os.path.join(base_dir, session_uuid)
+        self.root_dir = os.path.join("data", "client", session_uuid, base_dir)
         self.cache_dir = os.path.join(self.root_dir, "cache")
         self.output_dir = os.path.join(self.root_dir, "replays")
         self.segment_time = int(segment_time)

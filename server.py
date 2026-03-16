@@ -12,8 +12,11 @@ Features:
 import argparse
 import asyncio
 import errno
-import sys
 import uuid
+import json
+import os
+import hashlib
+import secrets
 
 from aiohttp import web, WSMsgType
 
@@ -26,6 +29,32 @@ from discovery import ServerAnnouncer, check_duplicate_server
 # clients: full_id -> { "ws": WebSocketResponse, "short_id": str, "ip": str }
 clients: dict[str, dict] = {}
 
+USERS_FILE = "data/server/server_users.json"
+# users_db: login_id -> { "password_hash": str, "salt": str, "uuid": str }
+users_db: dict[str, dict] = {}
+
+def hash_password(password: str, salt: str) -> str:
+    """Hashes a password with the given salt using SHA-256."""
+    return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
+
+def load_users():
+    global users_db
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r") as f:
+                users_db = json.load(f)
+        except Exception as e:
+            print(f"[!] Failed to load {USERS_FILE}: {e}")
+            users_db = {}
+
+def save_users():
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+    try:
+        with open(USERS_FILE, "w") as f:
+            json.dump(users_db, f, indent=2)
+    except Exception as e:
+        print(f"[!] Failed to save {USERS_FILE}: {e}")
+
 
 # -- HTTP Routes -----------------------------------------------------------
 async def health(request: web.Request) -> web.Response:
@@ -35,15 +64,53 @@ async def health(request: web.Request) -> web.Response:
         "clients_connected": len(clients),
     })
 
+async def login_handler(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    
+    login_id = data.get("login_id")
+    password = data.get("password")
+    
+    if not login_id or not password:
+        return web.json_response({"error": "login_id and password required"}, status=400)
+        
+    user = users_db.get(login_id)
+    if user:
+        pwd_hash = hash_password(password, user["salt"])
+        if user["password_hash"] != pwd_hash:
+            return web.json_response({"error": "Invalid credentials"}, status=401)
+        # Valid login
+        return web.json_response({"status": "ok", "uuid": user["uuid"]})
+    else:
+        # Create new user
+        new_uuid = str(uuid.uuid4())
+        salt = secrets.token_hex(16)
+        pwd_hash = hash_password(password, salt)
+        
+        users_db[login_id] = {
+            "password_hash": pwd_hash,
+            "salt": salt,
+            "uuid": new_uuid
+        }
+        save_users()
+        print(f"[+] New user registered: {login_id} -> {new_uuid}")
+        return web.json_response({"status": "ok", "uuid": new_uuid})
+
 
 # -- WebSocket Handler -----------------------------------------------------
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    client_id = request.query.get("id")
+    
+    # Verify the UUID was issued by us
+    valid_uuids = {u["uuid"] for u in users_db.values()}
+    if not client_id or client_id not in valid_uuids:
+        return web.Response(status=401, text="Unauthorized: invalid or missing session ID")
+
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    # Assign an ID and register the client
-    # Use provided ID or generate a new one
-    client_id = request.query.get("id") or str(uuid.uuid4())
     short_id = client_id[:8]
     ip = request.remote
 
@@ -220,6 +287,7 @@ async def cleanup_background_tasks(app: web.Application):
 
 # -- App Setup -------------------------------------------------------------
 def create_app(args) -> web.Application:
+    load_users()
     app = web.Application()
     app["server_id"] = args.id
     app["host"] = args.host
@@ -227,6 +295,7 @@ def create_app(args) -> web.Application:
     app["broadcast_interval"] = args.interval
     app["announce_interval"] = args.announce
     app.router.add_get("/health", health)
+    app.router.add_post("/login", login_handler)
     app.router.add_get("/ws", websocket_handler)
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)

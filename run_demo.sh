@@ -44,7 +44,7 @@ sleep 1.5
 
 for i in 1 2 3; do
     echo "-> Starting Client ${i}"
-    spawn_terminal "Client ${i}" "client.py --id ${SERVER_ID} --no-record"
+    spawn_terminal "Client ${i}" "client.py --id ${SERVER_ID} --login-id client${i} --password testpass --no-record"
     sleep 0.5
 done
 

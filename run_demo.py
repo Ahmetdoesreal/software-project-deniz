@@ -76,7 +76,7 @@ def main():
     # 2. Start Clients
     for i in range(1, 4):
         print(f"-> Starting Client {i}")
-        client_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" client.py --id {SERVER_ID} --no-record" if platform.system() == "Windows" else f"cd '{script_dir}' && '{python_cmd}' client.py --id {SERVER_ID} --no-record"
+        client_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" client.py --id {SERVER_ID} --login-id client{i} --password testpass --no-record" if platform.system() == "Windows" else f"cd '{script_dir}' && '{python_cmd}' client.py --id {SERVER_ID} --login-id client{i} --password testpass --no-record"
         spawn_terminal(f"Client {i}", client_cmd)
         time.sleep(0.5)
 

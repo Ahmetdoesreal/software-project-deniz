@@ -11,6 +11,8 @@ import argparse
 import asyncio
 import sys
 import uuid
+import json
+import os
 
 import aiohttp
 
@@ -18,6 +20,18 @@ import shared
 import events
 from discovery import discover_server
 from custommodules.replay_recorder import ReplayRecorder
+
+async def perform_login(base_url: str, login_id: str, password: str) -> str:
+    """Logs in and returns the session UUID. Raises on failure."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{base_url}/login", json={"login_id": login_id, "password": password}) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data["uuid"]
+            else:
+                body = await resp.text()
+                raise ValueError(f"Login failed ({resp.status}): {body}")
+
 
 
 
@@ -107,15 +121,10 @@ async def discover_loop(server_id: str, timeout: float):
 
 
 async def main(args):
-    session_uuid = str(uuid.uuid4())
-    print(f"=== Client [{session_uuid}] ===\n")
-
-    # Start the replay recorder (always buffering last 60s)
-    # Folders will be: <uuid>/recordings/cache/ and <uuid>/recordings/replays/
-    recorder = ReplayRecorder(session_uuid=session_uuid)
-    if args.record:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, recorder.start)
+    session_uuid = None
+    recorder = None
+    
+    print(f"=== Client [{args.login_id}] (awaiting session assignment) ===\n")
 
     try:
         while True:
@@ -127,15 +136,45 @@ async def main(args):
                 host, port = await discover_loop(args.id, args.timeout)
 
             base_url = f"http://{host}:{port}"
-            ws_url = f"ws://{host}:{port}/ws?id={session_uuid}"
-
+            
             try:
-                # 2. HTTP health check
+                # 2. Login to get/verify UUID
+                new_uuid = await perform_login(base_url, args.login_id, args.password)
+                
+                if not session_uuid:
+                    session_uuid = new_uuid
+                    print(f"[LOGIN] Assigned session UUID: {session_uuid}")
+                    
+                    recorder = ReplayRecorder(session_uuid=session_uuid)
+                    if args.record:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, recorder.start)
+                elif session_uuid != new_uuid:
+                    print(f"[!] Server returned a different UUID ({new_uuid}) than active ({session_uuid}). Resyncing.")
+                    session_uuid = new_uuid
+                    
+                    if recorder:
+                        if args.record:
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(None, recorder.stop)
+                            
+                        recorder = ReplayRecorder(session_uuid=session_uuid)
+                        if args.record:
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(None, recorder.start)
+
+                ws_url = f"ws://{host}:{port}/ws?id={session_uuid}"
+
+                # 3. HTTP health check
                 await check_health(base_url)
 
-                # 3. WebSocket session
+                # 4. WebSocket session
                 print()
                 await run_ws(ws_url, recorder)
+            except ValueError as e:
+                # Fatal login error (e.g., wrong password), we should probably exit
+                print(f"\n[FATAL] {e}")
+                sys.exit(1)
             except (aiohttp.ClientError, ConnectionError, OSError) as e:
                 print(f"\n[!] Connection lost: {e}")
 
@@ -143,7 +182,7 @@ async def main(args):
             print(f"[!] Reconnecting in {args.reconnect} seconds...\n")
             await asyncio.sleep(args.reconnect)
     finally:
-        if args.record:
+        if args.record and recorder:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, recorder.stop)
 
@@ -166,6 +205,8 @@ def validate_args(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Client")
+    parser.add_argument("--login-id",  required=True, help="Client login ID")
+    parser.add_argument("--password",  required=True, help="Client password")
     parser.add_argument("--id",        default="default", help="Server ID to connect to (default: default)")
     parser.add_argument("--host",      default=None,      help="Server host (skip discovery, connect directly)")
     parser.add_argument("--port",      default=8080, type=int, help="Server port (default: 8080)")
