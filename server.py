@@ -11,6 +11,7 @@ Features:
 
 import argparse
 import asyncio
+import errno
 import sys
 import uuid
 
@@ -276,7 +277,7 @@ if __name__ == "__main__":
     try:
         web.run_app(create_app(args), host=args.host, port=args.port)
     except OSError as e:
-        if "address already in use" in str(e).lower() or "10048" in str(e):
+        if e.errno == errno.EADDRINUSE or "address already in use" in str(e).lower():
             print(f"\n[ERROR] Port {args.port} is already in use.")
             print(f"[ERROR] Use --port to pick a different port.")
         else:

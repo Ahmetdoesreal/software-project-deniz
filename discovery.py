@@ -91,6 +91,8 @@ async def discover_server(server_id: str = "default", timeout: float = 10.0):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, 'SO_REUSEPORT'):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         sock.bind(("", DISCOVERY_PORT))
         sock.setblocking(False)
     except OSError as e:
@@ -137,6 +139,8 @@ async def check_duplicate_server(server_id: str, timeout: float = 5.0):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, 'SO_REUSEPORT'):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         sock.bind(("", DISCOVERY_PORT))
         sock.setblocking(False)
     except OSError as e:
