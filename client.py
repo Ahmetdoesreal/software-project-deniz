@@ -21,6 +21,7 @@ import shared
 import events
 from discovery import discover_server
 from custommodules.replay_recorder import ReplayRecorder
+from custommodules.process_monitor import ProcessMonitor
 
 async def perform_login(base_url: str, login_id: str, password: str) -> str:
     """Logs in and returns the session UUID. Raises on failure."""
@@ -62,17 +63,24 @@ async def fetch_exam_prep(base_url: str, session_uuid: str):
                 body = await resp.text()
                 print(f"[EXAM] Failed to download exam files ({resp.status}): {body}")
 
-async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse):
-    """Wait for the user to type 'start' to begin the exam."""
+async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, session_uuid: str) -> ProcessMonitor:
+    """Wait for the user to type 'start' to begin the exam. Starts ProcessMonitor."""
     print("\n--- PRE-EXAM PREPARATION ---")
     print("When you are ready, type 'start' and press Enter to begin the exam.")
     loop = asyncio.get_event_loop()
+    
     while True:
         line = await loop.run_in_executor(None, sys.stdin.readline)
         if line.strip().lower() == "start":
             await ws.send_str(events.start_exam())
             print("[EXAM] Started. Good luck!\n")
-            break
+            
+            # Start Process Monitor
+            out_dir = os.path.join("data", "client", session_uuid)
+            pm = ProcessMonitor(out_dir)
+            pm.start()
+            return pm
+            
         print("Type 'start' to begin.")
 
 
@@ -94,6 +102,12 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
             disconnected = asyncio.Event()
             exam_active = True
             gui_process = None
+            
+            # Extract UUID for passing to child tasks
+            client_uuid = shared.extract_client_uuid(ws_url)
+
+            # Define PM hook at this scope so both tasks can access it
+            pm_ref = {"monitor": None}
 
             # -- Listener task: prints everything the server sends --------
             async def listener():
@@ -112,6 +126,9 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                         elif event == events.SYNC_TIME:
                             rem = data.get("remaining_seconds", 0)
                             m, s = divmod(rem, 60)
+                            
+                            if pm_ref["monitor"]:
+                                pm_ref["monitor"].update_time(rem)
                             
                             if gui_process is None:
                                 # Start GUI if it hasn't been started yet
@@ -148,6 +165,12 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                             print("[WS] [SAVESCREEN] Server requested replay save.")
                             loop = asyncio.get_event_loop()
                             await loop.run_in_executor(None, recorder.save_replay)
+                        elif event == events.GET_PROCESSES:
+                            print("[WS] [GET_PROCESSES] Server requested a manual process report.")
+                            if pm_ref["monitor"]:
+                                pm_ref["monitor"].trigger_full_report()
+                            else:
+                                print("[WS] Process monitor not running yet.")
                         else:
                             print(f"[WS] {event}: {data}")
 
@@ -158,7 +181,9 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
 
             # -- Sender: reads stdin and sends pings ----------------------
             async def sender():
-                await prompt_start_exam(ws)
+                pm = await prompt_start_exam(ws, shared.extract_client_uuid(ws_url))
+                pm_ref["monitor"] = pm
+                
                 print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
                 loop = asyncio.get_event_loop()
                 while not disconnected.is_set() and exam_active:
@@ -189,6 +214,8 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                 listen_task.cancel()
                 if gui_process and gui_process.poll() is None:
                     gui_process.kill()
+                if pm_ref["monitor"]:
+                    pm_ref["monitor"].stop()
 
             if disconnected.is_set():
                 raise ConnectionError("Server disconnected")

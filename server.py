@@ -34,11 +34,16 @@ USERS_FILE = "data/server/server_users.json"
 # users_db: login_id -> { "password": str, "uuid": str, "time_spent_seconds": int, "exam_started": bool }
 users_db: dict[str, dict] = {}
 
+ALLOWED_USERS_FILE = "allowed_users.json"
+# allowed_users: login_id -> password
+allowed_users: dict[str, str] = {}
+
 # Global GUI process handle
 gui_process = None
 
 def load_users():
-    global users_db
+    global users_db, allowed_users
+    
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r") as f:
@@ -46,6 +51,14 @@ def load_users():
         except Exception as e:
             print(f"[!] Failed to load {USERS_FILE}: {e}")
             users_db = {}
+            
+    if os.path.exists(ALLOWED_USERS_FILE):
+        try:
+            with open(ALLOWED_USERS_FILE, "r") as f:
+                allowed_users = json.load(f)
+        except Exception as e:
+            print(f"[!] Failed to load {ALLOWED_USERS_FILE}: {e}")
+            allowed_users = {}
 
 def save_users():
     os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
@@ -76,11 +89,18 @@ async def login_handler(request: web.Request) -> web.Response:
     if not login_id or not password:
         return web.json_response({"error": "login_id and password required"}, status=400)
         
+    # Check if user is in the allowed list
+    if login_id not in allowed_users:
+        return web.json_response({"error": "User is not allowed to take this exam."}, status=403)
+        
+    if allowed_users[login_id] != password:
+        return web.json_response({"error": "Invalid credentials provided."}, status=401)
+        
     user = users_db.get(login_id)
     if user:
         if user["password"] != password:
-            return web.json_response({"error": "Invalid credentials"}, status=401)
-        # Valid login
+            return web.json_response({"error": "Invalid stored credentials"}, status=401)
+        # Valid login existing
         return web.json_response({"status": "ok", "uuid": user["uuid"]})
     else:
         # Create new user
@@ -92,7 +112,7 @@ async def login_handler(request: web.Request) -> web.Response:
             "exam_started": False
         }
         save_users()
-        print(f"[+] New user registered: {login_id} -> {new_uuid}")
+        print(f"[+] New valid user registered: {login_id} -> {new_uuid}")
         return web.json_response({"status": "ok", "uuid": new_uuid})
 
 
@@ -320,6 +340,12 @@ def _gui_reader_thread(loop):
                 ws = clients[uuid_val]["ws"]
                 asyncio.run_coroutine_threadsafe(ws.send_str(events.savescreen()), loop)
                 print(f"\n[GUI->WS] Sent savescreen to {uuid_val}")
+            
+            elif cmd == "get_processes" and uuid_val in clients:
+                ws = clients[uuid_val]["ws"]
+                asyncio.run_coroutine_threadsafe(ws.send_str(events.get_processes()), loop)
+                print(f"\n[GUI->WS] Sent get_processes to {uuid_val}")
+                
         except Exception as e:
             pass
 

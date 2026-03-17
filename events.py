@@ -77,3 +77,9 @@ def exam_end() -> str:
     """Server tells client their exam duration has depleted."""
     return shared.encode(EXAM_END, {})
 
+GET_PROCESSES = "get_processes"
+
+def get_processes() -> str:
+    """Server requests an immediate full process report from the client."""
+    return shared.encode(GET_PROCESSES, {})
+

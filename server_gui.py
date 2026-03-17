@@ -51,9 +51,28 @@ class ServerGUI(tk.Tk):
         btn_opts = ttk.Button(action_frame, text="Options", command=self.show_options)
         btn_opts.pack(fill=tk.X, pady=5)
 
-        # State storage
         # uuid -> { login_id, status, remaining, ip, short_id }
         self.clients_data = {}
+        
+        # Start the local countdown loop
+        self.after(1000, self.update_timers)
+
+    def update_timers(self):
+        """Tick down the remaining time locally every second for smooth UI."""
+        for cid, data in self.clients_data.items():
+            if data.get("status") == "Connected" and data.get("remaining", 0) > 0:
+                data["remaining"] -= 1
+                
+                # Find tree item
+                existing_items = self.tree.get_children()
+                for child in existing_items:
+                    if self.tree.item(child)["values"][3] == cid:
+                        m, s = divmod(data["remaining"], 60)
+                        time_str = f"{m:02d}:{s:02d}"
+                        self.tree.item(child, values=(data["login_id"], data["status"], time_str, cid))
+                        break
+                        
+        self.after(1000, self.update_timers)
 
     def show_info(self):
         selected = self.tree.selection()
@@ -89,7 +108,7 @@ class ServerGUI(tk.Tk):
         # Simple popup window with actions
         top = tk.Toplevel(self)
         top.title(f"Options: {data.get('login_id', 'Unknown')}")
-        top.geometry("250x150")
+        top.geometry("250x200")
         top.grab_set()
         
         lbl = ttk.Label(top, text="WebSocket Commands:")
@@ -100,8 +119,16 @@ class ServerGUI(tk.Tk):
             top.destroy()
             messagebox.showinfo("Sent", "Save screen command sent via IPC.")
             
+        def request_processes():
+            print(json.dumps({"cmd": "get_processes", "uuid": uuid_val}), flush=True)
+            top.destroy()
+            messagebox.showinfo("Sent", "Process Report requested via IPC.")
+            
         btn_save = ttk.Button(top, text="Request Save Screen", command=save_screen)
         btn_save.pack(fill=tk.X, padx=20, pady=5)
+        
+        btn_procs = ttk.Button(top, text="Request Process Report", command=request_processes)
+        btn_procs.pack(fill=tk.X, padx=20, pady=5)
 
     def process_state_update(self, payload):
         """Update the UI based on state dictionary from server.py"""
