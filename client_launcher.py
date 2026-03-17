@@ -14,7 +14,7 @@ class ClientLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Exam Client Login")
-        self.geometry("350x300")
+        self.geometry("400x350")
         self.resizable(False, False)
         
         # Configure layout
@@ -64,10 +64,10 @@ class ClientLauncher(tk.Tk):
     def toggle_advanced(self):
         if self.v_adv.get():
             self.adv_frame.grid(row=7, column=0, columnspan=2, sticky=tk.EW)
-            self.geometry("350x400")
+            self.geometry("400x480")
         else:
             self.adv_frame.grid_forget()
-            self.geometry("350x300")
+            self.geometry("400x350")
 
     def start_client(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))

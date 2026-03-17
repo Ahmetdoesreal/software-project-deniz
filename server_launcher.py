@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox, filedialog
 import subprocess
 import sys
 import os
+import socket
 
 try:
     from ctypes import windll
@@ -14,37 +15,38 @@ class ServerLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Exam Server Launcher")
-        self.geometry("400x350")
+        self.geometry("450x400")
         self.resizable(False, False)
         
         # Configure layout
         self.columnconfigure(1, weight=1)
         
+        # Resolve Network Details
+        self.local_ip = self.get_local_ip()
+        self.local_port = self.get_free_port()
+        
+        # Network Info Display
+        info_frame = ttk.LabelFrame(self, text="Network Target")
+        info_frame.grid(row=0, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=10)
+        
+        ttk.Label(info_frame, text=f"IP Address: {self.local_ip}", font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, padx=10, pady=5)
+        ttk.Label(info_frame, text=f"Port: {self.local_port}", font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, padx=10, pady=(0, 5))
+        
         # Server ID
-        ttk.Label(self, text="Server ID:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=10)
+        ttk.Label(self, text="Server ID:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=10)
         self.v_id = tk.StringVar(value="default")
-        ttk.Entry(self, textvariable=self.v_id).grid(row=0, column=1, sticky=tk.EW, padx=10, pady=10)
-        
-        # Host
-        ttk.Label(self, text="Host IP:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=10)
-        self.v_host = tk.StringVar(value="0.0.0.0")
-        ttk.Entry(self, textvariable=self.v_host).grid(row=1, column=1, sticky=tk.EW, padx=10, pady=10)
-        
-        # Port
-        ttk.Label(self, text="Port:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=10)
-        self.v_port = tk.IntVar(value=8080)
-        ttk.Entry(self, textvariable=self.v_port).grid(row=2, column=1, sticky=tk.EW, padx=10, pady=10)
+        ttk.Entry(self, textvariable=self.v_id).grid(row=1, column=1, sticky=tk.EW, padx=10, pady=10)
         
         # Exam Duration
-        ttk.Label(self, text="Exam Duration (m):").grid(row=3, column=0, sticky=tk.W, padx=10, pady=10)
+        ttk.Label(self, text="Exam Duration (m):").grid(row=2, column=0, sticky=tk.W, padx=10, pady=10)
         self.v_dur = tk.IntVar(value=45)
-        ttk.Entry(self, textvariable=self.v_dur).grid(row=3, column=1, sticky=tk.EW, padx=10, pady=10)
+        ttk.Entry(self, textvariable=self.v_dur).grid(row=2, column=1, sticky=tk.EW, padx=10, pady=10)
         
         # Exam Files Path
-        ttk.Label(self, text="Exam ZIP File:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=10)
+        ttk.Label(self, text="Exam ZIP File:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=10)
         
         file_frame = ttk.Frame(self)
-        file_frame.grid(row=4, column=1, sticky=tk.EW, padx=10, pady=10)
+        file_frame.grid(row=3, column=1, sticky=tk.EW, padx=10, pady=10)
         file_frame.columnconfigure(0, weight=1)
         
         self.v_file = tk.StringVar(value="")
@@ -53,11 +55,39 @@ class ServerLauncher(tk.Tk):
         
         # Start GUI Monitor
         self.v_gui = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self, text="Launch Monitoring Dashboard", variable=self.v_gui).grid(row=5, column=0, columnspan=2, pady=(10, 0))
+        ttk.Checkbutton(self, text="Launch Monitoring Dashboard", variable=self.v_gui).grid(row=4, column=0, columnspan=2, pady=(10, 0))
         
         # Start Button
         btn = ttk.Button(self, text="Start Server", command=self.start_server)
-        btn.grid(row=6, column=0, columnspan=2, pady=20)
+        btn.grid(row=5, column=0, columnspan=2, pady=20)
+
+    def get_local_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+            
+    def get_free_port(self):
+        try:
+            # Check 8080 first
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("", 8080))
+            s.close()
+            return 8080
+        except OSError:
+            # 8080 is taken, find random open port
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(("", 0))
+                port = s.getsockname()[1]
+                s.close()
+                return port
+            except Exception:
+                return 8080
 
     def browse_file(self):
         filename = filedialog.askopenfilename(title="Select Exam Materials", filetypes=[("Zip files", "*.zip"), ("All files", "*.*")])
@@ -74,8 +104,8 @@ class ServerLauncher(tk.Tk):
             return
             
         cmd = [sys.executable, server_path, "--id", sid]
-        cmd.extend(["--host", self.v_host.get().strip()])
-        cmd.extend(["--port", str(self.v_port.get())])
+        cmd.extend(["--host", "0.0.0.0"])  # Always bind all so the local IP is accessible
+        cmd.extend(["--port", str(self.local_port)])
         cmd.extend(["--exam-duration", str(self.v_dur.get())])
         
         filepath = self.v_file.get().strip()
