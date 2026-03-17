@@ -19,6 +19,7 @@ import aiohttp
 
 import shared
 import events
+from threading import Thread
 from discovery import discover_server
 from custommodules.replay_recorder import ReplayRecorder
 from custommodules.process_monitor import ProcessMonitor
@@ -155,69 +156,72 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
             # -- Listener task: prints everything the server sends --------
             async def listener():
                 nonlocal exam_active, gui_process
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        event, data = shared.decode(msg.data)
-
-                        if event == events.WELCOME:
-                            print(f"[WS] Connected! Server assigned ID: {data['id']}")
-                            start_gui()
-                        elif event == events.ECHO:
-                            print(f"[WS] Echo: {data}")
-                        elif event == events.TIME:
-                            # Hide time broadcast noise 
-                            pass
-                        elif event == events.SYNC_TIME:
-                            rem = data.get("remaining_seconds", 0)
-                            m, s = divmod(rem, 60)
+                try:
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            event, data = shared.decode(msg.data)
                             
-                            if pm_ref["monitor"]:
-                                pm_ref["monitor"].update_time(rem)
-                            
-                            start_gui() # Double check it's started
+                            if event == events.WELCOME:
+                                print(f"[WS] Connected! Server assigned ID: {data['id']}")
+                                start_gui()
+                            elif event == events.ECHO:
+                                print(f"[WS] Echo: {data}")
+                            elif event == events.TIME:
+                                # Hide time broadcast noise 
+                                pass
+                            elif event == events.SYNC_TIME:
+                                rem = data.get("remaining_seconds", 0)
+                                if pm_ref["monitor"]:
+                                    pm_ref["monitor"].update_time(rem)
                                 
-                            if gui_process and gui_process.poll() is None:
-                                try:
-                                    gui_process.stdin.write(f"SYNC:{rem}\n")
-                                    gui_process.stdin.flush()
-                                except Exception:
-                                    pass
-
-                            # Still print locally occasionally, or let the GUI handle it
-                            if rem % 10 == 0:
-                                print(f"[EXAM] Time remaining: {m}m {s}s")
+                                start_gui() # Ensure GUI is open if it wasn't
                                 
-                        elif event == events.EXAM_END:
-                            print("\n===============================")
-                            print("       EXAM TIME IS UP!        ")
-                            print("===============================")
-                            exam_active = False
-                            
-                            if gui_process and gui_process.poll() is None:
-                                try:
-                                    gui_process.stdin.write("END:-1\n")
-                                    gui_process.stdin.flush()
-                                except Exception:
-                                    pass
-                            
-                            disconnected.set()
-                        elif event == events.SAVESCREEN:
-                            print("[WS] [SAVESCREEN] Server requested replay save.")
-                            loop = asyncio.get_event_loop()
-                            await loop.run_in_executor(None, recorder.save_replay)
-                        elif event == events.GET_PROCESSES:
-                            print("[WS] [GET_PROCESSES] Server requested a manual process report.")
-                            if pm_ref["monitor"]:
-                                pm_ref["monitor"].trigger_full_report()
+                                if gui_process and gui_process.poll() is None:
+                                    try:
+                                        gui_process.stdin.write(f"SYNC:{rem}\n")
+                                        gui_process.stdin.flush()
+                                    except Exception:
+                                        pass
+
+                                # Still print locally occasionally, or let the GUI handle it
+                                if rem % 10 == 0:
+                                    m, s = divmod(rem, 60)
+                                    print(f"[EXAM] Time remaining: {m}m {s}s")
+                                    
+                            elif event == events.EXAM_END:
+                                print("\n===============================")
+                                print("       EXAM TIME IS UP!        ")
+                                print("===============================")
+                                exam_active = False
+                                
+                                if gui_process and gui_process.poll() is None:
+                                    try:
+                                        gui_process.stdin.write("END:-1\n")
+                                        gui_process.stdin.flush()
+                                    except Exception:
+                                        pass
+                                
+                                disconnected.set()
+                            elif event == events.SAVESCREEN:
+                                print("[WS] [SAVESCREEN] Server requested replay save.")
+                                loop = asyncio.get_event_loop()
+                                await loop.run_in_executor(None, recorder.save_replay)
+                            elif event == events.GET_PROCESSES:
+                                print("[WS] [GET_PROCESSES] Server requested a manual process report.")
+                                if pm_ref["monitor"]:
+                                    pm_ref["monitor"].trigger_full_report()
+                                else:
+                                    print("[WS] Process monitor not running yet.")
                             else:
-                                print("[WS] Process monitor not running yet.")
-                        else:
-                            print(f"[WS] {event}: {data}")
+                                print(f"[WS] {event}: {data}")
 
-                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        break
-                # WS loop ended -- server is gone
-                disconnected.set()
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+                except Exception as e:
+                    print(f"[WS] Listener error: {e}")
+                finally:
+                    # WS loop ended -- server is gone
+                    disconnected.set()
 
             # -- Sender: reads stdin and sends pings ----------------------
             async def sender():
