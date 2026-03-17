@@ -16,6 +16,8 @@ import sys
 import uuid
 import json
 import os
+import subprocess
+from threading import Thread
 
 from aiohttp import web, WSMsgType
 
@@ -31,6 +33,9 @@ clients: dict[str, dict] = {}
 USERS_FILE = "data/server/server_users.json"
 # users_db: login_id -> { "password": str, "uuid": str, "time_spent_seconds": int, "exam_started": bool }
 users_db: dict[str, dict] = {}
+
+# Global GUI process handle
+gui_process = None
 
 def load_users():
     global users_db
@@ -153,6 +158,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                                 u["exam_started"] = True
                                 save_users()
                                 print(f"[EXAM] Client {client_id} started their exam.")
+                                
+                                # Instantly sync the precise starting time so the client doesn't start at -10s
+                                exam_duration_sec = request.app["exam_duration"] * 60
+                                rem = max(0, exam_duration_sec - u.get("time_spent_seconds", 0))
+                                await ws.send_str(events.sync_time(rem))
                             break
                 else:
                     await ws.send_str(events.error(f"unknown event: {event}"))
@@ -213,6 +223,29 @@ async def time_broadcaster(app: web.Application):
                     clients.pop(cid, None)
                     
                 save_users()
+                
+                # --- UI PIPELINE ---
+                if gui_process and gui_process.poll() is None:
+                    try:
+                        # Construct UI State JSON
+                        ui_clients = []
+                        for login_id, u in users_db.items():
+                            cid = u["uuid"]
+                            status = "Connected" if cid in clients else "Disconnected"
+                            rem = max(0, exam_duration_sec - u.get("time_spent_seconds", 0))
+                            ui_clients.append({
+                                "uuid": cid,
+                                "login_id": login_id,
+                                "status": status,
+                                "remaining": rem
+                            })
+                        
+                        payload = json.dumps({"type": "state_update", "clients": ui_clients})
+                        gui_process.stdin.write(payload + "\n")
+                        gui_process.stdin.flush()
+                    except Exception as e:
+                        print(f"[GUI IPC] Warning: Failed to write to GUI: {e}")
+                # -------------------
     except asyncio.CancelledError:
         pass
 
@@ -269,9 +302,36 @@ async def broadcast_to_all(payload: str) -> int:
     return sent
 
 
+def _gui_reader_thread(loop):
+    """Reads stdout from the Tkinter GUI to pick up Options actions like sending savescreen."""
+    global gui_process
+    if not gui_process:
+        return
+        
+    for line in iter(gui_process.stdout.readline, ''):
+        line = line.strip()
+        if not line: continue
+        try:
+            req = json.loads(line)
+            cmd = req.get("cmd")
+            uuid_val = req.get("uuid")
+            
+            if cmd == "savescreen" and uuid_val in clients:
+                ws = clients[uuid_val]["ws"]
+                asyncio.run_coroutine_threadsafe(ws.send_str(events.savescreen()), loop)
+                print(f"\n[GUI->WS] Sent savescreen to {uuid_val}")
+        except Exception as e:
+            pass
+
 async def console_reader(app: web.Application):
     """Reads stdin for operator commands."""
     loop = asyncio.get_event_loop()
+    
+    # Start the GUI read thread if running
+    if gui_process:
+        t = Thread(target=_gui_reader_thread, args=(loop,), daemon=True)
+        t.start()
+        
     try:
         while True:
             line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -357,6 +417,8 @@ async def cleanup_background_tasks(app: web.Application):
     await app["time_broadcaster"]
     app["console_reader"].cancel()
     await app["announcer"].stop()
+    if gui_process and gui_process.poll() is None:
+        gui_process.kill()
 
 
 # -- App Setup -------------------------------------------------------------
@@ -407,9 +469,26 @@ if __name__ == "__main__":
     parser.add_argument("--announce", default=3, type=float, help="Discovery beacon interval in seconds (default: 3)")
     parser.add_argument("--exam-duration", default=45, type=int, help="Exam duration in minutes (default: 45)")
     parser.add_argument("--exam-files", default=None, type=str, help="Path to a .zip file containing exam materials")
+    parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
     args = parser.parse_args()
 
     validate_args(args)
+    
+    global gui_process
+    if args.gui:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        gui_path = os.path.join(script_dir, "server_gui.py")
+        print(f"[GUI] Launching Server Monitor UI...")
+        try:
+            gui_process = subprocess.Popen(
+                [sys.executable, gui_path], 
+                stdin=subprocess.PIPE, 
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1  # Line buffered
+            )
+        except Exception as e:
+            print(f"[GUI] Failed to launch gui: {e}")
 
     # Check for duplicate server with same ID
     dup = asyncio.run(check_duplicate_server(args.id, timeout=5.0))
