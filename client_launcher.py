@@ -14,8 +14,12 @@ class ClientLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Exam Client Login")
-        self.geometry("400x350")
+        self.geometry("550x500")
         self.resizable(False, False)
+        
+        # Apply 1.5x UI scaling equivalent via font rendering
+        style = ttk.Style(self)
+        style.configure('.', font=('Helvetica', 14))
         
         # Configure layout
         self.columnconfigure(1, weight=1)
@@ -64,10 +68,10 @@ class ClientLauncher(tk.Tk):
     def toggle_advanced(self):
         if self.v_adv.get():
             self.adv_frame.grid(row=7, column=0, columnspan=2, sticky=tk.EW)
-            self.geometry("400x480")
+            self.geometry("550x650")
         else:
             self.adv_frame.grid_forget()
-            self.geometry("400x350")
+            self.geometry("550x500")
 
     def start_client(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))

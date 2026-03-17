@@ -15,8 +15,12 @@ class ServerLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Exam Server Launcher")
-        self.geometry("450x400")
+        self.geometry("600x550")
         self.resizable(False, False)
+        
+        # Apply 1.5x UI scaling equivalent via font rendering
+        style = ttk.Style(self)
+        style.configure('.', font=('Helvetica', 14))
         
         # Configure layout
         self.columnconfigure(1, weight=1)
