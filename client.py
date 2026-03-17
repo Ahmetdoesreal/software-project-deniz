@@ -245,13 +245,25 @@ async def main(args):
                 host, port = args.host, args.port
                 print(f"[DIRECT] Connecting to {host}:{port}")
             else:
-                host, port = await discover_loop(args.id, args.timeout)
+                if getattr(args, 'check_login', False):
+                    # Don't loop forever during a quick check
+                    server_info = await discover_server(args.id, args.timeout)
+                    if not server_info:
+                        print(f"\n[FATAL] Could not discover server '{args.id}' on the local network.")
+                        sys.exit(1)
+                    host, port = server_info
+                else:
+                    host, port = await discover_loop(args.id, args.timeout)
 
             base_url = f"http://{host}:{port}"
             
             try:
                 # 2. Login to get/verify UUID
                 new_uuid = await perform_login(base_url, args.login_id, args.password)
+                
+                if getattr(args, 'check_login', False):
+                    print("[+] Credentials verified successfully.")
+                    sys.exit(0)
                 
                 if not session_uuid:
                     session_uuid = new_uuid
@@ -328,6 +340,7 @@ if __name__ == "__main__":
     parser.add_argument("--timeout",   default=15, type=float, help="Discovery timeout in seconds (default: 15)")
     parser.add_argument("--reconnect", default=3, type=float, help="Seconds to wait before reconnecting (default: 3)")
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
+    parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
     parser.set_defaults(record=True)
     args = parser.parse_args()
 

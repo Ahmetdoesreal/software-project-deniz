@@ -62,8 +62,8 @@ class ClientLauncher(tk.Tk):
         ttk.Entry(self.adv_frame, textvariable=self.v_port).grid(row=1, column=1, sticky=tk.EW, padx=10, pady=5)
 
         # Login button at the bottom
-        btn_start = ttk.Button(self, text="Connect & Login", command=self.start_client)
-        btn_start.grid(row=8, column=0, columnspan=2, pady=20)
+        self.btn_start = ttk.Button(self, text="Connect & Login", command=self.start_client)
+        self.btn_start.grid(row=8, column=0, columnspan=2, pady=20)
         
     def toggle_advanced(self):
         if self.v_adv.get():
@@ -98,14 +98,48 @@ class ClientLauncher(tk.Tk):
                 cmd.extend(["--host", host])
             cmd.extend(["--port", str(self.v_port.get())])
             
+        self.btn_start.config(state=tk.DISABLED, text="Validating...")
+        
+        def run_check():
+            import threading
+            cmd_check = cmd + ["--check-login", "--timeout", "3"]
+            try:
+                # Create process without a visible console window on Windows
+                startupinfo = None
+                if os.name == 'nt':
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    
+                result = subprocess.run(cmd_check, capture_output=True, text=True, startupinfo=startupinfo)
+                if result.returncode == 0:
+                    self.after(0, self.on_check_success, cmd)
+                else:
+                    error_msg = "Unknown validation error."
+                    output = result.stdout + "\n" + result.stderr
+                    for line in output.splitlines():
+                        if "[FATAL]" in line or "[!]" in line:
+                            error_msg = line.strip()
+                            break
+                    self.after(0, self.on_check_fail, error_msg)
+            except Exception as e:
+                self.after(0, self.on_check_fail, str(e))
+                
+        import threading
+        threading.Thread(target=run_check, daemon=True).start()
+
+    def on_check_success(self, cmd):
         try:
             self.withdraw()
-            # Popen because we don't want the UI hanging waiting for the multi-hour exam to finish.
+            # Launch the real client
             subprocess.Popen(cmd)
             sys.exit(0)
         except Exception as e:
             messagebox.showerror("Error Launching Client", str(e))
             self.deiconify()
+
+    def on_check_fail(self, error_msg):
+        self.btn_start.config(state=tk.NORMAL, text="Connect & Login")
+        messagebox.showerror("Login Failed", f"Could not connect or authenticate with the server:\n\n{error_msg}")
 
 if __name__ == "__main__":
     app = ClientLauncher()
