@@ -130,8 +130,14 @@ class ClientLauncher(tk.Tk):
     def on_check_success(self, cmd):
         try:
             self.withdraw()
+            
+            # Ensure the client gets its own console window on Windows so it can stay interactive
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = subprocess.CREATE_NEW_CONSOLE
+
             # Launch the real client
-            subprocess.Popen(cmd)
+            subprocess.Popen(cmd, creationflags=creationflags)
             sys.exit(0)
         except Exception as e:
             messagebox.showerror("Error Launching Client", str(e))

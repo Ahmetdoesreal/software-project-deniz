@@ -122,9 +122,13 @@ class ServerLauncher(tk.Tk):
         try:
             # Hide the launcher, spawn the server
             self.withdraw()
-            # If server crashes, we won't see it natively without keeping the terminal or pipe open, 
-            # but for a simple launcher `Popen` works fine.
-            subprocess.Popen(cmd)
+            
+            # Ensure the server gets its own console window on Windows so it can stay interactive
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = subprocess.CREATE_NEW_CONSOLE
+                
+            subprocess.Popen(cmd, creationflags=creationflags)
             sys.exit(0) # Close launcher fully
         except Exception as e:
             messagebox.showerror("Launch Error", str(e))
