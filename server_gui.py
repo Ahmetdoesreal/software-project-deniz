@@ -153,7 +153,7 @@ def ipc_reader(app: ServerGUI):
                 app.after(0, app.process_state_update, msg)
         except Exception:
             pass
-
+#test
 if __name__ == "__main__":
     app = ServerGUI()
     reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)
