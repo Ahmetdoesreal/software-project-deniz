@@ -12,11 +12,10 @@ Features:
 import argparse
 import asyncio
 import errno
+import sys
 import uuid
 import json
 import os
-import hashlib
-import secrets
 
 from aiohttp import web, WSMsgType
 
@@ -30,12 +29,8 @@ from discovery import ServerAnnouncer, check_duplicate_server
 clients: dict[str, dict] = {}
 
 USERS_FILE = "data/server/server_users.json"
-# users_db: login_id -> { "password_hash": str, "salt": str, "uuid": str }
+# users_db: login_id -> { "password": str, "uuid": str, "time_spent_seconds": int, "exam_started": bool }
 users_db: dict[str, dict] = {}
-
-def hash_password(password: str, salt: str) -> str:
-    """Hashes a password with the given salt using SHA-256."""
-    return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
 
 def load_users():
     global users_db
@@ -78,26 +73,44 @@ async def login_handler(request: web.Request) -> web.Response:
         
     user = users_db.get(login_id)
     if user:
-        pwd_hash = hash_password(password, user["salt"])
-        if user["password_hash"] != pwd_hash:
+        if user["password"] != password:
             return web.json_response({"error": "Invalid credentials"}, status=401)
         # Valid login
         return web.json_response({"status": "ok", "uuid": user["uuid"]})
     else:
         # Create new user
         new_uuid = str(uuid.uuid4())
-        salt = secrets.token_hex(16)
-        pwd_hash = hash_password(password, salt)
-        
         users_db[login_id] = {
-            "password_hash": pwd_hash,
-            "salt": salt,
-            "uuid": new_uuid
+            "password": password,
+            "uuid": new_uuid,
+            "time_spent_seconds": 0,
+            "exam_started": False
         }
         save_users()
         print(f"[+] New user registered: {login_id} -> {new_uuid}")
         return web.json_response({"status": "ok", "uuid": new_uuid})
 
+
+async def exam_config(request: web.Request) -> web.Response:
+    app = request.app
+    return web.json_response({
+        "exam_duration_seconds": app["exam_duration"] * 60,
+        "has_files": app["exam_files"] is not None
+    })
+
+async def exam_files(request: web.Request) -> web.Response:
+    app = request.app
+    path = app["exam_files"]
+    if not path or not os.path.exists(path):
+        return web.Response(status=404, text="No exam files available")
+    
+    # Simple file serving, assumes it's a zip or single file
+    # For a directory, a robust solution would zip it on the fly, 
+    # but for this demo we'll assume the user provided a .zip file.
+    if os.path.isdir(path):
+        return web.Response(status=400, text="Directory serving not implemented, please provide a .zip file")
+        
+    return web.FileResponse(path)
 
 # -- WebSocket Handler -----------------------------------------------------
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
@@ -132,6 +145,15 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if event == events.PING:
                     # Echo back with the same data
                     await ws.send_str(events.echo(data, shared.now_iso()))
+                elif event == events.START_EXAM:
+                    # Find user in DB
+                    for login_id, u in users_db.items():
+                        if u["uuid"] == client_id:
+                            if not u.get("exam_started", False):
+                                u["exam_started"] = True
+                                save_users()
+                                print(f"[EXAM] Client {client_id} started their exam.")
+                            break
                 else:
                     await ws.send_str(events.error(f"unknown event: {event}"))
 
@@ -147,21 +169,50 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
 # -- Background: broadcast time every N seconds ----------------------------
 async def time_broadcaster(app: web.Application):
-    """Background task that sends the current time to every connected client."""
+    """Background task that sends the current time to every connected client, and manages exam timers."""
+    tick_interval = app["broadcast_interval"]
+    exam_duration_sec = app["exam_duration"] * 60
+    
     try:
         while True:
-            await asyncio.sleep(app["broadcast_interval"])
+            await asyncio.sleep(tick_interval)
+            
+            # Map UUIDs back to login_ids to update the db
+            uuid_to_login = {u["uuid"]: login_id for login_id, u in users_db.items()}
+            
             if clients:
                 payload = events.time_broadcast(shared.now_iso())
                 dead = []
-                for cid, ws in clients.items():
+                for cid, data in clients.items():
+                    ws = data["ws"]
                     try:
                         await ws.send_str(payload)
+                        
+                        # Handle EXAM TIMER
+                        login_id = uuid_to_login.get(cid)
+                        if login_id:
+                            user = users_db[login_id]
+                            # default to 0 and false if missing
+                            num_spent = user.get("time_spent_seconds", 0)
+                            has_started = user.get("exam_started", False)
+                            
+                            if has_started:
+                                num_spent += tick_interval
+                                user["time_spent_seconds"] = num_spent
+                                
+                                remaining = max(0, exam_duration_sec - num_spent)
+                                await ws.send_str(events.sync_time(remaining))
+                                
+                                if remaining <= 0:
+                                    print(f"[EXAM] Client {cid} ran out of time!")
+                                    await ws.send_str(events.exam_end())
+                                    
                     except ConnectionResetError:
                         dead.append(cid)
                 for cid in dead:
                     clients.pop(cid, None)
-                print(f"[TIME] Broadcasted time to {len(clients)} client(s)")
+                    
+                save_users()
     except asyncio.CancelledError:
         pass
 
@@ -256,6 +307,29 @@ async def console_reader(app: web.Application):
                         print(f"[CMD] Client '{target}' not found (tried UUID, short ID, IP).")
                         print("      Type /clients to list available targets.")
 
+            elif cmd == "/exam":
+                exam_duration_sec = app["exam_duration"] * 60
+                
+                print("\n[CMD] --- LIVE EXAM STATUS ---")
+                active_users = [
+                    (cid, data, users_db.get(next((u for u, db in users_db.items() if db["uuid"] == cid), None)))
+                    for cid, data in clients.items()
+                ]
+                
+                if not active_users:
+                    print("No clients connected.")
+                else:
+                    for cid, _, user_data in active_users:
+                        if user_data:
+                            login_id = next(login for login, data in users_db.items() if data["uuid"] == cid)
+                            state = "Running" if user_data.get("exam_started") else "Waiting"
+                            rem = max(0, exam_duration_sec - user_data.get("time_spent_seconds", 0))
+                            m, s = divmod(rem, 60)
+                            print(f"User: {login_id:12} | State: {state:7} | Remaining: {m:02d}m {s:02d}s")
+                        else:
+                            print(f"Unknown UUID: {cid}")
+                print("------------------------------\n")
+                
             elif cmd == "/help":
                 print("  /clients              - List connected clients")
                 print("  /savescreen <id>      - Save replay on a specific client")
@@ -294,8 +368,13 @@ def create_app(args) -> web.Application:
     app["port"] = args.port
     app["broadcast_interval"] = args.interval
     app["announce_interval"] = args.announce
+    app["exam_duration"] = args.exam_duration
+    app["exam_files"] = args.exam_files
+    
     app.router.add_get("/health", health)
     app.router.add_post("/login", login_handler)
+    app.router.add_get("/exam/config", exam_config)
+    app.router.add_get("/exam/files", exam_files)
     app.router.add_get("/ws", websocket_handler)
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
@@ -324,8 +403,10 @@ if __name__ == "__main__":
     parser.add_argument("--id",       default="default", help="Server identifier (clients must match)")
     parser.add_argument("--host",     default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
     parser.add_argument("--port",     default=8080, type=int, help="Port to listen on (default: 8080)")
-    parser.add_argument("--interval", default=10, type=float, help="Time broadcast interval in seconds (default: 10)")
+    parser.add_argument("--interval", default=10, type=float, help="Time broadcast/sync interval in seconds (default: 10)")
     parser.add_argument("--announce", default=3, type=float, help="Discovery beacon interval in seconds (default: 3)")
+    parser.add_argument("--exam-duration", default=45, type=int, help="Exam duration in minutes (default: 45)")
+    parser.add_argument("--exam-files", default=None, type=str, help="Path to a .zip file containing exam materials")
     args = parser.parse_args()
 
     validate_args(args)

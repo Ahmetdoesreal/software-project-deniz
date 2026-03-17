@@ -57,3 +57,23 @@ def savescreen() -> str:
     """Server requests the client to save the screen."""
     return shared.encode(SAVESCREEN, {})
 
+# -- Exam Flow Events ----------------------------------------------------
+
+START_EXAM = "start_exam"
+
+def start_exam() -> str:
+    """Client asserts they are ready to begin the countdown."""
+    return shared.encode(START_EXAM, {})
+
+SYNC_TIME = "sync_time"
+
+def sync_time(remaining_seconds: int) -> str:
+    """Server tells client the exact remaining seconds."""
+    return shared.encode(SYNC_TIME, {"remaining_seconds": remaining_seconds})
+
+EXAM_END = "exam_end"
+
+def exam_end() -> str:
+    """Server tells client their exam duration has depleted."""
+    return shared.encode(EXAM_END, {})
+

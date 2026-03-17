@@ -13,6 +13,7 @@ import sys
 import uuid
 import json
 import os
+import subprocess
 
 import aiohttp
 
@@ -32,6 +33,48 @@ async def perform_login(base_url: str, login_id: str, password: str) -> str:
                 body = await resp.text()
                 raise ValueError(f"Login failed ({resp.status}): {body}")
 
+async def fetch_exam_prep(base_url: str, session_uuid: str):
+    """Fetches the exam configuration and files."""
+    async with aiohttp.ClientSession() as session:
+        # Get config
+        async with session.get(f"{base_url}/exam/config") as resp:
+            if resp.status == 200:
+                config = await resp.json()
+                mins = config.get("exam_duration_seconds", 0) // 60
+                print(f"[EXAM] Config loaded: Exam duration is {mins} minutes.")
+            else:
+                print(f"[EXAM] Failed to load config: {resp.status}")
+
+        # Get files if available
+        async with session.get(f"{base_url}/exam/files") as resp:
+            if resp.status == 200:
+                print(f"[EXAM] Downloading exam files...")
+                content = await resp.read()
+                out_dir = os.path.join("data", "client", session_uuid, "exam_files")
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, "exam_materials.zip")
+                with open(out_path, "wb") as f:
+                    f.write(content)
+                print(f"[EXAM] Exam files saved to {out_path}.")
+            elif resp.status == 404:
+                print("[EXAM] No exam files provided by server.")
+            else:
+                body = await resp.text()
+                print(f"[EXAM] Failed to download exam files ({resp.status}): {body}")
+
+async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse):
+    """Wait for the user to type 'start' to begin the exam."""
+    print("\n--- PRE-EXAM PREPARATION ---")
+    print("When you are ready, type 'start' and press Enter to begin the exam.")
+    loop = asyncio.get_event_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if line.strip().lower() == "start":
+            await ws.send_str(events.start_exam())
+            print("[EXAM] Started. Good luck!\n")
+            break
+        print("Type 'start' to begin.")
+
 
 
 
@@ -45,13 +88,16 @@ async def check_health(base_url: str):
 
 
 async def run_ws(ws_url: str, recorder: ReplayRecorder):
-    """Connect via WebSocket, send pings, receive broadcasts."""
+    """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
             disconnected = asyncio.Event()
+            exam_active = True
+            gui_process = None
 
             # -- Listener task: prints everything the server sends --------
             async def listener():
+                nonlocal exam_active, gui_process
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         event, data = shared.decode(msg.data)
@@ -61,7 +107,43 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                         elif event == events.ECHO:
                             print(f"[WS] Echo: {data}")
                         elif event == events.TIME:
-                            print(f"[WS] [TIME] Server time: {data['server_time']}")
+                            # Hide time broadcast noise 
+                            pass
+                        elif event == events.SYNC_TIME:
+                            rem = data.get("remaining_seconds", 0)
+                            m, s = divmod(rem, 60)
+                            
+                            if gui_process is None:
+                                # Start GUI if it hasn't been started yet
+                                script_dir = os.path.dirname(os.path.abspath(__file__))
+                                gui_path = os.path.join(script_dir, "client_gui.py")
+                                gui_process = subprocess.Popen([sys.executable, gui_path], stdin=subprocess.PIPE, text=True)
+                                
+                            if gui_process and gui_process.poll() is None:
+                                try:
+                                    gui_process.stdin.write(f"SYNC:{rem}\n")
+                                    gui_process.stdin.flush()
+                                except Exception:
+                                    pass
+
+                            # Still print locally occasionally, or let the GUI handle it
+                            if rem % 10 == 0:
+                                print(f"[EXAM] Time remaining: {m}m {s}s")
+                                
+                        elif event == events.EXAM_END:
+                            print("\n===============================")
+                            print("       EXAM TIME IS UP!        ")
+                            print("===============================")
+                            exam_active = False
+                            
+                            if gui_process and gui_process.poll() is None:
+                                try:
+                                    gui_process.stdin.write("END:-1\n")
+                                    gui_process.stdin.flush()
+                                except Exception:
+                                    pass
+                            
+                            disconnected.set()
                         elif event == events.SAVESCREEN:
                             print("[WS] [SAVESCREEN] Server requested replay save.")
                             loop = asyncio.get_event_loop()
@@ -76,9 +158,10 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
 
             # -- Sender: reads stdin and sends pings ----------------------
             async def sender():
-                print("\nType anything and press Enter to ping the server (Ctrl+C to quit):\n")
+                await prompt_start_exam(ws)
+                print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
                 loop = asyncio.get_event_loop()
-                while not disconnected.is_set():
+                while not disconnected.is_set() and exam_active:
                     # Check for disconnect between each line read
                     read_future = loop.run_in_executor(None, sys.stdin.readline)
                     # Wait for either stdin input or disconnect
@@ -104,6 +187,8 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                 pass
             finally:
                 listen_task.cancel()
+                if gui_process and gui_process.poll() is None:
+                    gui_process.kill()
 
             if disconnected.is_set():
                 raise ConnectionError("Server disconnected")
@@ -165,10 +250,13 @@ async def main(args):
 
                 ws_url = f"ws://{host}:{port}/ws?id={session_uuid}"
 
-                # 3. HTTP health check
+                # 3. Fetch Exam Configuration and Files
+                await fetch_exam_prep(base_url, session_uuid)
+
+                # 4. HTTP health check
                 await check_health(base_url)
 
-                # 4. WebSocket session
+                # 5. WebSocket session
                 print()
                 await run_ws(ws_url, recorder)
             except ValueError as e:

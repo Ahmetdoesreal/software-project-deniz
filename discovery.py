@@ -126,7 +126,10 @@ class ServerAnnouncer:
                     try:
                         self._sock.sendto(beacon, (target, DISCOVERY_PORT))
                     except OSError as e:
-                        print(f"[DISCOVERY] sendto({target}) failed: {e}")
+                        if target == BROADCAST_ADDR and getattr(e, "errno", None) in (49, 51, 65):
+                            pass
+                        else:
+                            print(f"[DISCOVERY] sendto({target}) failed: {e}")
                 await asyncio.sleep(self.interval)
         except asyncio.CancelledError:
             pass
