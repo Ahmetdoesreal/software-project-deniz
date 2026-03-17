@@ -63,8 +63,8 @@ async def fetch_exam_prep(base_url: str, session_uuid: str):
                 body = await resp.text()
                 print(f"[EXAM] Failed to download exam files ({resp.status}): {body}")
 
-async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, session_uuid: str) -> ProcessMonitor:
-    """Wait for the user to type 'start' to begin the exam. Starts ProcessMonitor."""
+async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse):
+    """Wait for the user to type 'start' to begin the exam."""
     print("\n--- PRE-EXAM PREPARATION ---")
     print("When you are ready, type 'start' and press Enter to begin the exam.")
     loop = asyncio.get_event_loop()
@@ -74,12 +74,7 @@ async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, session_uuid: s
         if line.strip().lower() == "start":
             await ws.send_str(events.start_exam())
             print("[EXAM] Started. Good luck!\n")
-            
-            # Start Process Monitor
-            out_dir = os.path.join("data", "client", session_uuid)
-            pm = ProcessMonitor(out_dir)
-            pm.start()
-            return pm
+            return
             
         print("Type 'start' to begin.")
 
@@ -106,8 +101,10 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
             # Extract UUID for passing to child tasks
             client_uuid = shared.extract_client_uuid(ws_url)
 
-            # Define PM hook at this scope so both tasks can access it
-            pm_ref = {"monitor": None}
+            # Initialize and start Process Monitor immediately
+            out_dir = os.path.join("data", "client", client_uuid)
+            pm_ref = {"monitor": ProcessMonitor(out_dir)}
+            pm_ref["monitor"].start()
 
             # -- Listener task: prints everything the server sends --------
             async def listener():
@@ -181,8 +178,7 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
 
             # -- Sender: reads stdin and sends pings ----------------------
             async def sender():
-                pm = await prompt_start_exam(ws, shared.extract_client_uuid(ws_url))
-                pm_ref["monitor"] = pm
+                await prompt_start_exam(ws)
                 
                 print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
                 loop = asyncio.get_event_loop()
