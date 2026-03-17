@@ -12,14 +12,25 @@ class ExamTimerGUI:
         self.root.attributes('-topmost', True)
         # Handle close attempt (mostly intercept it)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.geometry("300x150")
 
-        self.label = tk.Label(root, text="Waiting for timer...", font=("Helvetica", 20, "bold"))
-        self.label.pack(expand=True)
+        self.label = tk.Label(root, text="Waiting for server...", font=("Helvetica", 16))
+        self.label.pack(expand=True, pady=10)
+
+        self.start_button = tk.Button(root, text="Start Exam", font=("Helvetica", 14, "bold"), 
+                                      command=self.on_start_click, bg="#4CAF50", fg="white", 
+                                      padx=20, pady=10)
+        self.start_button.pack(pady=10)
 
         self.remaining = 0
         self.active = True
 
         self.update_clock()
+
+    def on_start_click(self):
+        """Notify the parent process that the user wants to start the exam."""
+        print("ACTION:START", flush=True)
+        self.start_button.config(state=tk.DISABLED, text="Starting...")
 
     def update_clock(self):
         if self.active:
@@ -38,6 +49,10 @@ class ExamTimerGUI:
              self.root.destroy()
         else:
              self.remaining = seconds
+             # Once we have a timer, the exam has started
+             if self.start_button.winfo_exists():
+                 self.start_button.pack_forget()
+                 self.label.config(font=("Helvetica", 24, "bold"))
 
     def on_closing(self):
         # Prevent manual closure during the exam unless specific conditions met

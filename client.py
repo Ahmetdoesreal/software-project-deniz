@@ -63,20 +63,40 @@ async def fetch_exam_prep(base_url: str, session_uuid: str):
                 body = await resp.text()
                 print(f"[EXAM] Failed to download exam files ({resp.status}): {body}")
 
-async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse):
-    """Wait for the user to type 'start' to begin the exam."""
+async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, start_event: asyncio.Event):
+    """Wait for the user to type 'start' or a GUI signal to begin the exam."""
     print("\n--- PRE-EXAM PREPARATION ---")
-    print("When you are ready, type 'start' and press Enter to begin the exam.")
+    print("When you are ready, type 'start' or click the button in the GUI to begin the exam.")
     loop = asyncio.get_event_loop()
     
-    while True:
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if line.strip().lower() == "start":
+    while not start_event.is_set():
+        # This is a bit tricky because run_in_executor(sys.stdin.readline) blocks.
+        # We'll use a short timeout or just check the event.
+        # Since we use FIRST_COMPLETED below, we can just wait for both.
+        
+        # We'll run a helper to wait for 'start' in a thread
+        def wait_for_start():
+            while not start_event.is_set():
+                line = sys.stdin.readline()
+                if line.strip().lower() == "start":
+                    return True
+            return False
+
+        cli_task = loop.run_in_executor(None, wait_for_start)
+        done, pending = await asyncio.wait(
+            [asyncio.ensure_future(cli_task), asyncio.ensure_future(start_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # If either task finished, we check if we should start
+        if start_event.is_set() or (cli_task.done() and cli_task.result()):
             await ws.send_str(events.start_exam())
             print("[EXAM] Started. Good luck!\n")
+            start_event.set()
             return
             
-        print("Type 'start' to begin.")
+        if not start_event.is_set():
+            print("Type 'start' or use the GUI to begin.")
 
 
 
@@ -105,6 +125,32 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
             out_dir = os.path.join("data", "client", client_uuid)
             pm_ref = {"monitor": ProcessMonitor(out_dir)}
             pm_ref["monitor"].start()
+            
+            start_event = asyncio.Event()
+
+            def start_gui():
+                nonlocal gui_process
+                if gui_process is None:
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    gui_path = os.path.join(script_dir, "client_gui.py")
+                    # We need to read stdout from the GUI
+                    gui_process = subprocess.Popen(
+                        [sys.executable, gui_path], 
+                        stdin=subprocess.PIPE, 
+                        stdout=subprocess.PIPE, 
+                        text=True,
+                        bufsize=1
+                    )
+                    
+                    def gui_stdout_reader():
+                        for line in iter(gui_process.stdout.readline, ''):
+                            if "ACTION:START" in line:
+                                print("[GUI] Start button pressed.")
+                                loop = asyncio.get_event_loop()
+                                loop.call_soon_threadsafe(start_event.set)
+                        gui_process.stdout.close()
+
+                    Thread(target=gui_stdout_reader, daemon=True).start()
 
             # -- Listener task: prints everything the server sends --------
             async def listener():
@@ -115,6 +161,7 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
 
                         if event == events.WELCOME:
                             print(f"[WS] Connected! Server assigned ID: {data['id']}")
+                            start_gui()
                         elif event == events.ECHO:
                             print(f"[WS] Echo: {data}")
                         elif event == events.TIME:
@@ -127,11 +174,7 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                             if pm_ref["monitor"]:
                                 pm_ref["monitor"].update_time(rem)
                             
-                            if gui_process is None:
-                                # Start GUI if it hasn't been started yet
-                                script_dir = os.path.dirname(os.path.abspath(__file__))
-                                gui_path = os.path.join(script_dir, "client_gui.py")
-                                gui_process = subprocess.Popen([sys.executable, gui_path], stdin=subprocess.PIPE, text=True)
+                            start_gui() # Double check it's started
                                 
                             if gui_process and gui_process.poll() is None:
                                 try:
@@ -178,7 +221,7 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
 
             # -- Sender: reads stdin and sends pings ----------------------
             async def sender():
-                await prompt_start_exam(ws)
+                await prompt_start_exam(ws, start_event)
                 
                 print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
                 loop = asyncio.get_event_loop()
