@@ -474,7 +474,6 @@ if __name__ == "__main__":
 
     validate_args(args)
     
-    global gui_process
     if args.gui:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         gui_path = os.path.join(script_dir, "server_gui.py")
