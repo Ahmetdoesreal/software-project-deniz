@@ -74,6 +74,15 @@ class ClientLauncher(tk.Tk):
             self.geometry("550x500")
 
     def start_client(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        lid = self.v_login.get().strip()
+        pwd = self.v_pass.get().strip()
+        sid = self.v_id.get().strip()
+        
+        if not lid or not pwd:
+            messagebox.showerror("Validation Field", "Login ID and Password required.")
+            return
+
         # Ensure current directory is in PYTHONPATH
         self.launch_env = os.environ.copy()
         self.launch_env["PYTHONPATH"] = script_dir + os.pathsep + self.launch_env.get("PYTHONPATH", "")

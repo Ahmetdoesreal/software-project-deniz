@@ -36,6 +36,12 @@ def build_self_signed_cert(
     for dns in dns_names:
         san_entries.append(x509.DNSName(dns))
 
+    # Build Subject Alternative Name extension
+    if san_entries:
+        san_ext = x509.SubjectAlternativeName(san_entries)
+    else:
+        san_ext = x509.SubjectAlternativeName([x509.DNSName(common_name)])
+
     cert_builder = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -44,12 +50,7 @@ def build_self_signed_cert(
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(hours=valid_hours))
-        .add_extension(
-            x509.SubjectAlternativeName(san_entries) if san_entries else x509.SubjectAlternativeName(
-                [x509.DNSName(common_name)]
-            ),
-            critical=False,
-        )
+        .add_extension(san_ext, critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(

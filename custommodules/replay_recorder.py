@@ -139,9 +139,10 @@ class ReplayRecorder:
                 log_file.close()
                 self._running = False
                 with open(self._log_path, "r") as f:
-                    err = f.read().strip().splitlines()
-                    # Show last 3 lines of error
-                    tail = "\n".join(err[-3:]) if err else "(no output)"
+                    tail = "(no output)"
+                    if err:
+                        # Show last 3 lines of error
+                        tail = "\n".join(err[-3:])
                 print(f"[RECORDER] ERROR: FFmpeg exited immediately:\n{tail}")
                 self._process = None
         except FileNotFoundError:

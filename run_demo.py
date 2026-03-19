@@ -68,9 +68,9 @@ def main():
     # 1. Start Server
     print(f"-> Starting Server ({SERVER_ID})")
     if platform.system() == "Windows":
-        server_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" -m server.main --id {SERVER_ID}"
+        server_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" -m server.main --id {SERVER_ID} --reset --gui"
     else:
-        server_cmd = f"cd '{script_dir}' && '{python_cmd}' -m server.main --id {SERVER_ID}"
+        server_cmd = f"cd '{script_dir}' && '{python_cmd}' -m server.main --id {SERVER_ID} --reset --gui"
     spawn_terminal("Server", server_cmd)
 
     # Give server a moment to start

@@ -40,6 +40,50 @@ class ServerGUI(tk.Tk):
         self.stats_var.set("Connections: 0 | Active: 0 | Disconnected: 0")
         stats_label = ttk.Label(self, textvariable=self.stats_var, relief=tk.SUNKEN, padding=5)
         stats_label.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Admin Command Area
+        cmd_frame = ttk.Frame(self, padding=5)
+        cmd_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        ttk.Label(cmd_frame, text="Admin Command:").pack(side=tk.LEFT, padx=5)
+        self.cmd_entry = ttk.Entry(cmd_frame)
+        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.cmd_entry.bind("<Return>", lambda e: self.send_console_command())
+        
+        ttk.Button(cmd_frame, text="Execute", command=self.send_console_command).pack(side=tk.RIGHT, padx=5)
+
+        # Message Log Area (Bottom)
+        log_frame = ttk.LabelFrame(main_frame, text="Live Client Message Log")
+        log_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=(10, 0))
+        
+        self.log_text = tk.Text(log_frame, height=6, state=tk.DISABLED, wrap=tk.WORD)
+        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Scrollable Treeview (Top)
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        columns = ("login_id", "status", "remaining", "uuid")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree.heading("login_id", text="Login ID", anchor=tk.W)
+        self.tree.heading("status", text="Status", anchor=tk.CENTER)
+        self.tree.heading("remaining", text="Remaining Time", anchor=tk.CENTER)
+        self.tree.heading("uuid", text="UUID", anchor=tk.W)
+        
+        self.tree.column("login_id", width=150)
+        self.tree.column("status", width=100, anchor=tk.CENTER)
+        self.tree.column("remaining", width=120, anchor=tk.CENTER)
+        self.tree.column("uuid", width=250)
+        
+        y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=y_scroll.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
         # Action Buttons frame (Right side)
         action_frame = ttk.Frame(self)
@@ -99,7 +143,10 @@ class ServerGUI(tk.Tk):
         item = self.tree.item(selected[0])
         uuid_val = item["values"][3]
         data = self.clients_data.get(uuid_val)
-        status = data.get("status", "Unknown") if data else "Unknown"
+        
+        status = "Unknown"
+        if data:
+            status = data.get("status", "Unknown")
         
         if status != "Connected":
             messagebox.showwarning("Options", "Cannot send commands to offline clients.")
@@ -130,6 +177,36 @@ class ServerGUI(tk.Tk):
         btn_procs = ttk.Button(top, text="Request Process Report", command=request_processes)
         btn_procs.pack(fill=tk.X, padx=20, pady=5)
 
+    def send_console_command(self):
+        """Send a /command from the entry field to the server process."""
+        cmd = self.cmd_entry.get().strip()
+        if not cmd:
+            return
+            
+        # Commands must start with / for the unified handler
+        if not cmd.startswith("/"):
+            cmd = "/" + cmd
+            
+        print(json.dumps({"type": "console_command", "command": cmd}), flush=True)
+        self.cmd_entry.delete(0, tk.END)
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, f"[ADMIN] Executing: {cmd}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
+
+    def log_message(self, client_id, message):
+        """Append a message from a client to the log area."""
+        data = self.clients_data.get(client_id, {})
+        display_name = data.get("login_id", client_id[:8])
+        
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, f"[{ts}] {display_name}: {message}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
+
     def process_state_update(self, payload):
         """Update the UI based on state dictionary from server.py"""
         clients_list = payload.get("clients", [])
@@ -142,7 +219,7 @@ class ServerGUI(tk.Tk):
             cid = c["uuid"]
             login = c["login_id"]
             status = c["status"]
-            rem_sec = c["remaining"]
+            rem_sec = int(float(c.get("remaining", 0)))
             
             if status == "Connected":
                 active_count += 1
@@ -156,7 +233,7 @@ class ServerGUI(tk.Tk):
             existing_items = self.tree.get_children()
             found = False
             for child in existing_items:
-                if self.tree.item(child)["values"][3] == cid:
+                if self.tree.item(child, "values")[3] == cid:
                     self.tree.item(child, values=(login, status, time_str, cid))
                     found = True
                     break
@@ -175,10 +252,17 @@ def ipc_reader(app: ServerGUI):
         if not line:
             continue
         try:
+            print(f"[DEBUG] GUI received IPC line: {line[:50]}...")
             msg = json.loads(line)
-            if msg.get("type") == "state_update":
+            m_type = msg.get("type")
+            if m_type == "state_update":
                 app.after(0, app.process_state_update, msg)
-        except Exception:
+            elif m_type == "client_message":
+                cid = msg.get("uuid")
+                text = msg.get("text")
+                app.after(0, app.log_message, cid, text)
+        except Exception as e:
+            print(f"[DEBUG] GUI IPC Error: {e}")
             pass
 #test
 if __name__ == "__main__":

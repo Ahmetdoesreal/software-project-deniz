@@ -9,43 +9,51 @@ from common import protocol, events
 from custommodules.process_monitor import ProcessMonitor
 from custommodules.replay_recorder import ReplayRecorder
 
-async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, start_event: asyncio.Event):
+async def prompt_start_exam(ws: aiohttp.ClientWebSocketResponse, start_event: asyncio.Event, input_queue: asyncio.Queue):
     """Wait for the user to type 'start' or a GUI signal to begin the exam."""
     print("\n--- PRE-EXAM PREPARATION ---")
     print("When you are ready, type 'start' or click the button in the GUI to begin the exam.")
-    loop = asyncio.get_event_loop()
     
     while not start_event.is_set():
-        def wait_for_start():
-            while not start_event.is_set():
-                line = sys.stdin.readline()
-                if not line: break
-                if line.strip().lower() == "start":
-                    return True
-            return False
-
-        cli_task = loop.run_in_executor(None, wait_for_start)
-        done, _ = await asyncio.wait(
-            [asyncio.ensure_future(cli_task), asyncio.ensure_future(start_event.wait())],
+        # Wait for either a line from the terminal or the GUI start event
+        queue_task = asyncio.create_task(input_queue.get())
+        event_task = asyncio.create_task(start_event.wait())
+        
+        done, pending = await asyncio.wait(
+            [queue_task, event_task],
             return_when=asyncio.FIRST_COMPLETED
         )
         
-        if start_event.is_set() or (cli_task.done() and cli_task.result()):
-            await ws.send_str(events.start_exam())
-            print("[EXAM] Started. Good luck!\n")
-            start_event.set()
-            return
+        # If the GUI event happened, we are done
+        if start_event.is_set():
+            if not queue_task.done():
+                queue_task.cancel()
+            break
             
+        # If terminal input happened, check if it's "start"
+        if queue_task.done():
+            event_task.cancel()
+            line = queue_task.result()
+            text = line.strip().lower() if line else ""
+            if text == "start" or text == "/start":
+                start_event.set()
+                break
+        
         if not start_event.is_set():
             print("Type 'start' or use the GUI to begin.")
+
+    await ws.send_str(events.start_exam())
+    print("[EXAM] Started. Good luck!\n")
 
 
 async def run_ws(ws_url: str, recorder: ReplayRecorder):
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
+            loop = asyncio.get_running_loop()
             disconnected = asyncio.Event()
             exam_active = [True] # Use list for closure
+            last_printed_rem = [None] # Use list for closure
             gui_process_ref = {"proc": None}
             
             client_uuid = protocol.extract_client_uuid(ws_url)
@@ -54,6 +62,16 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
             pm.start()
             
             start_event = asyncio.Event()
+
+            # Initialize shared stdin reader
+            input_queue = asyncio.Queue()
+            def stdin_reader():
+                # This runs in a separate thread
+                for line in sys.stdin:
+                    # Use the event loop from the scope
+                    loop.call_soon_threadsafe(input_queue.put_nowait, line)
+            
+            Thread(target=stdin_reader, daemon=True).start()
 
             def start_gui():
                 if gui_process_ref["proc"] is None:
@@ -73,7 +91,7 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                         for line in iter(gui_process_ref["proc"].stdout.readline, ''):
                             if "ACTION:START" in line:
                                 print("[GUI] Start button pressed.")
-                                loop = asyncio.get_event_loop()
+                                # Use thread-safe call to set the event
                                 loop.call_soon_threadsafe(start_event.set)
                         gui_process_ref["proc"].stdout.close()
 
@@ -99,6 +117,12 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                                 
                                 start_gui()
                                 
+                                # If the server is already sending sync time, the exam is running.
+                                # Auto-start the client if it's still waiting in the prompt.
+                                if not start_event.is_set():
+                                    print("[WS] Exam is already running on the server. Joining automatically...")
+                                    loop.call_soon_threadsafe(start_event.set)
+                                
                                 if gui_process_ref["proc"] and gui_process_ref["proc"].poll() is None:
                                     try:
                                         gui_process_ref["proc"].stdin.write(f"SYNC:{rem}\n")
@@ -106,7 +130,9 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                                     except Exception:
                                         pass
 
-                                if rem % 10 == 0:
+                                # Print to terminal every 10 seconds
+                                if last_printed_rem[0] is None or rem <= last_printed_rem[0] - 10:
+                                    last_printed_rem[0] = rem
                                     m, s = divmod(rem, 60)
                                     print(f"[EXAM] Time remaining: {m}m {s}s")
                                     
@@ -126,7 +152,6 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                                 disconnected.set()
                             elif event == events.SAVESCREEN:
                                 print("[WS] [SAVESCREEN] Server requested replay save.")
-                                loop = asyncio.get_event_loop()
                                 await loop.run_in_executor(None, recorder.save_replay)
                             elif event == events.GET_PROCESSES:
                                 print("[WS] [GET_PROCESSES] Server requested a manual process report.")
@@ -143,21 +168,30 @@ async def run_ws(ws_url: str, recorder: ReplayRecorder):
                     disconnected.set()
 
             async def sender():
-                await prompt_start_exam(ws, start_event)
+                await prompt_start_exam(ws, start_event, input_queue)
                 
                 print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
-                loop = asyncio.get_event_loop()
                 while not disconnected.is_set() and exam_active[0]:
-                    read_future = loop.run_in_executor(None, sys.stdin.readline)
-                    done, _ = await asyncio.wait(
-                        [asyncio.ensure_future(read_future),
-                         asyncio.ensure_future(disconnected.wait())],
-                        return_when=asyncio.FIRST_COMPLETED,
+                    # Wait for either a line from the shared queue or disconnection
+                    queue_task = asyncio.create_task(input_queue.get())
+                    disc_task = asyncio.create_task(disconnected.wait())
+                    
+                    done, pending = await asyncio.wait(
+                        [queue_task, disc_task],
+                        return_when=asyncio.FIRST_COMPLETED
                     )
+                    
                     if disconnected.is_set():
+                        if not queue_task.done():
+                            queue_task.cancel()
                         break
-                    for task in done:
-                        line = task.result()
+                        
+                    if queue_task.done():
+                        # Cleanup the other task helper
+                        if not disc_task.done():
+                            disc_task.cancel()
+                            
+                        line = queue_task.result()
                         if not line:
                             return
                         text = line.strip()

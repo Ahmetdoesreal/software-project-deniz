@@ -23,15 +23,34 @@ class Color:
     ENABLED = sys.stdout.isatty() and os.name != "nt"
 
     @staticmethod
-    def green(s):  return f"\033[92m{s}\033[0m" if Color.ENABLED else s
+    def green(s):
+        if Color.ENABLED:
+            return f"\033[92m{s}\033[0m"
+        return s
+
     @staticmethod
-    def yellow(s): return f"\033[93m{s}\033[0m" if Color.ENABLED else s
+    def yellow(s):
+        if Color.ENABLED:
+            return f"\033[93m{s}\033[0m"
+        return s
+
     @staticmethod
-    def red(s):    return f"\033[91m{s}\033[0m" if Color.ENABLED else s
+    def red(s):
+        if Color.ENABLED:
+            return f"\033[91m{s}\033[0m"
+        return s
+
     @staticmethod
-    def cyan(s):   return f"\033[96m{s}\033[0m" if Color.ENABLED else s
+    def cyan(s):
+        if Color.ENABLED:
+            return f"\033[96m{s}\033[0m"
+        return s
+
     @staticmethod
-    def bold(s):   return f"\033[1m{s}\033[0m"  if Color.ENABLED else s
+    def bold(s):
+        if Color.ENABLED:
+            return f"\033[1m{s}\033[0m"
+        return s
 
 
 OK   = Color.green("[OK]")

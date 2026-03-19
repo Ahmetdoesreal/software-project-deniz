@@ -31,12 +31,22 @@ def main():
     parser.add_argument("--id",       default="default", help="Server identifier (clients must match)")
     parser.add_argument("--host",     default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
     parser.add_argument("--port",     default=8080, type=int, help="Port to listen on (default: 8080)")
-    parser.add_argument("--interval", default=10, type=float, help="Time broadcast/sync interval in seconds (default: 10)")
+    parser.add_argument("--interval", default=1, type=float, help="Time broadcast/sync interval in seconds (default: 1)")
     parser.add_argument("--announce", default=3, type=float, help="Discovery beacon interval in seconds (default: 3)")
     parser.add_argument("--exam-duration", default=45, type=int, help="Exam duration in minutes (default: 45)")
     parser.add_argument("--exam-files", default=None, type=str, help="Path to a .zip file containing exam materials")
     parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
+    parser.add_argument("--reset", action="store_true", help="Reset the server state (clear used IDs/timers) on startup")
     args = parser.parse_args()
+
+    if args.reset:
+        from .state import USERS_FILE
+        if os.path.exists(USERS_FILE):
+            print(f"[RESET] Clearing persistent state: {USERS_FILE}")
+            try:
+                os.remove(USERS_FILE)
+            except Exception as e:
+                print(f"[RESET] Error: {e}")
 
     validate_args(args)
     

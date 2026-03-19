@@ -105,6 +105,18 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if event == events.PING:
                     # Echo back with the same data
                     await ws.send_str(events.echo(data, protocol.now_iso()))
+                    
+                    short_id = client_id[:8]
+                    print(f"[{short_id}] PING: {data}")
+                    
+                    # Relay to GUI if active
+                    if state.gui_process and state.gui_process.poll() is None:
+                        try:
+                            msg = json.dumps({"type": "client_message", "uuid": client_id, "text": data})
+                            state.gui_process.stdin.write(msg + "\n")
+                            state.gui_process.stdin.flush()
+                        except Exception:
+                            pass
                 elif event == events.START_EXAM:
                     # Find user in DB
                     for login_id, u in state.users_db.items():
