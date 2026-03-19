@@ -100,17 +100,14 @@ class ServerLauncher(tk.Tk):
 
     def start_server(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        server_path = os.path.join(script_dir, "server.py")
-        
+        env = os.environ.copy()
+        env["PYTHONPATH"] = script_dir + os.pathsep + env.get("PYTHONPATH", "")
         sid = self.v_id.get().strip()
         if not sid:
             messagebox.showerror("Error", "Server ID cannot be empty")
             return
             
-        cmd = [sys.executable, server_path, "--id", sid]
-        cmd.extend(["--host", "0.0.0.0"])  # Always bind all so the local IP is accessible
-        cmd.extend(["--port", str(self.local_port)])
-        cmd.extend(["--exam-duration", str(self.v_dur.get())])
+        cmd = [sys.executable, "-m", "server.main", "--id", sid]
         
         filepath = self.v_file.get().strip()
         if filepath:
@@ -128,7 +125,7 @@ class ServerLauncher(tk.Tk):
             if os.name == 'nt':
                 creationflags = subprocess.CREATE_NEW_CONSOLE
                 
-            subprocess.Popen(cmd, creationflags=creationflags)
+            subprocess.Popen(cmd, creationflags=creationflags, env=env)
             sys.exit(0) # Close launcher fully
         except Exception as e:
             messagebox.showerror("Launch Error", str(e))

@@ -74,18 +74,11 @@ class ClientLauncher(tk.Tk):
             self.geometry("550x500")
 
     def start_client(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        client_path = os.path.join(script_dir, "client.py")
+        # Ensure current directory is in PYTHONPATH
+        self.launch_env = os.environ.copy()
+        self.launch_env["PYTHONPATH"] = script_dir + os.pathsep + self.launch_env.get("PYTHONPATH", "")
         
-        lid = self.v_login.get().strip()
-        pwd = self.v_pass.get().strip()
-        sid = self.v_id.get().strip()
-        
-        if not lid or not pwd:
-            messagebox.showerror("Validation Field", "Login ID and Password required.")
-            return
-            
-        cmd = [sys.executable, client_path]
+        cmd = [sys.executable, "-m", "client.main"]
         cmd.extend(["--login-id", lid])
         cmd.extend(["--password", pwd])
         
@@ -110,7 +103,7 @@ class ClientLauncher(tk.Tk):
                     startupinfo = subprocess.STARTUPINFO()
                     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                     
-                result = subprocess.run(cmd_check, capture_output=True, text=True, startupinfo=startupinfo)
+                result = subprocess.run(cmd_check, capture_output=True, text=True, startupinfo=startupinfo, env=self.launch_env)
                 if result.returncode == 0:
                     self.after(0, self.on_check_success, cmd)
                 else:
@@ -137,7 +130,7 @@ class ClientLauncher(tk.Tk):
                 creationflags = subprocess.CREATE_NEW_CONSOLE
 
             # Launch the real client
-            subprocess.Popen(cmd, creationflags=creationflags)
+            subprocess.Popen(cmd, creationflags=creationflags, env=self.launch_env)
             sys.exit(0)
         except Exception as e:
             messagebox.showerror("Error Launching Client", str(e))

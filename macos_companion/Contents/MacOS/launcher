@@ -1,0 +1,14 @@
+#!/bin/bash
+# Get the directory of the script
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+RESOURCES_DIR="$DIR/../Resources"
+
+# Find python3
+PYTHON_CMD=$(which python3)
+
+# Run the companion logic
+# We add the root of the project to PYTHONPATH so we can use modular common/ package
+ROOT_DIR="$(dirname "$(dirname "$(dirname "$DIR")")")"
+export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
+
+exec "$PYTHON_CMD" "$RESOURCES_DIR/companion.py"

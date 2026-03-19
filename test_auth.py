@@ -6,11 +6,11 @@ import signal
 
 def main():
     print("--- Starting server ---")
-    server = subprocess.Popen(["python", "server.py", "--id", "test-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    server = subprocess.Popen([sys.executable, "-m", "server.main", "--id", "test-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     
     print("--- Starting client 1 ---")
-    client1 = subprocess.Popen(["python", "client.py", "--id", "test-server", "--login-id", "testuser", "--password", "secret"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    client1 = subprocess.Popen([sys.executable, "-m", "client.main", "--id", "test-server", "--login-id", "testuser", "--password", "secret"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     time.sleep(6)
     client1.send_signal(signal.SIGINT)
     out1, err1 = client1.communicate()

@@ -4,14 +4,14 @@ import time
 def main():
     print("--- Starting Server ---")
     server = subprocess.Popen(
-        ["python", "server.py", "--id", "qt-test", "--exam-duration", "5"],
+        [sys.executable, "-m", "server.main", "--id", "qt-test", "--exam-duration", "5"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     time.sleep(2)
     
     print("--- Starting Client ---")
     client = subprocess.Popen(
-        ["python", "client.py", "--id", "qt-test", "--login-id", "testuser", "--password", "secret", "--no-record"],
+        [sys.executable, "-m", "client.main", "--id", "qt-test", "--login-id", "testuser", "--password", "secret", "--no-record"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     time.sleep(5)

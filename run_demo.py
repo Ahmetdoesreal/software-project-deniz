@@ -67,7 +67,10 @@ def main():
 
     # 1. Start Server
     print(f"-> Starting Server ({SERVER_ID})")
-    server_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" server.py --id {SERVER_ID}" if platform.system() == "Windows" else f"cd '{script_dir}' && '{python_cmd}' server.py --id {SERVER_ID}"
+    if platform.system() == "Windows":
+        server_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" -m server.main --id {SERVER_ID}"
+    else:
+        server_cmd = f"cd '{script_dir}' && '{python_cmd}' -m server.main --id {SERVER_ID}"
     spawn_terminal("Server", server_cmd)
 
     # Give server a moment to start
@@ -76,7 +79,18 @@ def main():
     # 2. Start Clients
     for i in range(1, 4):
         print(f"-> Starting Client {i}")
-        client_cmd = f"cd \\\"{script_dir}\\\" && \\\"{python_cmd}\\\" client.py --id {SERVER_ID} --login-id client{i} --password testpass --no-record" if platform.system() == "Windows" else f"cd '{script_dir}' && '{python_cmd}' client.py --id {SERVER_ID} --login-id client{i} --password testpass --no-record"
+        if platform.system() == "Windows":
+            client_cmd = (
+                f"cd \\\"{script_dir}\\\" && "
+                f"\\\"{python_cmd}\\\" -m client.main --id {SERVER_ID} "
+                f"--login-id student{i} --password secret{i} --no-record"
+            )
+        else:
+            client_cmd = (
+                f"cd '{script_dir}' && "
+                f"'{python_cmd}' -m client.main --id {SERVER_ID} "
+                f"--login-id student{i} --password secret{i} --no-record"
+            )
         spawn_terminal(f"Client {i}", client_cmd)
         time.sleep(0.5)
 

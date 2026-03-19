@@ -3,7 +3,7 @@ import json
 import psutil
 import time
 import os
-import shared
+from common import protocol
 
 class ProcessMonitor:
     def __init__(self, output_dir: str):
