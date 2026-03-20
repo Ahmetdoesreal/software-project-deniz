@@ -8,6 +8,7 @@ set -e
 
 SERVER_ID="my-server"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 echo "[LAUNCHER] Spawning terminal windows..."
 echo ""
@@ -15,7 +16,7 @@ echo ""
 # Helper to spawn a new terminal window
 spawn_terminal() {
     local title=$1
-    local cmd="cd '${SCRIPT_DIR}' && python3 $2"
+    local cmd="cd '${SCRIPT_DIR}' && ${PYTHON_BIN} $2"
     
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS: Use AppleScript to tell Terminal.app
@@ -38,13 +39,13 @@ spawn_terminal() {
 }
 
 echo "-> Starting Server (${SERVER_ID})"
-spawn_terminal "Server" "server.py --id ${SERVER_ID}"
+spawn_terminal "Server" "-m server.main --id ${SERVER_ID} --reset --gui"
 
 sleep 1.5
 
 for i in 1 2 3; do
     echo "-> Starting Client ${i}"
-    spawn_terminal "Client ${i}" "client.py --id ${SERVER_ID} --login-id client${i} --password testpass --no-record"
+    spawn_terminal "Client ${i}" "-m client.main --id ${SERVER_ID} --login-id student${i} --password secret${i} --no-record"
     sleep 0.5
 done
 

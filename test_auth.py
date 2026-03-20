@@ -4,51 +4,75 @@ import subprocess
 import sys
 import time
 
-def main():
-    print("--- Starting server ---")
-    server = subprocess.Popen(
+
+HOST = "127.0.0.1"
+PORT = "8098"
+SERVER_ID = "test-server"
+
+
+def _start_server() -> subprocess.Popen:
+    return subprocess.Popen(
         [
             sys.executable,
             "-m",
             "server.main",
             "--id",
-            "test-server",
+            SERVER_ID,
             "--host",
-            "127.0.0.1",
+            HOST,
             "--port",
-            "8098",
+            PORT,
+            "--reset",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(2)
 
-    print("--- Starting client 1 ---")
-    client1 = subprocess.Popen(
+
+def _run_login_check(login_id: str, password: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
             sys.executable,
             "-m",
             "client.main",
             "--host",
-            "127.0.0.1",
+            HOST,
             "--port",
-            "8098",
+            PORT,
             "--login-id",
-            "student1",
+            login_id,
             "--password",
-            "secret1",
+            password,
             "--no-record",
+            "--check-login",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
-    time.sleep(6)
-    client1.send_signal(signal.SIGINT)
-    out1, err1 = client1.communicate()
-    print("Client 1 output excerpt:")
-    for line in out1.split("\n")[:8]:
-        print(line)
+
+
+def _print_result(label: str, result: subprocess.CompletedProcess):
+    print(f"{label}: returncode={result.returncode}")
+    output = (result.stdout + "\n" + result.stderr).strip()
+    if not output:
+        print("  (no output)")
+        return
+    for line in output.splitlines()[:8]:
+        print(f"  {line}")
+
+
+def main():
+    print("--- Starting server ---")
+    server = _start_server()
+    time.sleep(2)
+
+    print("--- Checking valid credentials ---")
+    valid_result = _run_login_check("student1", "secret1")
+    _print_result("valid login", valid_result)
+
+    print("--- Checking invalid credentials ---")
+    invalid_result = _run_login_check("student1", "wrong-password")
+    _print_result("invalid login", invalid_result)
 
     print("--- Stopping server ---")
     server.send_signal(signal.SIGINT)

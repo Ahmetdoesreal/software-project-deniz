@@ -6,6 +6,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CLIENT_DATA_DIR = PROJECT_ROOT / "data" / "client"
+LOGS_DIR = PROJECT_ROOT / "data" / "logs"
+SERVER_ARTIFACTS_DIR = PROJECT_ROOT / "data" / "server" / "artifacts"
+SERVER_SUBMISSIONS_DIR = PROJECT_ROOT / "data" / "server" / "submissions"
 SERVER_STATE_FILE = PROJECT_ROOT / "data" / "server" / "server_users.json"
 
 
@@ -89,6 +92,57 @@ def _collect_server_runtime_entries(include_server_state: bool) -> list[CleanupE
     ]
 
 
+def _collect_log_entries() -> list[CleanupEntry]:
+    entries = []
+    if not LOGS_DIR.exists():
+        return entries
+
+    for log_file in LOGS_DIR.rglob("*.log"):
+        if log_file.is_file():
+            entries.append(
+                CleanupEntry(
+                    path=log_file,
+                    kind="file",
+                    reason="runtime log file",
+                )
+            )
+    return entries
+
+
+def _collect_submission_entries() -> list[CleanupEntry]:
+    entries = []
+    if not SERVER_SUBMISSIONS_DIR.exists():
+        return entries
+
+    for submission_path in SERVER_SUBMISSIONS_DIR.iterdir():
+        entry_kind = "dir" if submission_path.is_dir() else "file"
+        entries.append(
+            CleanupEntry(
+                path=submission_path,
+                kind=entry_kind,
+                reason="uploaded exam submission",
+            )
+        )
+    return entries
+
+
+def _collect_artifact_entries() -> list[CleanupEntry]:
+    entries = []
+    if not SERVER_ARTIFACTS_DIR.exists():
+        return entries
+
+    for artifact_path in SERVER_ARTIFACTS_DIR.iterdir():
+        entry_kind = "dir" if artifact_path.is_dir() else "file"
+        entries.append(
+            CleanupEntry(
+                path=artifact_path,
+                kind=entry_kind,
+                reason="uploaded client artifact",
+            )
+        )
+    return entries
+
+
 def _collect_root_metadata_entries(root: Path) -> list[CleanupEntry]:
     entries = []
     for ds_store in root.rglob(".DS_Store"):
@@ -104,11 +158,23 @@ def _collect_root_metadata_entries(root: Path) -> list[CleanupEntry]:
     return entries
 
 
-def collect_cleanup_entries(root: Path, include_server_state: bool) -> list[CleanupEntry]:
+def collect_cleanup_entries(
+    root: Path,
+    include_server_state: bool,
+    include_logs: bool,
+    include_artifacts: bool,
+    include_submissions: bool,
+) -> list[CleanupEntry]:
     entries = []
     entries.extend(_collect_python_cache_entries(root))
     entries.extend(_collect_client_runtime_entries())
     entries.extend(_collect_server_runtime_entries(include_server_state))
+    if include_logs:
+        entries.extend(_collect_log_entries())
+    if include_artifacts:
+        entries.extend(_collect_artifact_entries())
+    if include_submissions:
+        entries.extend(_collect_submission_entries())
     entries.extend(_collect_root_metadata_entries(root))
 
     unique_entries = {}
@@ -149,6 +215,21 @@ def parse_args():
         action="store_true",
         help="Keep data/server/server_users.json instead of deleting it.",
     )
+    parser.add_argument(
+        "--keep-logs",
+        action="store_true",
+        help="Keep files under data/logs/ instead of deleting them.",
+    )
+    parser.add_argument(
+        "--keep-artifacts",
+        action="store_true",
+        help="Keep files under data/server/artifacts/ instead of deleting them.",
+    )
+    parser.add_argument(
+        "--keep-submissions",
+        action="store_true",
+        help="Keep files under data/server/submissions/ instead of deleting them.",
+    )
     return parser.parse_args()
 
 
@@ -157,6 +238,9 @@ def main():
     entries = collect_cleanup_entries(
         PROJECT_ROOT,
         include_server_state=not args.keep_server_state,
+        include_logs=not args.keep_logs,
+        include_artifacts=not args.keep_artifacts,
+        include_submissions=not args.keep_submissions,
     )
     summarize(entries)
 

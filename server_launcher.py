@@ -15,7 +15,7 @@ class ServerLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Exam Server Launcher")
-        self.geometry("600x550")
+        self.geometry("600x660")
         self.resizable(False, False)
         
         # Apply 1.5x UI scaling equivalent via font rendering
@@ -45,12 +45,20 @@ class ServerLauncher(tk.Tk):
         ttk.Label(self, text="Exam Duration (m):").grid(row=2, column=0, sticky=tk.W, padx=10, pady=10)
         self.v_dur = tk.IntVar(value=45)
         ttk.Entry(self, textvariable=self.v_dur).grid(row=2, column=1, sticky=tk.EW, padx=10, pady=10)
+
+        ttk.Label(self, text="Host:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=10)
+        self.v_host = tk.StringVar(value="0.0.0.0")
+        ttk.Entry(self, textvariable=self.v_host).grid(row=3, column=1, sticky=tk.EW, padx=10, pady=10)
+
+        ttk.Label(self, text="Port:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=10)
+        self.v_port = tk.IntVar(value=self.local_port)
+        ttk.Entry(self, textvariable=self.v_port).grid(row=4, column=1, sticky=tk.EW, padx=10, pady=10)
         
         # Exam Files Path
-        ttk.Label(self, text="Exam ZIP File:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=10)
+        ttk.Label(self, text="Exam ZIP File:").grid(row=5, column=0, sticky=tk.W, padx=10, pady=10)
         
         file_frame = ttk.Frame(self)
-        file_frame.grid(row=3, column=1, sticky=tk.EW, padx=10, pady=10)
+        file_frame.grid(row=5, column=1, sticky=tk.EW, padx=10, pady=10)
         file_frame.columnconfigure(0, weight=1)
         
         self.v_file = tk.StringVar(value="")
@@ -59,11 +67,14 @@ class ServerLauncher(tk.Tk):
         
         # Start GUI Monitor
         self.v_gui = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self, text="Launch Monitoring Dashboard", variable=self.v_gui).grid(row=4, column=0, columnspan=2, pady=(10, 0))
+        ttk.Checkbutton(self, text="Launch Monitoring Dashboard", variable=self.v_gui).grid(row=6, column=0, columnspan=2, pady=(10, 0))
+
+        self.v_reset = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self, text="Reset Runtime State On Start", variable=self.v_reset).grid(row=7, column=0, columnspan=2, pady=(10, 0))
         
         # Start Button
         btn = ttk.Button(self, text="Start Server", command=self.start_server)
-        btn.grid(row=5, column=0, columnspan=2, pady=20)
+        btn.grid(row=8, column=0, columnspan=2, pady=20)
 
     def get_local_ip(self):
         try:
@@ -106,8 +117,26 @@ class ServerLauncher(tk.Tk):
         if not sid:
             messagebox.showerror("Error", "Server ID cannot be empty")
             return
+        if self.v_dur.get() <= 0:
+            messagebox.showerror("Error", "Exam duration must be greater than 0.")
+            return
+        if not 1 <= self.v_port.get() <= 65535:
+            messagebox.showerror("Error", "Port must be between 1 and 65535.")
+            return
             
-        cmd = [sys.executable, "-m", "server.main", "--id", sid]
+        cmd = [
+            sys.executable,
+            "-m",
+            "server.main",
+            "--id",
+            sid,
+            "--host",
+            self.v_host.get().strip() or "0.0.0.0",
+            "--port",
+            str(self.v_port.get()),
+            "--exam-duration",
+            str(self.v_dur.get()),
+        ]
         
         filepath = self.v_file.get().strip()
         if filepath:
@@ -115,6 +144,8 @@ class ServerLauncher(tk.Tk):
             
         if self.v_gui.get():
             cmd.append("--gui")
+        if self.v_reset.get():
+            cmd.append("--reset")
             
         try:
             # Hide the launcher, spawn the server

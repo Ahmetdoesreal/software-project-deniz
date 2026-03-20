@@ -41,11 +41,16 @@ class ServerState:
     def ensure_user_defaults(self, user: dict):
         user.setdefault("time_spent_seconds", 0)
         user.setdefault("exam_started", False)
+        user.setdefault("exam_finished", False)
         user.setdefault("extra_time_seconds", 0)
         user.setdefault("banned", False)
         user.setdefault("kick_count", 0)
         user.setdefault("last_action", "")
         user.setdefault("computer_name", "")
+        user.setdefault("submitted_at", "")
+        user.setdefault("submission_name", "")
+        user.setdefault("submission_path", "")
+        user.setdefault("submission_size_bytes", 0)
 
     def is_valid_session_uuid(self, client_id: str) -> bool:
         return any(user.get("uuid") == client_id for user in self.users_db.values())

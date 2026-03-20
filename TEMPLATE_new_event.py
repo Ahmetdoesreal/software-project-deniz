@@ -7,7 +7,7 @@ then follow the 3 steps marked with [STEP 1], [STEP 2], [STEP 3].
 
 
 # ==========================================================================
-# [STEP 1] events.py -- Add a constant + constructor(s)
+# [STEP 1] common/events.py -- Add a constant + constructor(s)
 # ==========================================================================
 
 # At the top with the other constants:
@@ -16,19 +16,19 @@ YOUR_EVENT = "your_event"
 # Constructor for sending FROM CLIENT -> SERVER:
 def your_event_request(some_param: str) -> str:
     """Client sends a your_event request."""
-    return shared.encode(YOUR_EVENT, {"some_param": some_param})
+    return protocol.encode(YOUR_EVENT, {"some_param": some_param})
 
 # Constructor for sending FROM SERVER -> CLIENT:
 def your_event_response(result: str) -> str:
     """Server replies to a your_event request."""
-    return shared.encode(YOUR_EVENT, {"result": result})
+    return protocol.encode(YOUR_EVENT, {"result": result})
 
 # NOTE: You don't always need both. If only the server sends it (like time
 # broadcasts), you only need one constructor. Same if only the client sends it.
 
 
 # ==========================================================================
-# [STEP 2] server.py -- Handle the event in the WebSocket handler
+# [STEP 2] server/handlers.py -- Handle the event in the WebSocket handler
 # ==========================================================================
 
 # In websocket_handler(), add an elif inside the message loop:
@@ -44,7 +44,7 @@ def your_event_response(result: str) -> str:
 
 
 # ==========================================================================
-# [STEP 3] client.py -- Handle the server's reply in the listener
+# [STEP 3] client/ws_client.py -- Handle the server's reply in the listener
 # ==========================================================================
 
 # In listener(), add an elif for displaying the response:

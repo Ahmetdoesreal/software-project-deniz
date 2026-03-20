@@ -9,6 +9,18 @@ from tkinter import messagebox, ttk
 from common.runtime_logging import setup_runtime_logging
 
 
+def _format_bytes(size_bytes: int) -> str:
+    size = float(max(0, size_bytes))
+    units = ["B", "KB", "MB", "GB"]
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"
+
+
 def _format_remaining(seconds: int) -> str:
     minutes, remaining_seconds = divmod(seconds, 60)
     return f"{minutes:02d}:{remaining_seconds:02d}"
@@ -33,6 +45,10 @@ def _detail_lines(client_id: str, data: dict) -> list[str]:
         f"Kick Count: {data.get('kick_count', 0)}",
         f"Last Action: {data.get('last_action') or '-'}",
         f"IP Address: {data.get('ip') or '-'}",
+        f"Submission: {data.get('submission_name') or '-'}",
+        f"Submission Size: {_format_bytes(int(data.get('submission_size_bytes', 0)))}",
+        f"Submitted At: {data.get('submitted_at') or '-'}",
+        f"Submission Path: {data.get('submission_path') or '-'}",
     ]
 
 
@@ -46,6 +62,7 @@ class ServerGUI(tk.Tk):
 
         self.title("Server Monitor Dashboard")
         self.geometry("800x400")
+        self.protocol("WM_DELETE_WINDOW", self.on_close_request)
 
         self._build_layout()
         self.after(1000, self.update_timers)
@@ -77,6 +94,13 @@ class ServerGUI(tk.Tk):
             command=self.start_exam_globally,
         )
         self.start_exam_button.pack(side=tk.LEFT)
+
+        self.finish_exam_button = ttk.Button(
+            action_frame,
+            text="Finish Exam",
+            command=self.finish_exam_globally,
+        )
+        self.finish_exam_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.server_info_var = tk.StringVar(value="Waiting for server state...")
         info_label = ttk.Label(
@@ -283,10 +307,14 @@ class ServerGUI(tk.Tk):
         print(json.dumps({"cmd": "start_exam_global"}), flush=True)
         self._append_log("[ADMIN] Enabled exam start globally")
 
+    def finish_exam_globally(self):
+        print(json.dumps({"cmd": "finish_exam_global"}), flush=True)
+        self._append_log("[ADMIN] Requested global exam finish")
+
     def _open_detail_window(self, window_key, title: str, lines: list[str]):
         top = tk.Toplevel(self)
         top.title(title)
-        top.geometry("420x260")
+        top.geometry("460x360")
         self._register_window(window_key, top)
 
         frame = ttk.Frame(top, padding=12)
@@ -334,6 +362,16 @@ class ServerGUI(tk.Tk):
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
 
+    def on_close_request(self):
+        should_close = messagebox.askyesno(
+            "Close Server Dashboard",
+            "Close the monitoring dashboard?\n\nThe server will keep running, and you can reopen the dashboard later with /gui.",
+            default=messagebox.NO,
+        )
+        if not should_close:
+            return
+        self.destroy()
+
     def log_message(self, client_id, message):
         data = self.clients_data.get(client_id, {})
         display_name = data.get("login_id", client_id[:8])
@@ -372,18 +410,23 @@ class ServerGUI(tk.Tk):
 
         exam_files_path = info.get("exam_files_path") or "-"
         has_exam_files = "Yes" if info.get("has_exam_files") else "No"
+        exam_phase = str(info.get("exam_phase", "waiting")).title()
         start_enabled = "Open" if info.get("exam_start_enabled") else "Locked"
         self.start_exam_button.config(
-            state=tk.DISABLED if info.get("exam_start_enabled") else tk.NORMAL
+            state=tk.DISABLED if info.get("exam_phase") != "waiting" else tk.NORMAL
+        )
+        self.finish_exam_button.config(
+            state=tk.NORMAL if info.get("exam_phase") == "running" else tk.DISABLED
         )
         text = (
             f"ID: {info.get('server_id', '-')}"
             f"    Host: {info.get('host', '-')}"
             f"    Port: {info.get('port', '-')}\n"
-            f"Exam Start: {start_enabled}"
+            f"Exam Phase: {exam_phase}"
+            f"    Exam Start: {start_enabled}"
             f"    Broadcast: {info.get('broadcast_interval', '-')}s"
             f"    Announce: {info.get('announce_interval', '-')}s\n"
-            f"Exam Duration: {info.get('exam_duration_minutes', '-')} min"
+            f"Exam Duration: {info.get('exam_duration_minutes', '-')} min    "
             f"Exam Files: {has_exam_files}"
             f"    Path: {exam_files_path}"
         )
@@ -406,7 +449,7 @@ class ServerGUI(tk.Tk):
 
 
 def ipc_reader(app: ServerGUI):
-    """Read lines from stdin (JSON objects sent by server.py)."""
+    """Read lines from stdin (JSON objects sent by the server process)."""
     for line in iter(sys.stdin.readline, ""):
         line = line.strip()
         if not line:

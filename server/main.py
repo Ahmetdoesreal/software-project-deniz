@@ -56,19 +56,19 @@ def main():
                 print(f"[RESET] Error: {e}")
 
     validate_args(args)
-    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    args.gui_path = os.path.join(os.path.dirname(script_dir), "server_gui.py")
+    args.python_executable = sys.executable
+
     if args.gui:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # server_gui.py is in the root directory relative to server/
-        gui_path = os.path.join(os.path.dirname(script_dir), "server_gui.py")
         print(f"[GUI] Launching Server Monitor UI...")
         try:
             state.gui_process = subprocess.Popen(
-                [sys.executable, gui_path], 
-                stdin=subprocess.PIPE, 
+                [args.python_executable, args.gui_path],
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,
-                bufsize=1  # Line buffered
+                bufsize=1,
             )
         except Exception as e:
             print(f"[GUI] Failed to launch gui: {e}")

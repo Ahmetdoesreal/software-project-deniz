@@ -3,49 +3,85 @@ import sys
 import time
 
 
-def main():
-    print("--- Starting Server ---")
-    server = subprocess.Popen(
+HOST = "127.0.0.1"
+PORT = "8097"
+SERVER_ID = "qt-test"
+
+
+def _start_server() -> subprocess.Popen:
+    return subprocess.Popen(
         [
             sys.executable,
             "-m",
             "server.main",
             "--id",
-            "qt-test",
+            SERVER_ID,
             "--host",
-            "127.0.0.1",
+            HOST,
             "--port",
-            "8097",
+            PORT,
             "--exam-duration",
             "5",
+            "--reset",
         ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-    time.sleep(2)
 
-    print("--- Starting Client ---")
-    client = subprocess.Popen(
+
+def _start_client() -> subprocess.Popen:
+    return subprocess.Popen(
         [
             sys.executable,
             "-m",
             "client.main",
             "--host",
-            "127.0.0.1",
+            HOST,
             "--port",
-            "8097",
+            PORT,
             "--login-id",
             "student1",
             "--password",
             "secret1",
             "--no-record",
         ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-    time.sleep(5)
+
+
+def _send_line(process: subprocess.Popen, text: str):
+    if process.stdin is None:
+        return
+    process.stdin.write(text + "\n")
+    process.stdin.flush()
+
+
+def main():
+    print("--- Starting Server ---")
+    server = _start_server()
+    time.sleep(2)
+
+    print("--- Starting Client ---")
+    client = _start_client()
+
+    time.sleep(2)
+    print("--- Opening exam globally ---")
+    _send_line(server, "/startexam")
+
+    time.sleep(1)
+    print("--- Starting client exam ---")
+    _send_line(client, "start")
+
+    time.sleep(2)
+    print("--- Sending sample message ---")
+    _send_line(client, "hello from test_comm")
+
+    time.sleep(2)
 
     print("--- Stopping Processes ---")
     client.terminate()

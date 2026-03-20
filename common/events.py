@@ -88,3 +88,9 @@ GET_PROCESSES = "get_processes"
 def get_processes() -> str:
     """Server requests an immediate full process report from the client."""
     return protocol.encode(GET_PROCESSES, {})
+
+FINISH_EXAM = "finish_exam"
+
+def finish_exam(reason: str = "") -> str:
+    """Server requests the client to finish the exam and submit work."""
+    return protocol.encode(FINISH_EXAM, {"reason": reason})

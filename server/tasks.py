@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import sys
 import time
 from threading import Thread
@@ -9,6 +10,22 @@ from aiohttp import web
 from common.discovery import ServerAnnouncer
 from common import events, protocol
 from .state import state
+
+
+def _user_has_submission(user: dict) -> bool:
+    return bool(user.get("submitted_at"))
+
+
+def _user_needs_submission(user: dict) -> bool:
+    return (
+        user.get("exam_started", False)
+        and user.get("exam_finished", False)
+        and not _user_has_submission(user)
+    )
+
+
+def _user_is_running(user: dict) -> bool:
+    return user.get("exam_started", False) and not user.get("exam_finished", False)
 
 
 def _remove_dead_clients(client_ids: list[str]):
@@ -37,6 +54,47 @@ def _write_to_gui(payload: dict):
         print(f"[GUI IPC] Warning: Failed to write to GUI: {e}")
 
 
+def _push_gui_state(app: web.Application):
+    exam_duration_sec = app["exam_duration"] * 60
+    _write_to_gui(
+        {
+            "type": "state_update",
+            "server": _build_server_info(app),
+            "clients": _build_gui_clients(exam_duration_sec),
+        }
+    )
+
+
+def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) -> str:
+    if _gui_process():
+        print("[GUI] Server monitor UI is already open.")
+        return "already_open"
+
+    gui_path = app.get("gui_path")
+    python_executable = app.get("python_executable", sys.executable)
+    if not gui_path:
+        print("[GUI] GUI path is not configured.")
+        return "failed"
+
+    try:
+        gui_process = subprocess.Popen(
+            [python_executable, gui_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        print(f"[GUI] Failed to launch gui: {exc}")
+        return "failed"
+
+    state.gui_process = gui_process
+    Thread(target=_gui_reader_thread, args=(loop, app, gui_process), daemon=True).start()
+    print("[GUI] Server monitor UI launched. Use /gui to reopen it if you close the window.")
+    _push_gui_state(app)
+    return "opened"
+
+
 def _uuid_to_login_map() -> dict[str, str]:
     return {
         user["uuid"]: login_id
@@ -54,6 +112,12 @@ def _remaining_seconds(exam_duration_sec: int, user: dict) -> int:
 def _exam_state(user: dict, remaining: int) -> str:
     if user.get("banned", False):
         return "Banned"
+    if _user_has_submission(user):
+        return "Submitted"
+    if _user_needs_submission(user):
+        return "Awaiting Submission"
+    if user.get("exam_finished", False):
+        return "Finished"
     if user.get("exam_started", False):
         if remaining <= 0:
             return "Finished"
@@ -62,10 +126,8 @@ def _exam_state(user: dict, remaining: int) -> str:
 
 
 def _status_label(is_connected: bool, exam_state: str) -> str:
-    if exam_state == "Banned":
-        return "Banned"
-    if exam_state == "Finished":
-        return "Finished"
+    if exam_state in {"Banned", "Finished", "Submitted", "Awaiting Submission"}:
+        return exam_state
     if is_connected:
         return exam_state
     return "Offline"
@@ -96,6 +158,11 @@ def _build_gui_clients(exam_duration_sec: int) -> list[dict]:
                 "ip": client_connection.get("ip"),
                 "computer_name": client_connection.get("computer_name") or user.get("computer_name", ""),
                 "short_id": client_connection.get("short_id"),
+                "exam_finished": user.get("exam_finished", False),
+                "submitted_at": user.get("submitted_at", ""),
+                "submission_name": user.get("submission_name", ""),
+                "submission_path": user.get("submission_path", ""),
+                "submission_size_bytes": int(user.get("submission_size_bytes", 0)),
             }
         )
     return clients
@@ -112,6 +179,7 @@ def _build_server_info(app: web.Application) -> dict:
         "broadcast_interval": app["broadcast_interval"],
         "announce_interval": app["announce_interval"],
         "exam_duration_minutes": app["exam_duration"],
+        "exam_phase": app.get("exam_phase", "waiting"),
         "exam_start_enabled": app["exam_start_enabled"],
         "has_exam_files": app["exam_files"] is not None,
         "exam_files_path": app["exam_files"],
@@ -135,17 +203,13 @@ def _print_exam_status(app: web.Application):
     exam_duration_sec = app["exam_duration"] * 60
     print("\n[CMD] --- LIVE EXAM STATUS ---")
 
-    if not state.clients:
-        print("No clients connected.")
+    if not state.users_db:
+        print("No registered users.")
         print("------------------------------\n")
         return
 
-    for client_id in state.clients:
-        login_id, user = state.find_user_by_uuid(client_id)
-        if not user:
-            print(f"Unknown UUID: {client_id}")
-            continue
-
+    for login_id, user in state.users_db.items():
+        client_id = user.get("uuid", "-")
         exam_state = _exam_state(user, _remaining_seconds(exam_duration_sec, user))
         remaining = _remaining_seconds(exam_duration_sec, user)
         minutes, seconds = divmod(remaining, 60)
@@ -211,7 +275,7 @@ async def _sync_running_exams(
             continue
 
         user = state.users_db[login_id]
-        if not user.get("exam_started", False):
+        if not _user_is_running(user):
             continue
 
         user["time_spent_seconds"] = user.get("time_spent_seconds", 0.0) + elapsed
@@ -220,8 +284,12 @@ async def _sync_running_exams(
         try:
             await data["ws"].send_str(events.sync_time(remaining))
             if remaining <= 0:
+                user["exam_finished"] = True
+                user["last_action"] = "Awaiting submission"
                 print(f"[EXAM] Client {client_id} ran out of time!")
-                await data["ws"].send_str(events.exam_end())
+                await data["ws"].send_str(
+                    events.finish_exam("Time is up. Please upload your archive.")
+                )
         except ConnectionResetError:
             dead.append(client_id)
 
@@ -253,13 +321,7 @@ async def time_broadcaster(app: web.Application):
                 state.save_users()
                 save_counter_sec = 0.0
 
-            _write_to_gui(
-                {
-                    "type": "state_update",
-                    "server": _build_server_info(app),
-                    "clients": _build_gui_clients(exam_duration_sec),
-                }
-            )
+            _push_gui_state(app)
     except asyncio.CancelledError:
         pass
 
@@ -324,12 +386,57 @@ async def _disconnect_client(target: str, reason: str) -> bool:
 
 
 async def _handle_start_exam_global(app: web.Application):
-    if app["exam_start_enabled"]:
+    if app.get("exam_phase") == "running":
         print("[CMD] Exam start is already enabled.")
         return
+    if app.get("exam_phase") == "finished":
+        print("[CMD] Exam has already been finished.")
+        return
 
+    app["exam_phase"] = "running"
     app["exam_start_enabled"] = True
     print("[CMD] Exam start is now enabled for all clients.")
+
+
+async def _handle_finish_exam_global(app: web.Application):
+    if app.get("exam_phase") == "finished":
+        print("[CMD] Exam is already finished.")
+        return
+    if app.get("exam_phase") != "running":
+        print("[CMD] Start the exam before finishing it.")
+        return
+
+    app["exam_phase"] = "finished"
+    app["exam_start_enabled"] = False
+
+    finished_count = 0
+    connected_count = 0
+    for login_id, user in state.users_db.items():
+        client_id = user["uuid"]
+        if not user.get("exam_started", False) or _user_has_submission(user):
+            continue
+
+        user["exam_finished"] = True
+        user["last_action"] = "Awaiting submission"
+        finished_count += 1
+        data = state.clients.get(client_id)
+        if not data:
+            continue
+        try:
+            await data["ws"].send_str(
+                events.finish_exam("The server ended the exam. Please upload your archive.")
+            )
+            connected_count += 1
+        except (ConnectionResetError, RuntimeError):
+            _remove_dead_clients([client_id])
+
+        print(f"[EXAM] Finish requested for {login_id} ({client_id}).")
+
+    state.save_users()
+    print(
+        f"[CMD] Finished the exam for {finished_count} user(s); "
+        f"notified {connected_count} connected client(s)."
+    )
 
 
 async def _handle_kick(parts: list[str]):
@@ -442,6 +549,17 @@ async def handle_admin_command(line: str, app: web.Application):
         await _handle_start_exam_global(app)
         return
 
+    if command == "/finishexam":
+        await _handle_finish_exam_global(app)
+        return
+
+    if command == "/gui":
+        launch_result = _launch_server_gui(asyncio.get_running_loop(), app)
+        if launch_result in {"opened", "already_open"}:
+            return
+        print("[GUI] Server monitor UI could not be opened.")
+        return
+
     if command == "/kick":
         await _handle_kick(parts)
         return
@@ -460,6 +578,8 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /savescreen all       - Save replay on ALL clients")
         print("  /addtime <id> <min>   - Add time to a specific user/client")
         print("  /startexam            - Enable exam start for all clients")
+        print("  /finishexam           - Finish the exam for all started clients")
+        print("  /gui                  - Open or reopen the server monitor UI")
         print("  /kick <id>            - Disconnect a specific client")
         print("  /ban <id>             - Ban and disconnect a specific user")
         print("  /unban <id>           - Remove a user's ban")
@@ -500,6 +620,13 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
         )
         return
 
+    if command == "finish_exam_global":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/finishexam", app),
+            loop,
+        )
+        return
+
     if command == "kick":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command(f"/kick {client_id}", app),
@@ -521,20 +648,25 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
         )
 
 
-def _gui_reader_thread(loop, app):
+def _gui_reader_thread(loop, app, gui_process):
     """Read stdout from the Tkinter GUI and forward actions into the event loop."""
-    gui_process = _gui_process()
-    if not gui_process:
-        return
-
-    for line in iter(gui_process.stdout.readline, ""):
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        for line in iter(gui_process.stdout.readline, ""):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                _dispatch_gui_request(loop, app, json.loads(line))
+            except Exception:
+                pass
+    finally:
         try:
-            _dispatch_gui_request(loop, app, json.loads(line))
+            gui_process.stdout.close()
         except Exception:
             pass
+        if state.gui_process is gui_process:
+            state.gui_process = None
+            print("[GUI] Server monitor UI closed. Type /gui to reopen it.")
 
 
 async def console_reader(app: web.Application):
@@ -548,8 +680,9 @@ async def console_reader(app: web.Application):
     )
     stdin_thread.start()
 
-    if _gui_process():
-        thread = Thread(target=_gui_reader_thread, args=(loop, app), daemon=True)
+    gui_process = _gui_process()
+    if gui_process:
+        thread = Thread(target=_gui_reader_thread, args=(loop, app, gui_process), daemon=True)
         thread.start()
 
     try:

@@ -49,13 +49,20 @@ class ProcessMonitor:
 
     def trigger_full_report(self):
         """Immediately generate and save a full list of processes."""
-        if not self.active:
-            return
+        self.export_requested_report()
 
+    def export_requested_report(self) -> str | None:
         current_procs = self._get_current_processes()
-        payload = self._build_full_list_payload("full_list_manual", current_procs)
+        payload = self._build_full_list_payload("requested", current_procs)
         self._write_log(payload)
-        print(f"[PROCESS] Wrote manual full process report to {self.log_file}")
+
+        report_path = self._requested_report_path()
+        if not self._write_report_file(report_path, payload):
+            return None
+
+        print(f"[PROCESS] Wrote requested full process report to {report_path}")
+        self.previous_procs = current_procs
+        return report_path
 
     def _get_current_processes(self) -> set[tuple[int, str]]:
         if platform.system() == "Darwin":
@@ -95,6 +102,19 @@ class ProcessMonitor:
                 f.write(json.dumps(payload) + "\n")
         except Exception as e:
             print(f"[PROCESS] Failed to write log: {e}")
+
+    def _write_report_file(self, report_path: str, payload: dict) -> bool:
+        try:
+            with open(report_path, "w") as report_file:
+                json.dump(payload, report_file, indent=2)
+            return True
+        except Exception as e:
+            print(f"[PROCESS] Failed to write requested report: {e}")
+            return False
+
+    def _requested_report_path(self) -> str:
+        timestamp = protocol.now_iso().replace(":", "-")
+        return os.path.join(self.output_dir, f"process_report_requested_{timestamp}.json")
 
     async def _loop(self):
         ticks_per_full_snapshot = FULL_SNAPSHOT_INTERVAL_SECONDS // DIFF_INTERVAL_SECONDS
