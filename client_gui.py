@@ -167,7 +167,37 @@ class ExamTimerGUI:
             self.finish_btn.config(state=tk.NORMAL)
 
     def on_closing(self):
-        pass
+        if self.finish_in_progress:
+            self._focus_submission_window()
+            messagebox.showwarning(
+                "Upload In Progress",
+                "A submission upload is currently in progress.\n\nWait for it to finish before trying to close anything.",
+            )
+            return
+
+        self._focus_submission_window()
+        title, message = self._close_sequence_message()
+        messagebox.showwarning(title, message)
+
+    def _focus_submission_window(self):
+        if not self.submission_window or not self.submission_window.winfo_exists():
+            return
+        self.submission_window.lift()
+        self.submission_window.focus_force()
+
+    def _close_sequence_message(self) -> tuple[str, str]:
+        if self.started:
+            return (
+                "Exam In Progress",
+                "The exam window cannot be closed directly.\n\n"
+                "Use Finish Exam to submit your file, or wait for server instructions.",
+            )
+
+        return (
+            "Exam Client Active",
+            "This window is controlled by the exam client and cannot be closed from here.\n\n"
+            "Wait for the exam to start, or stop the client from the main process if needed.",
+        )
 
 
 class SubmissionWindow(tk.Toplevel):

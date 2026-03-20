@@ -21,8 +21,9 @@ def spawn_terminal(title: str, command: str):
     system = platform.system()
     
     if system == "Windows":
-        # cmd.exe /k keeps the window open after command finishes
-        subprocess.Popen(f'start "{title}" cmd /k "{command}"', shell=True)
+        subprocess.Popen(
+            ["cmd.exe", "/c", "start", title, "cmd.exe", "/k", command]
+        )
         
     elif system == "Darwin":
         # macOS: Use AppleScript to tell Terminal.app to open a new window and run the command

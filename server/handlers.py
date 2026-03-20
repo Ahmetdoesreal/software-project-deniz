@@ -136,6 +136,8 @@ def _checksum_matches(expected_checksum: str | None, path: Path) -> bool:
 async def _save_multipart_file(
     file_part,
     destination: Path,
+    *,
+    max_bytes: int,
 ) -> tuple[int, Exception | None]:
     bytes_written = 0
     try:
@@ -144,8 +146,10 @@ async def _save_multipart_file(
                 chunk = await file_part.read_chunk()
                 if not chunk:
                     break
-                output.write(chunk)
                 bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise ValueError(f"upload exceeds limit of {max_bytes} bytes")
+                output.write(chunk)
         return bytes_written, None
     except Exception as exc:
         _remove_file_if_present(destination)
@@ -183,7 +187,6 @@ def _handle_client_info(client_id: str, data: dict):
 
 async def _handle_process_catch_event(
     ws: web.WebSocketResponse,
-    request: web.Request,
     client_id: str,
     data: dict,
 ):
@@ -196,7 +199,9 @@ async def _handle_process_catch_event(
     if not user:
         return
 
+    blacklist_names = {entry.lower() for entry in state.process_blacklist}
     cleaned_matches = []
+    seen_match_keys = set()
     for match in matches:
         if not isinstance(match, dict):
             continue
@@ -204,7 +209,16 @@ async def _handle_process_catch_event(
         name = str(match.get("name", "")).strip()
         if not name:
             continue
+        normalized_name = Path(name).name.lower()
+        if normalized_name not in blacklist_names:
+            continue
+        match_key = (pid, normalized_name)
+        if match_key in seen_match_keys:
+            continue
+        seen_match_keys.add(match_key)
         cleaned_matches.append({"pid": pid, "name": name})
+        if len(cleaned_matches) >= 50:
+            break
 
     if not cleaned_matches:
         return
@@ -338,7 +352,11 @@ async def exam_submission(request: web.Request) -> web.Response:
     if file_part is None or file_part.name != "archive" or not file_part.filename:
         return web.json_response({"error": "A multipart field named 'archive' is required."}, status=400)
     destination = build_submission_path(client_id, file_part.filename)
-    bytes_written, error = await _save_multipart_file(file_part, destination)
+    bytes_written, error = await _save_multipart_file(
+        file_part,
+        destination,
+        max_bytes=int(request.app["max_submission_bytes"]),
+    )
     if error:
         return web.json_response({"error": f"Failed to save submission: {error}"}, status=500)
     expected_checksum = await _read_optional_field(reader, "sha256")
@@ -396,7 +414,11 @@ async def client_artifact_upload(request: web.Request) -> web.Response:
         return web.json_response({"error": "A multipart field named 'artifact' is required."}, status=400)
 
     destination = build_artifact_path(client_id, "artifact", file_part.filename)
-    bytes_written, error = await _save_multipart_file(file_part, destination)
+    bytes_written, error = await _save_multipart_file(
+        file_part,
+        destination,
+        max_bytes=int(request.app["max_artifact_bytes"]),
+    )
     if error:
         return web.json_response({"error": f"Failed to save artifact: {error}"}, status=500)
     expected_checksum = await _read_optional_field(reader, "sha256")
@@ -519,7 +541,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 elif event == events.START_EXAM:
                     await _handle_start_exam(ws, request, client_id)
                 elif event == events.PROCESS_CATCH:
-                    await _handle_process_catch_event(ws, request, client_id, data)
+                    await _handle_process_catch_event(ws, client_id, data)
                 else:
                     await ws.send_str(events.error(f"unknown event: {event}"))
 

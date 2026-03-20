@@ -46,7 +46,7 @@ async def cleanup_background_tasks(app: web.Application):
 
 def create_app(args) -> web.Application:
     state.load_users()
-    app = web.Application()
+    app = web.Application(client_max_size=512 * 1024 * 1024)
     app["server_id"] = args.id
     app["host"] = args.host
     app["port"] = args.port
@@ -57,6 +57,8 @@ def create_app(args) -> web.Application:
     app["exam_phase"] = "waiting"
     app["exam_start_enabled"] = False
     app["shutdown_grace_seconds"] = 2.0
+    app["max_submission_bytes"] = 512 * 1024 * 1024
+    app["max_artifact_bytes"] = 512 * 1024 * 1024
     app["shutdown_routine"] = ServerShutdownRoutine(app)
     app["gui_path"] = getattr(args, "gui_path", None)
     app["python_executable"] = getattr(args, "python_executable", None)

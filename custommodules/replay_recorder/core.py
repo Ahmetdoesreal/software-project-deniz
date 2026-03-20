@@ -205,7 +205,14 @@ class ReplayRecorder:
             output_file,
         ]
 
-        subprocess.run(merge_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            merge_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            print("[RECORDER] ERROR: FFmpeg failed while stitching replay.")
+            return None
         print(f"[RECORDER] Replay saved to: {output_file}")
         return output_file
 
@@ -213,7 +220,12 @@ class ReplayRecorder:
         """Stop FFmpeg and clean up cache."""
         if self._process:
             self._process.terminate()
-            self._process.wait()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("[RECORDER] FFmpeg did not exit after terminate; killing it.")
+                self._process.kill()
+                self._process.wait(timeout=5)
             self._process = None
         if self._log_file:
             self._log_file.close()
