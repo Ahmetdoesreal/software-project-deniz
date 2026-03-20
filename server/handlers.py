@@ -37,6 +37,10 @@ def _relay_client_message_to_gui(client_id: str, message: dict):
         pass
 
 
+def _relay_text_to_gui(client_id: str, text: str):
+    _relay_client_message_to_gui(client_id, text)
+
+
 def _register_new_user(login_id: str, password: str) -> web.Response:
     new_uuid = str(uuid.uuid4())
     state.users_db[login_id] = {
@@ -175,6 +179,45 @@ def _handle_client_info(client_id: str, data: dict):
     if user is not None:
         user["computer_name"] = computer_name
         state.save_users()
+
+
+async def _handle_process_catch_event(
+    ws: web.WebSocketResponse,
+    request: web.Request,
+    client_id: str,
+    data: dict,
+):
+    matches = data.get("matches", [])
+    if not isinstance(matches, list):
+        await ws.send_str(events.error("Invalid process catch payload."))
+        return
+
+    login_id, user = state.find_user_by_uuid(client_id)
+    if not user:
+        return
+
+    cleaned_matches = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        pid = int(match.get("pid", 0) or 0)
+        name = str(match.get("name", "")).strip()
+        if not name:
+            continue
+        cleaned_matches.append({"pid": pid, "name": name})
+
+    if not cleaned_matches:
+        return
+
+    user["blacklist_catch_count"] = int(user.get("blacklist_catch_count", 0)) + len(cleaned_matches)
+    user["last_blacklist_match"] = [match["name"] for match in cleaned_matches]
+    user["last_action"] = "Blacklist catch"
+    state.save_users()
+
+    match_text = ", ".join(f"{match['name']} (pid {match['pid']})" for match in cleaned_matches)
+    version = str(data.get("blacklist_version", "0"))
+    print(f"[PROCESS] Blacklist catch from {login_id} ({client_id}): {match_text} [v{version}]")
+    _relay_text_to_gui(client_id, f"[BLACKLIST] {match_text} [v{version}]")
 
 
 async def _handle_start_exam(
@@ -317,7 +360,7 @@ async def exam_submission(request: web.Request) -> web.Response:
     user["submission_name"] = Path(file_part.filename).name
     user["submission_path"] = safe_relative_path(destination)
     user["submission_size_bytes"] = bytes_written
-    user["last_action"] = "Submitted archive"
+    user["last_action"] = "Submitted file"
     state.save_users()
 
     print(
@@ -449,11 +492,17 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
     # Send welcome with their ID
     await ws.send_str(events.welcome(client_id, request.app["server_id"]))
+    await ws.send_str(
+        events.process_blacklist(
+            state.process_blacklist,
+            state.process_blacklist_version,
+        )
+    )
     if user:
         user["last_action"] = "Awaiting submission" if _user_needs_submission(user) else "Connected"
         state.save_users()
         if _user_needs_submission(user):
-            await ws.send_str(events.finish_exam("Your exam has ended. Please upload your archive."))
+            await ws.send_str(events.finish_exam("Your exam has ended. Please upload your file."))
 
     try:
         async for msg in ws:
@@ -469,6 +518,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     _handle_client_info(client_id, data)
                 elif event == events.START_EXAM:
                     await _handle_start_exam(ws, request, client_id)
+                elif event == events.PROCESS_CATCH:
+                    await _handle_process_catch_event(ws, request, client_id, data)
                 else:
                     await ws.send_str(events.error(f"unknown event: {event}"))
 

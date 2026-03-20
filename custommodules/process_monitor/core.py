@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import platform
+from collections.abc import Callable
 
 from common import protocol
 
@@ -14,7 +15,12 @@ DIFF_INTERVAL_SECONDS = 15
 
 
 class ProcessMonitor:
-    def __init__(self, output_dir: str):
+    def __init__(
+        self,
+        output_dir: str,
+        *,
+        catch_callback: Callable[[list[dict], str], None] | None = None,
+    ):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         self.log_file = os.path.join(self.output_dir, "processes.jsonl")
@@ -22,6 +28,11 @@ class ProcessMonitor:
         self.active = False
         self._task = None
         self.current_remaining_time = 0
+        self.catch_callback = catch_callback
+        self.blacklist_entries: list[str] = []
+        self.blacklist_names: set[str] = set()
+        self.blacklist_version = "0"
+        self.reported_matches: set[tuple[int, str]] = set()
 
     def start(self):
         """Start the background process monitoring."""
@@ -46,6 +57,16 @@ class ProcessMonitor:
     def update_time(self, remaining_seconds: int):
         """Hook called by the client when it receives a SYNC_TIME."""
         self.current_remaining_time = remaining_seconds
+
+    def set_blacklist(self, entries: list[str], version: str = "0"):
+        self.blacklist_entries = list(entries)
+        self.blacklist_names = {entry.strip().lower() for entry in entries if entry.strip()}
+        self.blacklist_version = str(version or "0")
+        self.reported_matches.clear()
+        print(
+            f"[PROCESS] Applied blacklist version {self.blacklist_version} "
+            f"with {len(self.blacklist_entries)} entrie(s)."
+        )
 
     def trigger_full_report(self):
         """Immediately generate and save a full list of processes."""
@@ -116,6 +137,35 @@ class ProcessMonitor:
         timestamp = protocol.now_iso().replace(":", "-")
         return os.path.join(self.output_dir, f"process_report_requested_{timestamp}.json")
 
+    def _detect_blacklist_matches(self, processes: set[tuple[int, str]]) -> list[dict]:
+        if not self.blacklist_names:
+            self.reported_matches.clear()
+            return []
+
+        current_matches = set()
+        for pid, name in processes:
+            normalized_name = _normalize_process_name(name)
+            if normalized_name not in self.blacklist_names:
+                continue
+            current_matches.add((pid, name))
+
+        new_matches = current_matches - self.reported_matches
+        self.reported_matches = current_matches
+        return [
+            {
+                "pid": pid,
+                "name": name,
+            }
+            for pid, name in sorted(new_matches, key=lambda item: (item[1].lower(), item[0]))
+        ]
+
+    def _report_blacklist_matches(self, matches: list[dict]):
+        if not matches:
+            return
+        print(f"[PROCESS] Blacklist catch detected: {', '.join(match['name'] for match in matches)}")
+        if self.catch_callback:
+            self.catch_callback(matches, self.blacklist_version)
+
     async def _loop(self):
         ticks_per_full_snapshot = FULL_SNAPSHOT_INTERVAL_SECONDS // DIFF_INTERVAL_SECONDS
         tick_count = 0
@@ -125,6 +175,7 @@ class ProcessMonitor:
                 await asyncio.sleep(DIFF_INTERVAL_SECONDS)
                 tick_count += 1
                 current_procs = self._get_current_processes()
+                self._report_blacklist_matches(self._detect_blacklist_matches(current_procs))
 
                 if tick_count >= ticks_per_full_snapshot:
                     self._write_log(
@@ -140,3 +191,8 @@ class ProcessMonitor:
                 self.previous_procs = current_procs
         except asyncio.CancelledError:
             pass
+
+
+def _normalize_process_name(name: str) -> str:
+    base_name = os.path.basename(str(name or "").strip())
+    return base_name.lower()

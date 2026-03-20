@@ -43,6 +43,8 @@ def _detail_lines(client_id: str, data: dict) -> list[str]:
         f"Time Spent: {minutes_spent:02d}:{seconds_spent:02d}",
         f"Extra Time: {extra_minutes:02d}:{extra_seconds:02d}",
         f"Kick Count: {data.get('kick_count', 0)}",
+        f"Blacklist Catches: {data.get('blacklist_catch_count', 0)}",
+        f"Last Blacklist Match: {', '.join(data.get('last_blacklist_match', [])) or '-'}",
         f"Last Action: {data.get('last_action') or '-'}",
         f"IP Address: {data.get('ip') or '-'}",
         f"Submission: {data.get('submission_name') or '-'}",
@@ -101,6 +103,23 @@ class ServerGUI(tk.Tk):
             command=self.finish_exam_globally,
         )
         self.finish_exam_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        blacklist_frame = ttk.Frame(info_frame, padding=(8, 6, 8, 0))
+        blacklist_frame.pack(fill=tk.X)
+
+        self.edit_blacklist_button = ttk.Button(
+            blacklist_frame,
+            text="Edit Blacklist",
+            command=self.edit_blacklist,
+        )
+        self.edit_blacklist_button.pack(side=tk.LEFT)
+
+        self.apply_blacklist_button = ttk.Button(
+            blacklist_frame,
+            text="Apply Blacklist",
+            command=self.apply_blacklist,
+        )
+        self.apply_blacklist_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.server_info_var = tk.StringVar(value="Waiting for server state...")
         info_label = ttk.Label(
@@ -311,6 +330,14 @@ class ServerGUI(tk.Tk):
         print(json.dumps({"cmd": "finish_exam_global"}), flush=True)
         self._append_log("[ADMIN] Requested global exam finish")
 
+    def edit_blacklist(self):
+        print(json.dumps({"cmd": "edit_blacklist"}), flush=True)
+        self._append_log("[ADMIN] Opening process blacklist file")
+
+    def apply_blacklist(self):
+        print(json.dumps({"cmd": "apply_blacklist"}), flush=True)
+        self._append_log("[ADMIN] Applying process blacklist")
+
     def _open_detail_window(self, window_key, title: str, lines: list[str]):
         top = tk.Toplevel(self)
         top.title(title)
@@ -428,7 +455,10 @@ class ServerGUI(tk.Tk):
             f"    Announce: {info.get('announce_interval', '-')}s\n"
             f"Exam Duration: {info.get('exam_duration_minutes', '-')} min    "
             f"Exam Files: {has_exam_files}"
-            f"    Path: {exam_files_path}"
+            f"    Path: {exam_files_path}\n"
+            f"Blacklist Entries: {info.get('process_blacklist_count', 0)}"
+            f"    Version: {info.get('process_blacklist_version', '-')}"
+            f"    File: {info.get('process_blacklist_file', '-')}"
         )
         self.server_info_var.set(text)
 
@@ -472,7 +502,6 @@ if __name__ == "__main__":
     setup_runtime_logging(
         "server_gui",
         Path(__file__).resolve().parent / "data" / "logs" / "server",
-        capture_stdout=False,
     )
     app = ServerGUI()
     reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)

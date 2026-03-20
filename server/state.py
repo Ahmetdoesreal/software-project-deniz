@@ -1,14 +1,18 @@
 import json
 import os
+from typing import Iterable
 
 USERS_FILE = "data/server/server_users.json"
 ALLOWED_USERS_FILE = "allowed_users.json"
+PROCESS_BLACKLIST_FILE = "data/server/process_blacklist.txt"
 
 class ServerState:
     def __init__(self):
         self.clients: dict[str, dict] = {}
         self.users_db: dict[str, dict] = {}
         self.allowed_users: dict[str, str] = {}
+        self.process_blacklist: list[str] = []
+        self.process_blacklist_version: str = ""
         self.gui_process = None
 
     def load_users(self):
@@ -30,6 +34,8 @@ class ServerState:
                 print(f"[!] Failed to load {ALLOWED_USERS_FILE}: {e}")
                 self.allowed_users = {}
 
+        self.load_process_blacklist()
+
     def save_users(self):
         os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
         try:
@@ -37,6 +43,36 @@ class ServerState:
                 json.dump(self.users_db, f, indent=2)
         except Exception as e:
             print(f"[!] Failed to save {USERS_FILE}: {e}")
+
+    def load_process_blacklist(self):
+        self.ensure_process_blacklist_file()
+        try:
+            with open(PROCESS_BLACKLIST_FILE, "r", encoding="utf-8") as blacklist_file:
+                self.process_blacklist = self._parse_process_blacklist_lines(blacklist_file)
+            self.process_blacklist_version = self._blacklist_version_stamp()
+        except Exception as e:
+            print(f"[!] Failed to load {PROCESS_BLACKLIST_FILE}: {e}")
+            self.process_blacklist = []
+            self.process_blacklist_version = self._blacklist_version_stamp()
+
+    def ensure_process_blacklist_file(self):
+        os.makedirs(os.path.dirname(PROCESS_BLACKLIST_FILE), exist_ok=True)
+        if os.path.exists(PROCESS_BLACKLIST_FILE):
+            return
+
+        default_lines = [
+            "# One process name per line.",
+            "# Matching is case-insensitive and checks the process name/basename.",
+            "# Example:",
+            "# discord.exe",
+            "# steam.exe",
+            "",
+        ]
+        try:
+            with open(PROCESS_BLACKLIST_FILE, "w", encoding="utf-8") as blacklist_file:
+                blacklist_file.write("\n".join(default_lines))
+        except Exception as e:
+            print(f"[!] Failed to initialize {PROCESS_BLACKLIST_FILE}: {e}")
 
     def ensure_user_defaults(self, user: dict):
         user.setdefault("time_spent_seconds", 0)
@@ -51,6 +87,8 @@ class ServerState:
         user.setdefault("submission_name", "")
         user.setdefault("submission_path", "")
         user.setdefault("submission_size_bytes", 0)
+        user.setdefault("blacklist_catch_count", 0)
+        user.setdefault("last_blacklist_match", [])
 
     def is_valid_session_uuid(self, client_id: str) -> bool:
         return any(user.get("uuid") == client_id for user in self.users_db.values())
@@ -99,5 +137,31 @@ class ServerState:
                 return cid, data
 
         return None, None
+
+    def blacklist_payload(self) -> dict:
+        return {
+            "entries": list(self.process_blacklist),
+            "version": self.process_blacklist_version,
+        }
+
+    def _parse_process_blacklist_lines(self, lines: Iterable[str]) -> list[str]:
+        entries = []
+        seen = set()
+        for raw_line in lines:
+            entry = raw_line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            normalized = entry.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            entries.append(entry)
+        return entries
+
+    def _blacklist_version_stamp(self) -> str:
+        try:
+            return str(os.stat(PROCESS_BLACKLIST_FILE).st_mtime_ns)
+        except OSError:
+            return "0"
 
 state = ServerState()

@@ -97,8 +97,10 @@ def _collect_log_entries() -> list[CleanupEntry]:
     if not LOGS_DIR.exists():
         return entries
 
-    for log_file in LOGS_DIR.rglob("*.log"):
-        if log_file.is_file():
+    for pattern in ("*.log", "*.jsonl"):
+        for log_file in LOGS_DIR.rglob(pattern):
+            if not log_file.is_file():
+                continue
             entries.append(
                 CleanupEntry(
                     path=log_file,

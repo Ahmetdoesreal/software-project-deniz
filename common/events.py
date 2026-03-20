@@ -89,6 +89,30 @@ def get_processes() -> str:
     """Server requests an immediate full process report from the client."""
     return protocol.encode(GET_PROCESSES, {})
 
+PROCESS_BLACKLIST = "process_blacklist"
+
+def process_blacklist(entries: list[str], version: str) -> str:
+    """Server sends the current process blacklist to a client."""
+    return protocol.encode(
+        PROCESS_BLACKLIST,
+        {
+            "entries": entries,
+            "version": version,
+        },
+    )
+
+PROCESS_CATCH = "process_catch"
+
+def process_catch(matches: list[dict], blacklist_version: str) -> str:
+    """Client reports a detected blacklisted process."""
+    return protocol.encode(
+        PROCESS_CATCH,
+        {
+            "matches": matches,
+            "blacklist_version": blacklist_version,
+        },
+    )
+
 FINISH_EXAM = "finish_exam"
 
 def finish_exam(reason: str = "") -> str:

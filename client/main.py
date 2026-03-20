@@ -118,12 +118,15 @@ async def main_loop(args):
                 await prepare_client(base_url, session_uuid)
 
                 print()
-                await run_ws(
+                submission_completed = await run_ws(
                     build_ws_url(host, port, session_uuid),
                     base_url,
                     session_uuid,
                     recorder_manager.recorder,
                 )
+                if submission_completed:
+                    print("[EXAM] Submission complete. Exiting client.")
+                    return
             except ValueError as e:
                 print(f"\n[FATAL] {e}")
                 sys.exit(1)

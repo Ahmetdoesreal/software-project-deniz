@@ -16,6 +16,7 @@ from .transfers import (
     upload_runtime_artifact,
     upload_submission_bundle,
 )
+from custommodules.hardware_monitor import HardwareMonitor
 from custommodules.process_monitor import ProcessMonitor
 from custommodules.replay_recorder import ReplayRecorder
 
@@ -114,12 +115,19 @@ class ClientGUIBridge:
         Thread(target=self._stdout_reader, daemon=True).start()
 
     def _stdout_reader(self):
-        for line in iter(self.process.stdout.readline, ""):
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+
+        for line in iter(process.stdout.readline, ""):
             command = self._parse_gui_command(line)
             if command is None:
                 continue
             _run_in_background(self.loop, self.input_queue.put_nowait, command)
-        self.process.stdout.close()
+        try:
+            process.stdout.close()
+        except Exception:
+            pass
 
     def send_sync(self, remaining_seconds: int):
         self._write(f"SYNC:{remaining_seconds}\n")
@@ -143,9 +151,10 @@ class ClientGUIBridge:
         self._write(f"UPLOAD_ERROR:{message}\n")
 
     def close(self):
-        if self.process and self.process.poll() is None:
-            self.process.kill()
+        process = self.process
         self.process = None
+        if process and process.poll() is None:
+            process.kill()
 
     def _parse_gui_command(self, line: str) -> UserCommand | None:
         text = line.strip()
@@ -166,11 +175,11 @@ class ClientGUIBridge:
             print("[GUI] Start button pressed.")
             return UserCommand("start")
         if command == "finish_exam":
-            archive_path = str(payload.get("archive_path", "")).strip()
-            if not archive_path:
+            selected_file = str(payload.get("archive_path", "")).strip()
+            if not selected_file:
                 return None
-            print(f"[GUI] Finish button pressed with archive: {archive_path}")
-            return UserCommand("finish", archive_path)
+            print(f"[GUI] Finish button pressed with file: {selected_file}")
+            return UserCommand("finish", selected_file)
         return None
 
     def _write(self, message: str):
@@ -194,6 +203,7 @@ class SessionState:
     finish_request_pending: bool = False
     submission_only: bool = False
     submission_completed: bool = False
+    intentional_shutdown: bool = False
 
 
 class WebSocketSession:
@@ -218,11 +228,22 @@ class WebSocketSession:
         self.stdin = StdinBridge(self.loop)
         self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
         self.process_monitor = self._create_process_monitor()
+        self.hardware_monitor = self._create_hardware_monitor()
 
     def _create_process_monitor(self):
         client_uuid = protocol.extract_client_uuid(self.ws_url)
         out_dir = os.path.join("data", "client", client_uuid)
-        monitor = ProcessMonitor(out_dir)
+        monitor = ProcessMonitor(
+            out_dir,
+            catch_callback=self._queue_process_catch_report,
+        )
+        monitor.start()
+        return monitor
+
+    def _create_hardware_monitor(self):
+        client_uuid = protocol.extract_client_uuid(self.ws_url)
+        out_dir = os.path.join("data", "client", client_uuid)
+        monitor = HardwareMonitor(out_dir)
         monitor.start()
         return monitor
 
@@ -236,9 +257,11 @@ class WebSocketSession:
             listener_task.cancel()
             self.gui.close()
             self.process_monitor.stop()
+            self.hardware_monitor.stop()
 
-        if self.state.disconnected.is_set():
+        if self.state.disconnected.is_set() and not self.state.intentional_shutdown:
             raise ConnectionError("Server disconnected")
+        return self.state.intentional_shutdown
 
     async def prompt_start_exam(self):
         print("\n--- PRE-EXAM PREPARATION ---")
@@ -269,7 +292,7 @@ class WebSocketSession:
             print("Type 'start' or use the GUI when you are ready.")
 
         if self.state.submission_only:
-            print("[EXAM] Submission is required. Use the finish window to upload your archive.\n")
+            print("[EXAM] Submission is required. Use the finish window to upload your file.\n")
             return
 
         print("[EXAM] Started. Good luck!\n")
@@ -286,7 +309,7 @@ class WebSocketSession:
     async def sender(self):
         await self.prompt_start_exam()
         if self.state.submission_only:
-            print("Use the finish window to upload your archive, or type 'finish <archive_path>'.\n")
+            print("Use the finish window to upload your file, or type 'finish <file_path>'.\n")
         else:
             print("Type anything and press Enter to ping the server (Ctrl+C to quit):\n")
 
@@ -315,7 +338,7 @@ class WebSocketSession:
                 continue
 
             if self.state.submission_only:
-                print("Submission is still required. Use the finish window or type 'finish <archive_path>'.")
+                print("Submission is still required. Use the finish window or type 'finish <file_path>'.")
                 continue
 
             if text:
@@ -391,6 +414,10 @@ class WebSocketSession:
                 )
             return
 
+        if event == events.PROCESS_BLACKLIST:
+            self.handle_process_blacklist(data)
+            return
+
         print(f"[WS] {event}: {data}")
 
     def handle_sync_time(self, data: dict):
@@ -415,6 +442,15 @@ class WebSocketSession:
             self.gui.send_reset()
         if reason in {"Exam is not started yet.", "Exam has already finished."}:
             self.gui.send_error(reason)
+
+    def handle_process_blacklist(self, data: dict):
+        entries = [str(entry).strip() for entry in data.get("entries", []) if str(entry).strip()]
+        version = str(data.get("version", "0"))
+        self.process_monitor.set_blacklist(entries, version)
+        print(
+            f"[PROCESS] Received blacklist update version {version} "
+            f"with {len(entries)} entrie(s)."
+        )
 
     def handle_finish_request(self, data: dict):
         if self.state.submission_completed:
@@ -446,7 +482,7 @@ class WebSocketSession:
 
         archive_path = archive_path.strip()
         if not archive_path:
-            error_message = "Choose an archive file before finishing the exam."
+            error_message = "Choose a file before finishing the exam."
             print(f"[EXAM] {error_message}")
             self.gui.send_upload_error(error_message)
             return
@@ -461,9 +497,10 @@ class WebSocketSession:
 
         self.state.finish_request_pending = True
         self.state.submission_only = True
-        print(f"[EXAM] Uploading archive: {archive_path}")
+        print(f"[EXAM] Uploading file: {archive_path}")
         try:
             process_report_path = self.process_monitor.export_requested_report()
+            hardware_report_path = self.hardware_monitor.export_current_snapshot()
             replay_path = None
             if self.recorder:
                 replay_path = await self.loop.run_in_executor(None, self.recorder.save_replay)
@@ -473,6 +510,7 @@ class WebSocketSession:
                 archive_path,
                 process_report_path,
                 replay_path,
+                hardware_report_path,
             )
             response = await upload_submission_bundle(
                 self.base_url,
@@ -487,8 +525,9 @@ class WebSocketSession:
             return
 
         self.state.submission_completed = True
+        self.state.intentional_shutdown = True
         self.state.exam_active = False
-        self.gui.send_upload_success(response.get("message", "Archive uploaded successfully."))
+        self.gui.send_upload_success(response.get("message", "Submission uploaded successfully."))
         await self.ws.close(message=b"submission complete")
         self.state.disconnected.set()
 
@@ -511,6 +550,17 @@ class WebSocketSession:
         except Exception as exc:
             print(f"[UPLOAD] Failed to upload {artifact_kind}: {exc}")
 
+    def _queue_process_catch_report(self, matches: list[dict], blacklist_version: str):
+        asyncio.create_task(self._send_process_catch_report(matches, blacklist_version))
+
+    async def _send_process_catch_report(self, matches: list[dict], blacklist_version: str):
+        if not matches:
+            return
+        try:
+            await self.ws.send_str(events.process_catch(matches, blacklist_version))
+        except Exception as exc:
+            print(f"[PROCESS] Failed to send blacklist catch report: {exc}")
+
     def _print_remaining_time(self, remaining: int):
         last_remaining = self.state.last_printed_remaining
         if last_remaining is None or remaining <= last_remaining - 10:
@@ -527,4 +577,4 @@ async def run_ws(
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
-            await WebSocketSession(ws_url, base_url, session_uuid, ws, recorder).run()
+            return await WebSocketSession(ws_url, base_url, session_uuid, ws, recorder).run()

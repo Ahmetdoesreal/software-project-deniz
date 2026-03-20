@@ -10,27 +10,34 @@ import aiohttp
 
 
 UPLOAD_ATTEMPTS = 2
+CLIENT_LOGS_DIR = Path("data") / "logs" / "client"
 
 
 def build_submission_bundle(
     session_uuid: str,
-    student_archive_path: str,
+    student_file_path: str,
     process_report_path: str | None,
     replay_path: str | None,
+    hardware_report_path: str | None,
 ) -> str:
-    student_archive = Path(student_archive_path).expanduser().resolve()
+    student_file = Path(student_file_path).expanduser().resolve()
     bundle_dir = Path("data") / "client" / session_uuid / "submission_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     bundle_path = bundle_dir / f"submission_bundle_{timestamp}.zip"
-    manifest = _build_bundle_manifest(student_archive, process_report_path, replay_path)
+    runtime_files = _collect_runtime_bundle_files(
+        session_uuid,
+        process_report_path,
+        replay_path,
+        hardware_report_path,
+    )
+    manifest = _build_bundle_manifest(student_file, runtime_files)
 
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(student_archive, arcname=f"student_submission/{student_archive.name}")
+        archive.write(student_file, arcname=f"student_submission/{student_file.name}")
         _write_manifest(archive, manifest)
-        _add_optional_file(archive, process_report_path, "runtime/process_report_requested.json")
-        _add_optional_file(archive, replay_path, _runtime_replay_name(replay_path))
+        _add_runtime_files(archive, runtime_files)
 
     return str(bundle_path)
 
@@ -142,38 +149,19 @@ async def _post_file(
 
 
 def _build_bundle_manifest(
-    student_archive: Path,
-    process_report_path: str | None,
-    replay_path: str | None,
+    student_file: Path,
+    runtime_files: list[dict],
 ) -> dict:
     entries = [
         {
             "role": "student_submission",
-            "name": student_archive.name,
-            "size_bytes": student_archive.stat().st_size,
-            "sha256": file_sha256(student_archive),
+            "name": student_file.name,
+            "archive_path": f"student_submission/{student_file.name}",
+            "size_bytes": student_file.stat().st_size,
+            "sha256": file_sha256(student_file),
         }
     ]
-    if process_report_path:
-        process_file = Path(process_report_path)
-        entries.append(
-            {
-                "role": "requested_process_report",
-                "name": process_file.name,
-                "size_bytes": process_file.stat().st_size,
-                "sha256": file_sha256(process_file),
-            }
-        )
-    if replay_path:
-        replay_file = Path(replay_path)
-        entries.append(
-            {
-                "role": "final_replay",
-                "name": replay_file.name,
-                "size_bytes": replay_file.stat().st_size,
-                "sha256": file_sha256(replay_file),
-            }
-        )
+    entries.extend(_manifest_entries_for_runtime_files(runtime_files))
 
     return {
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -185,13 +173,122 @@ def _write_manifest(archive: zipfile.ZipFile, manifest: dict):
     archive.writestr("manifest.json", json.dumps(manifest, indent=2))
 
 
-def _add_optional_file(archive: zipfile.ZipFile, file_path: str | None, arcname: str | None):
+def _collect_runtime_bundle_files(
+    session_uuid: str,
+    process_report_path: str | None,
+    replay_path: str | None,
+    hardware_report_path: str | None,
+) -> list[dict]:
+    runtime_files: list[dict] = []
+    _append_runtime_file(
+        runtime_files,
+        role="requested_process_report",
+        file_path=process_report_path,
+        arcname="runtime/process_report_requested.json",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="continuous_process_log",
+        file_path=_process_log_path(session_uuid),
+        arcname="runtime/processes.jsonl",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="final_replay",
+        file_path=replay_path,
+        arcname=_runtime_replay_name(replay_path),
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="hardware_snapshot",
+        file_path=hardware_report_path,
+        arcname="runtime/hardware_snapshot.json",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="hardware_change_log",
+        file_path=_hardware_log_path(session_uuid),
+        arcname="runtime/hardware_changes.jsonl",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="client_cli_log",
+        file_path=_latest_client_log("client_cli_"),
+        arcname="runtime/logs/client_cli.jsonl",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="client_gui_log",
+        file_path=_latest_client_log("client_gui_"),
+        arcname="runtime/logs/client_gui.jsonl",
+    )
+    return runtime_files
+
+
+def _append_runtime_file(
+    runtime_files: list[dict],
+    *,
+    role: str,
+    file_path: str | Path | None,
+    arcname: str | None,
+):
     if not file_path or not arcname:
         return
+
     source = Path(file_path)
     if not source.exists() or not source.is_file():
         return
-    archive.write(source, arcname=arcname)
+
+    runtime_files.append(
+        {
+            "role": role,
+            "path": source,
+            "arcname": arcname,
+        }
+    )
+
+
+def _add_runtime_files(archive: zipfile.ZipFile, runtime_files: list[dict]):
+    for runtime_file in runtime_files:
+        archive.write(runtime_file["path"], arcname=runtime_file["arcname"])
+
+
+def _manifest_entries_for_runtime_files(runtime_files: list[dict]) -> list[dict]:
+    entries = []
+    for runtime_file in runtime_files:
+        source = runtime_file["path"]
+        entries.append(
+            {
+                "role": runtime_file["role"],
+                "name": source.name,
+                "archive_path": runtime_file["arcname"],
+                "size_bytes": source.stat().st_size,
+                "sha256": file_sha256(source),
+            }
+        )
+    return entries
+
+
+def _process_log_path(session_uuid: str) -> Path:
+    return Path("data") / "client" / session_uuid / "processes.jsonl"
+
+
+def _hardware_log_path(session_uuid: str) -> Path:
+    return Path("data") / "client" / session_uuid / "hardware_changes.jsonl"
+
+
+def _latest_client_log(prefix: str) -> Path | None:
+    if not CLIENT_LOGS_DIR.exists():
+        return None
+
+    candidates = sorted(
+        CLIENT_LOGS_DIR.glob(f"{prefix}*"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    return candidates[0]
 
 
 def _runtime_replay_name(replay_path: str | None) -> str | None:

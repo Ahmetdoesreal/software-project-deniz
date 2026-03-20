@@ -126,23 +126,23 @@ class ExamTimerGUI:
 
         self.submission_window = SubmissionWindow(
             parent=self.root,
-            submit_callback=self.submit_archive,
+            submit_callback=self.submit_file,
             close_callback=self._clear_submission_window,
         )
 
-    def submit_archive(self, archive_path: str):
+    def submit_file(self, selected_file: str):
         self.finish_in_progress = True
         self.finish_btn.config(state=tk.DISABLED)
         if self.submission_window:
             self.submission_window.set_uploading()
-        _emit_command({"cmd": "finish_exam", "archive_path": archive_path})
+        _emit_command({"cmd": "finish_exam", "archive_path": selected_file})
 
     def prompt_finish_from_server(self, message: str):
         self.started = True
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
-        self.label_var.set("Upload your archive to finish.")
+        self.label_var.set("Upload your file to finish.")
         self.open_finish_window()
         if message:
             messagebox.showinfo("Finish Exam", message)
@@ -151,7 +151,7 @@ class ExamTimerGUI:
         self.finish_in_progress = False
         if self.submission_window and self.submission_window.winfo_exists():
             self.submission_window.destroy()
-        messagebox.showinfo("Submission Uploaded", message or "Archive uploaded successfully.")
+        messagebox.showinfo("Submission Uploaded", message or "Submission uploaded successfully.")
         self.root.destroy()
 
     def handle_upload_error(self, message: str):
@@ -215,7 +215,7 @@ class SubmissionWindow(tk.Toplevel):
         self.upload_button = ttk.Button(
             action_frame,
             text="Upload And Finish",
-            command=self._submit_selected_archive,
+            command=self._submit_selected_file,
             state=tk.DISABLED,
         )
         self.upload_button.pack(side=tk.LEFT, padx=(8, 0))
@@ -350,7 +350,7 @@ class SubmissionWindow(tk.Toplevel):
         self.text_preview.delete("1.0", tk.END)
         self.text_preview.config(state=tk.DISABLED)
 
-    def _submit_selected_archive(self):
+    def _submit_selected_file(self):
         if not self.selected_file:
             messagebox.showwarning("Finish Exam", "Choose a file first.")
             return
@@ -359,7 +359,7 @@ class SubmissionWindow(tk.Toplevel):
     def set_uploading(self):
         self.choose_button.config(state=tk.DISABLED)
         self.upload_button.config(state=tk.DISABLED)
-        self.status_var.set("Uploading archive...")
+        self.status_var.set("Uploading file...")
 
     def set_ready_after_error(self, message: str):
         self.choose_button.config(state=tk.NORMAL)
@@ -410,7 +410,6 @@ if __name__ == "__main__":
     setup_runtime_logging(
         "client_gui",
         Path(__file__).resolve().parent / "data" / "logs" / "client",
-        capture_stdout=False,
     )
     root = tk.Tk()
     app = ExamTimerGUI(root)

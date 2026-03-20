@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import platform
 import subprocess
 import sys
 import time
@@ -9,7 +11,7 @@ from aiohttp import web
 
 from common.discovery import ServerAnnouncer
 from common import events, protocol
-from .state import state
+from .state import PROCESS_BLACKLIST_FILE, state
 
 
 def _user_has_submission(user: dict) -> bool:
@@ -154,6 +156,8 @@ def _build_gui_clients(exam_duration_sec: int) -> list[dict]:
                 "extra_time_seconds": int(user.get("extra_time_seconds", 0)),
                 "banned": user.get("banned", False),
                 "kick_count": int(user.get("kick_count", 0)),
+                "blacklist_catch_count": int(user.get("blacklist_catch_count", 0)),
+                "last_blacklist_match": list(user.get("last_blacklist_match", [])),
                 "last_action": user.get("last_action", ""),
                 "ip": client_connection.get("ip"),
                 "computer_name": client_connection.get("computer_name") or user.get("computer_name", ""),
@@ -183,7 +187,55 @@ def _build_server_info(app: web.Application) -> dict:
         "exam_start_enabled": app["exam_start_enabled"],
         "has_exam_files": app["exam_files"] is not None,
         "exam_files_path": app["exam_files"],
+        "process_blacklist_count": len(state.process_blacklist),
+        "process_blacklist_file": PROCESS_BLACKLIST_FILE,
+        "process_blacklist_version": state.process_blacklist_version,
     }
+
+
+def _open_process_blacklist_file() -> bool:
+    blacklist_path = os.path.abspath(PROCESS_BLACKLIST_FILE)
+    system_name = platform.system()
+
+    try:
+        if system_name == "Windows":
+            subprocess.Popen(["notepad.exe", blacklist_path])
+            return True
+        if system_name == "Darwin":
+            subprocess.Popen(["open", "-t", blacklist_path])
+            return True
+        subprocess.Popen(["xdg-open", blacklist_path])
+        return True
+    except Exception as exc:
+        print(f"[CMD] Failed to open process blacklist file: {exc}")
+        return False
+
+
+async def _broadcast_process_blacklist() -> int:
+    payload = events.process_blacklist(
+        state.process_blacklist,
+        state.process_blacklist_version,
+    )
+    return await broadcast_to_all(payload)
+
+
+async def _handle_apply_blacklist():
+    previous_version = state.process_blacklist_version
+    previous_count = len(state.process_blacklist)
+    state.load_process_blacklist()
+    sent_count = await _broadcast_process_blacklist()
+    print(
+        f"[CMD] Applied process blacklist from {PROCESS_BLACKLIST_FILE}. "
+        f"{previous_count} -> {len(state.process_blacklist)} entrie(s), "
+        f"version {previous_version} -> {state.process_blacklist_version}. "
+        f"Updated {sent_count} connected client(s)."
+    )
+
+
+async def _handle_edit_blacklist():
+    state.ensure_process_blacklist_file()
+    if _open_process_blacklist_file():
+        print(f"[CMD] Opened process blacklist file: {os.path.abspath(PROCESS_BLACKLIST_FILE)}")
 
 
 def _print_connected_clients():
@@ -560,6 +612,14 @@ async def handle_admin_command(line: str, app: web.Application):
         print("[GUI] Server monitor UI could not be opened.")
         return
 
+    if command == "/editblacklist":
+        await _handle_edit_blacklist()
+        return
+
+    if command == "/applyblacklist":
+        await _handle_apply_blacklist()
+        return
+
     if command == "/kick":
         await _handle_kick(parts)
         return
@@ -580,6 +640,8 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /startexam            - Enable exam start for all clients")
         print("  /finishexam           - Finish the exam for all started clients")
         print("  /gui                  - Open or reopen the server monitor UI")
+        print("  /editblacklist        - Open the server process blacklist file for editing")
+        print("  /applyblacklist       - Reload and broadcast the process blacklist")
         print("  /kick <id>            - Disconnect a specific client")
         print("  /ban <id>             - Ban and disconnect a specific user")
         print("  /unban <id>           - Remove a user's ban")
@@ -616,6 +678,20 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "start_exam_global":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command("/startexam", app),
+            loop,
+        )
+        return
+
+    if command == "edit_blacklist":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/editblacklist", app),
+            loop,
+        )
+        return
+
+    if command == "apply_blacklist":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/applyblacklist", app),
             loop,
         )
         return
