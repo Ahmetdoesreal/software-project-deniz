@@ -1,7 +1,10 @@
 import sys
 import tkinter as tk
+from pathlib import Path
 from threading import Thread
-from tkinter import ttk
+from tkinter import messagebox, ttk
+
+from common.runtime_logging import setup_runtime_logging
 
 
 def _parse_ipc_line(line: str):
@@ -45,7 +48,7 @@ class ExamTimerGUI:
 
         self.start_btn = ttk.Button(
             self.main_frame,
-            text="Start Exam",
+            text="Request Start",
             command=self.on_start_click,
         )
         self.start_btn.pack(pady=10)
@@ -53,7 +56,7 @@ class ExamTimerGUI:
     def on_start_click(self):
         print("ACTION:START", flush=True)
         self.start_btn.config(state=tk.DISABLED)
-        self.label_var.set("Starting exam...")
+        self.label_var.set("Starting...")
 
     def update_clock(self):
         if self.active and self.started:
@@ -78,6 +81,16 @@ class ExamTimerGUI:
         self.start_btn.pack_forget()
         self.label.config(font=("Helvetica", 32, "bold"))
 
+    def reset_to_ready(self):
+        if self.started:
+            return
+        self.start_btn.config(state=tk.NORMAL)
+        self.label_var.set("Waiting to start...")
+
+    def show_error_popup(self, message: str):
+        self.reset_to_ready()
+        messagebox.showerror("Exam Not Started", message)
+
     def on_closing(self):
         pass
 
@@ -88,14 +101,23 @@ def ipc_reader(app: ExamTimerGUI):
         command, value = _parse_ipc_line(line.strip())
         try:
             if command == "SYNC":
-                app.set_remaining(int(value))
+                app.root.after(0, app.set_remaining, int(value))
             elif command == "END":
-                app.set_remaining(-1)
+                app.root.after(0, app.set_remaining, -1)
+            elif command == "RESET":
+                app.root.after(0, app.reset_to_ready)
+            elif command == "ERROR":
+                app.root.after(0, app.show_error_popup, value)
         except Exception:
             pass
 
 
 if __name__ == "__main__":
+    setup_runtime_logging(
+        "client_gui",
+        Path(__file__).resolve().parent / "data" / "logs" / "client",
+        capture_stdout=False,
+    )
     root = tk.Tk()
     app = ExamTimerGUI(root)
 

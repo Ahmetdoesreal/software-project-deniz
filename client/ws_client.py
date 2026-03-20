@@ -1,5 +1,6 @@
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,6 +25,13 @@ def _client_gui_path() -> str:
 def _time_text(seconds: int) -> str:
     minutes, remaining_seconds = divmod(seconds, 60)
     return f"{minutes}m {remaining_seconds}s"
+
+
+def _computer_name() -> str:
+    try:
+        return socket.gethostname()
+    except Exception:
+        return "unknown"
 
 
 async def _wait_for_queue_or_event(
@@ -60,9 +68,9 @@ class StdinBridge:
 
 
 class ClientGUIBridge:
-    def __init__(self, loop: asyncio.AbstractEventLoop, start_event: asyncio.Event):
+    def __init__(self, loop: asyncio.AbstractEventLoop, input_queue: asyncio.Queue):
         self.loop = loop
-        self.start_event = start_event
+        self.input_queue = input_queue
         self.process = None
 
     def ensure_started(self):
@@ -82,7 +90,7 @@ class ClientGUIBridge:
         for line in iter(self.process.stdout.readline, ""):
             if "ACTION:START" in line:
                 print("[GUI] Start button pressed.")
-                _run_in_background(self.loop, self.start_event.set)
+                _run_in_background(self.loop, self.input_queue.put_nowait, "start\n")
         self.process.stdout.close()
 
     def send_sync(self, remaining_seconds: int):
@@ -90,6 +98,12 @@ class ClientGUIBridge:
 
     def send_end(self):
         self._write("END:-1\n")
+
+    def send_reset(self):
+        self._write("RESET:1\n")
+
+    def send_error(self, message: str):
+        self._write(f"ERROR:{message}\n")
 
     def close(self):
         if self.process and self.process.poll() is None:
@@ -113,6 +127,7 @@ class SessionState:
     start_event: asyncio.Event
     exam_active: bool = True
     last_printed_remaining: int | None = None
+    start_request_pending: bool = False
 
 
 class WebSocketSession:
@@ -126,7 +141,7 @@ class WebSocketSession:
             start_event=asyncio.Event(),
         )
         self.stdin = StdinBridge(self.loop)
-        self.gui = ClientGUIBridge(self.loop, self.state.start_event)
+        self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
         self.process_monitor = self._create_process_monitor()
 
     def _create_process_monitor(self):
@@ -152,7 +167,8 @@ class WebSocketSession:
 
     async def prompt_start_exam(self):
         print("\n--- PRE-EXAM PREPARATION ---")
-        print("When you are ready, type 'start' or click the button in the GUI to begin the exam.")
+        print("When you are ready, type 'start' or click the button in the GUI.")
+        print("If the server has not started the exam yet, you will be asked to try again.")
 
         while not self.state.start_event.is_set():
             line, event_triggered = await _wait_for_queue_or_event(
@@ -164,13 +180,21 @@ class WebSocketSession:
 
             text = line.strip().lower() if line else ""
             if text in {"start", "/start"}:
-                self.state.start_event.set()
-                break
+                await self.request_exam_start()
+                continue
 
-            print("Type 'start' or use the GUI to begin.")
+            print("Type 'start' or use the GUI when you are ready.")
 
-        await self.ws.send_str(events.start_exam())
         print("[EXAM] Started. Good luck!\n")
+
+    async def request_exam_start(self):
+        if self.state.start_request_pending:
+            print("[EXAM] Start request already in progress...")
+            return
+
+        self.state.start_request_pending = True
+        await self.ws.send_str(events.start_exam())
+        print("[EXAM] Start request sent...")
 
     async def sender(self):
         await self.prompt_start_exam()
@@ -209,6 +233,7 @@ class WebSocketSession:
         if event == events.WELCOME:
             print(f"[WS] Connected! Server assigned ID: {data['id']}")
             self.gui.ensure_started()
+            await self.ws.send_str(events.client_info(_computer_name()))
             return
 
         if event == events.ECHO:
@@ -220,6 +245,10 @@ class WebSocketSession:
 
         if event == events.SYNC_TIME:
             self.handle_sync_time(data)
+            return
+
+        if event == events.ERROR:
+            self.handle_server_error(data)
             return
 
         if event == events.EXAM_END:
@@ -243,6 +272,7 @@ class WebSocketSession:
         remaining = data.get("remaining_seconds", 0)
         self.process_monitor.update_time(remaining)
         self.gui.ensure_started()
+        self.state.start_request_pending = False
 
         if not self.state.start_event.is_set():
             print("[WS] Exam is already running on the server. Joining automatically...")
@@ -250,6 +280,15 @@ class WebSocketSession:
 
         self.gui.send_sync(remaining)
         self._print_remaining_time(remaining)
+
+    def handle_server_error(self, data: dict):
+        reason = data.get("reason", "Unknown server error.")
+        self.state.start_request_pending = False
+        print(f"[WS] Error: {reason}")
+        self.gui.ensure_started()
+        self.gui.send_reset()
+        if reason == "Exam is not started yet.":
+            self.gui.send_error(reason)
 
     def handle_exam_end(self):
         print("\n===============================")

@@ -51,6 +51,12 @@ def ping(message: str) -> str:
     """Client sends a ping with a text message."""
     return protocol.encode(PING, {"message": message})
 
+CLIENT_INFO = "client_info"
+
+def client_info(computer_name: str) -> str:
+    """Client sends identifying machine metadata to the server."""
+    return protocol.encode(CLIENT_INFO, {"computer_name": computer_name})
+
 SAVESCREEN = "savescreen"
 
 def savescreen() -> str:

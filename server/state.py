@@ -16,6 +16,8 @@ class ServerState:
             try:
                 with open(USERS_FILE, "r") as f:
                     self.users_db = json.load(f)
+                for user in self.users_db.values():
+                    self.ensure_user_defaults(user)
             except Exception as e:
                 print(f"[!] Failed to load {USERS_FILE}: {e}")
                 self.users_db = {}
@@ -36,6 +38,15 @@ class ServerState:
         except Exception as e:
             print(f"[!] Failed to save {USERS_FILE}: {e}")
 
+    def ensure_user_defaults(self, user: dict):
+        user.setdefault("time_spent_seconds", 0)
+        user.setdefault("exam_started", False)
+        user.setdefault("extra_time_seconds", 0)
+        user.setdefault("banned", False)
+        user.setdefault("kick_count", 0)
+        user.setdefault("last_action", "")
+        user.setdefault("computer_name", "")
+
     def is_valid_session_uuid(self, client_id: str) -> bool:
         return any(user.get("uuid") == client_id for user in self.users_db.values())
 
@@ -50,6 +61,20 @@ class ServerState:
         if process and process.poll() is None:
             return process
         return None
+
+    def resolve_user(self, target: str):
+        if target in self.users_db:
+            return target, self.users_db[target]
+
+        login_id, user = self.find_user_by_uuid(target)
+        if user:
+            return login_id, user
+
+        client_id, _ = self.resolve_client(target)
+        if client_id:
+            return self.find_user_by_uuid(client_id)
+
+        return None, None
 
     def resolve_client(self, target: str):
         """

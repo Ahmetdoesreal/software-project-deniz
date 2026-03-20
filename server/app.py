@@ -2,11 +2,14 @@ import asyncio
 from aiohttp import web
 
 from common.discovery import ServerAnnouncer
+from common.runtime_logging import install_asyncio_exception_logging
 from .state import state
+from .shutdown import ServerShutdownRoutine
 from .handlers import health, login_handler, exam_config, exam_files, websocket_handler
 from .tasks import time_broadcaster, console_reader
 
 async def start_background_tasks(app: web.Application):
+    install_asyncio_exception_logging(asyncio.get_running_loop())
     app["time_broadcaster"] = asyncio.create_task(time_broadcaster(app))
     app["console_reader"] = asyncio.create_task(console_reader(app))
     # Start UDP discovery announcer
@@ -18,6 +21,8 @@ async def start_background_tasks(app: web.Application):
 
 
 async def cleanup_background_tasks(app: web.Application):
+    await app["shutdown_routine"].run()
+
     for task_name in ("time_broadcaster", "console_reader"):
         app[task_name].cancel()
         try:
@@ -41,6 +46,9 @@ def create_app(args) -> web.Application:
     app["announce_interval"] = args.announce
     app["exam_duration"] = args.exam_duration
     app["exam_files"] = args.exam_files
+    app["exam_start_enabled"] = False
+    app["shutdown_grace_seconds"] = 2.0
+    app["shutdown_routine"] = ServerShutdownRoutine(app)
     
     app.router.add_get("/health", health)
     app.router.add_post("/login", login_handler)

@@ -1,10 +1,12 @@
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 import aiohttp
 
 from common.discovery import discover_server
+from common.runtime_logging import install_asyncio_exception_logging, setup_runtime_logging
 from custommodules.replay_recorder import ReplayRecorder
 from .auth import check_health, perform_login
 from .exam import fetch_exam_prep
@@ -93,6 +95,7 @@ def build_ws_url(host: str, port: int, session_uuid: str) -> str:
 
 
 async def main_loop(args):
+    install_asyncio_exception_logging(asyncio.get_running_loop())
     recorder_manager = RecorderManager(record_enabled=args.record)
     active_session_uuid = None
 
@@ -148,6 +151,11 @@ def validate_args(args):
 
 
 def main():
+    setup_runtime_logging(
+        "client_cli",
+        Path(__file__).resolve().parent.parent / "data" / "logs" / "client",
+    )
+
     parser = argparse.ArgumentParser(description="Client")
     parser.add_argument("--login-id", required=True, help="Client login ID")
     parser.add_argument("--password", required=True, help="Client password")

@@ -4,9 +4,11 @@ import errno
 import sys
 import os
 import subprocess
+from pathlib import Path
 from aiohttp import web
 
 from common.discovery import check_duplicate_server
+from common.runtime_logging import setup_runtime_logging
 from .state import state
 from .app import create_app
 
@@ -27,6 +29,11 @@ def validate_args(args):
 
 
 def main():
+    setup_runtime_logging(
+        "server_cli",
+        Path(__file__).resolve().parent.parent / "data" / "logs" / "server",
+    )
+
     parser = argparse.ArgumentParser(description="Server")
     parser.add_argument("--id",       default="default", help="Server identifier (clients must match)")
     parser.add_argument("--host",     default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
