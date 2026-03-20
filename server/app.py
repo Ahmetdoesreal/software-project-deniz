@@ -18,13 +18,13 @@ async def start_background_tasks(app: web.Application):
 
 
 async def cleanup_background_tasks(app: web.Application):
-    app["time_broadcaster"].cancel()
-    try:
-        await app["time_broadcaster"]
-    except asyncio.CancelledError:
-        pass
-        
-    app["console_reader"].cancel()
+    for task_name in ("time_broadcaster", "console_reader"):
+        app[task_name].cancel()
+        try:
+            await app[task_name]
+        except asyncio.CancelledError:
+            pass
+
     await app["announcer"].stop()
     
     if state.gui_process and state.gui_process.poll() is None:

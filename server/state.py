@@ -1,6 +1,5 @@
 import json
 import os
-import uuid
 
 USERS_FILE = "data/server/server_users.json"
 ALLOWED_USERS_FILE = "allowed_users.json"
@@ -36,6 +35,21 @@ class ServerState:
                 json.dump(self.users_db, f, indent=2)
         except Exception as e:
             print(f"[!] Failed to save {USERS_FILE}: {e}")
+
+    def is_valid_session_uuid(self, client_id: str) -> bool:
+        return any(user.get("uuid") == client_id for user in self.users_db.values())
+
+    def find_user_by_uuid(self, client_id: str):
+        for login_id, user in self.users_db.items():
+            if user.get("uuid") == client_id:
+                return login_id, user
+        return None, None
+
+    def get_gui_process(self):
+        process = self.gui_process
+        if process and process.poll() is None:
+            return process
+        return None
 
     def resolve_client(self, target: str):
         """

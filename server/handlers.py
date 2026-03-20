@@ -1,11 +1,74 @@
 import json
 import os
 import uuid
-import asyncio
 from aiohttp import web, WSMsgType
 
 from common import protocol, events
 from .state import state
+
+
+def _json_error(message: str, status: int) -> web.Response:
+    return web.json_response({"error": message}, status=status)
+
+
+def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
+    login_id = data.get("login_id")
+    password = data.get("password")
+    return login_id, password
+
+
+def _relay_client_message_to_gui(client_id: str, message: dict):
+    gui_process = state.get_gui_process()
+    if not gui_process:
+        return
+
+    try:
+        payload = json.dumps(
+            {"type": "client_message", "uuid": client_id, "text": message}
+        )
+        gui_process.stdin.write(payload + "\n")
+        gui_process.stdin.flush()
+    except Exception:
+        pass
+
+
+def _register_new_user(login_id: str, password: str) -> web.Response:
+    new_uuid = str(uuid.uuid4())
+    state.users_db[login_id] = {
+        "password": password,
+        "uuid": new_uuid,
+        "time_spent_seconds": 0,
+        "exam_started": False,
+    }
+    state.save_users()
+    print(f"[+] New valid user registered: {login_id} -> {new_uuid}")
+    return web.json_response({"status": "ok", "uuid": new_uuid})
+
+
+async def _handle_ping_event(ws: web.WebSocketResponse, client_id: str, data: dict):
+    await ws.send_str(events.echo(data, protocol.now_iso()))
+    short_id = client_id[:8]
+    print(f"[{short_id}] PING: {data}")
+    _relay_client_message_to_gui(client_id, data)
+
+
+async def _handle_start_exam(
+    ws: web.WebSocketResponse,
+    request: web.Request,
+    client_id: str,
+):
+    _, user = state.find_user_by_uuid(client_id)
+    if not user or user.get("exam_started", False):
+        return
+
+    user["exam_started"] = True
+    state.save_users()
+    print(f"[EXAM] Client {client_id} started their exam.")
+
+    exam_duration_sec = request.app["exam_duration"] * 60
+    remaining = max(0, exam_duration_sec - user.get("time_spent_seconds", 0))
+    await ws.send_str(events.sync_time(remaining))
+
 
 # -- HTTP Routes -----------------------------------------------------------
 async def health(request: web.Request) -> web.Response:
@@ -19,39 +82,26 @@ async def login_handler(request: web.Request) -> web.Response:
     try:
         data = await request.json()
     except json.JSONDecodeError:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-    
-    login_id = data.get("login_id")
-    password = data.get("password")
-    
+        return _json_error("Invalid JSON", 400)
+
+    login_id, password = _validate_login_payload(data)
     if not login_id or not password:
-        return web.json_response({"error": "login_id and password required"}, status=400)
-        
-    # Check if user is in the allowed list
+        return _json_error("login_id and password required", 400)
+
     if login_id not in state.allowed_users:
-        return web.json_response({"error": "User is not allowed to take this exam."}, status=403)
-        
+        return _json_error("User is not allowed to take this exam.", 403)
+
     if state.allowed_users[login_id] != password:
-        return web.json_response({"error": "Invalid credentials provided."}, status=401)
-        
+        return _json_error("Invalid credentials provided.", 401)
+
     user = state.users_db.get(login_id)
-    if user:
-        if user["password"] != password:
-            return web.json_response({"error": "Invalid stored credentials"}, status=401)
-        # Valid login existing
-        return web.json_response({"status": "ok", "uuid": user["uuid"]})
-    else:
-        # Create new user
-        new_uuid = str(uuid.uuid4())
-        state.users_db[login_id] = {
-            "password": password,
-            "uuid": new_uuid,
-            "time_spent_seconds": 0,
-            "exam_started": False
-        }
-        state.save_users()
-        print(f"[+] New valid user registered: {login_id} -> {new_uuid}")
-        return web.json_response({"status": "ok", "uuid": new_uuid})
+    if not user:
+        return _register_new_user(login_id, password)
+
+    if user["password"] != password:
+        return _json_error("Invalid stored credentials", 401)
+
+    return web.json_response({"status": "ok", "uuid": user["uuid"]})
 
 
 async def exam_config(request: web.Request) -> web.Response:
@@ -75,10 +125,8 @@ async def exam_files(request: web.Request) -> web.Response:
 # -- WebSocket Handler -----------------------------------------------------
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     client_id = request.query.get("id")
-    
-    # Verify the UUID was issued by us
-    valid_uuids = {u["uuid"] for u in state.users_db.values()}
-    if not client_id or client_id not in valid_uuids:
+
+    if not client_id or not state.is_valid_session_uuid(client_id):
         return web.Response(status=401, text="Unauthorized: invalid or missing session ID")
 
     ws = web.WebSocketResponse()
@@ -103,34 +151,9 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 event, data = protocol.decode(msg.data)
 
                 if event == events.PING:
-                    # Echo back with the same data
-                    await ws.send_str(events.echo(data, protocol.now_iso()))
-                    
-                    short_id = client_id[:8]
-                    print(f"[{short_id}] PING: {data}")
-                    
-                    # Relay to GUI if active
-                    if state.gui_process and state.gui_process.poll() is None:
-                        try:
-                            msg = json.dumps({"type": "client_message", "uuid": client_id, "text": data})
-                            state.gui_process.stdin.write(msg + "\n")
-                            state.gui_process.stdin.flush()
-                        except Exception:
-                            pass
+                    await _handle_ping_event(ws, client_id, data)
                 elif event == events.START_EXAM:
-                    # Find user in DB
-                    for login_id, u in state.users_db.items():
-                        if u["uuid"] == client_id:
-                            if not u.get("exam_started", False):
-                                u["exam_started"] = True
-                                state.save_users()
-                                print(f"[EXAM] Client {client_id} started their exam.")
-                                
-                                # Instantly sync the precise starting time so the client doesn't start at -10s
-                                exam_duration_sec = request.app["exam_duration"] * 60
-                                rem = max(0, exam_duration_sec - u.get("time_spent_seconds", 0))
-                                await ws.send_str(events.sync_time(rem))
-                            break
+                    await _handle_start_exam(ws, request, client_id)
                 else:
                     await ws.send_str(events.error(f"unknown event: {event}"))
 

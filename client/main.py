@@ -1,106 +1,135 @@
 import argparse
 import asyncio
 import sys
-import os
+
 import aiohttp
 
-from common.protocol import extract_client_uuid
 from common.discovery import discover_server
 from custommodules.replay_recorder import ReplayRecorder
-from .auth import perform_login, check_health
+from .auth import check_health, perform_login
 from .exam import fetch_exam_prep
 from .ws_client import run_ws
 
+
+def _run_blocking(loop: asyncio.AbstractEventLoop, func):
+    return loop.run_in_executor(None, func)
+
+
+class RecorderManager:
+    def __init__(self, record_enabled: bool):
+        self.record_enabled = record_enabled
+        self.recorder = None
+        self.session_uuid = None
+
+    async def sync_session(self, session_uuid: str):
+        if self.session_uuid == session_uuid and self.recorder is not None:
+            return self.recorder
+
+        loop = asyncio.get_running_loop()
+        await self.stop()
+
+        self.session_uuid = session_uuid
+        self.recorder = ReplayRecorder(session_uuid=session_uuid)
+        if self.record_enabled:
+            await _run_blocking(loop, self.recorder.start)
+        return self.recorder
+
+    async def stop(self):
+        if not self.record_enabled or not self.recorder:
+            return
+
+        loop = asyncio.get_running_loop()
+        await _run_blocking(loop, self.recorder.stop)
+        self.recorder = None
+
+
 async def discover_loop(server_id: str, timeout: float):
     """Keep searching until we find a server."""
-    result = None
-    while result is None:
+    while True:
         result = await discover_server(server_id=server_id, timeout=timeout)
-        if result is None:
-            print("No server found yet, retrying...")
-    return result
+        if result is not None:
+            return result
+        print("No server found yet, retrying...")
+
+
+async def resolve_server_target(args) -> tuple[str, int]:
+    if args.host:
+        print(f"[DIRECT] Connecting to {args.host}:{args.port}")
+        return args.host, args.port
+
+    if getattr(args, "check_login", False):
+        server_info = await discover_server(args.id, args.timeout)
+        if not server_info:
+            print(f"\n[FATAL] Could not discover server '{args.id}' on the local network.")
+            sys.exit(1)
+        return server_info
+
+    return await discover_loop(args.id, args.timeout)
+
+
+async def establish_session(base_url: str, args, recorder_manager: RecorderManager) -> str:
+    session_uuid = await perform_login(base_url, args.login_id, args.password)
+
+    if getattr(args, "check_login", False):
+        print("[+] Credentials verified successfully.")
+        sys.exit(0)
+
+    await recorder_manager.sync_session(session_uuid)
+    print(f"[LOGIN] Assigned session UUID: {session_uuid}")
+    return session_uuid
+
+
+async def prepare_client(base_url: str, session_uuid: str):
+    await fetch_exam_prep(base_url, session_uuid)
+    await check_health(base_url)
+
+
+def build_base_url(host: str, port: int) -> str:
+    return f"http://{host}:{port}"
+
+
+def build_ws_url(host: str, port: int, session_uuid: str) -> str:
+    return f"ws://{host}:{port}/ws?id={session_uuid}"
 
 
 async def main_loop(args):
-    session_uuid = None
-    recorder = None
-    
+    recorder_manager = RecorderManager(record_enabled=args.record)
+    active_session_uuid = None
+
     print(f"=== Client [{args.login_id}] (awaiting session assignment) ===\n")
 
     try:
         while True:
-            # 1. Discover or use explicit host/port
-            if args.host:
-                host, port = args.host, args.port
-                print(f"[DIRECT] Connecting to {host}:{port}")
-            else:
-                if getattr(args, 'check_login', False):
-                    # Don't loop forever during a quick check
-                    server_info = await discover_server(args.id, args.timeout)
-                    if not server_info:
-                        print(f"\n[FATAL] Could not discover server '{args.id}' on the local network.")
-                        sys.exit(1)
-                    host, port = server_info
-                else:
-                    host, port = await discover_loop(args.id, args.timeout)
+            host, port = await resolve_server_target(args)
+            base_url = build_base_url(host, port)
 
-            base_url = f"http://{host}:{port}"
-            
             try:
-                # 2. Login to get/verify UUID
-                new_uuid = await perform_login(base_url, args.login_id, args.password)
-                
-                if getattr(args, 'check_login', False):
-                    print("[+] Credentials verified successfully.")
-                    sys.exit(0)
-                
-                if not session_uuid:
-                    session_uuid = new_uuid
-                    print(f"[LOGIN] Assigned session UUID: {session_uuid}")
-                    
-                    recorder = ReplayRecorder(session_uuid=session_uuid)
-                    if args.record:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, recorder.start)
-                elif session_uuid != new_uuid:
-                    print(f"[!] Server returned a different UUID ({new_uuid}) than active ({session_uuid}). Resyncing.")
-                    session_uuid = new_uuid
-                    
-                    if recorder:
-                        if args.record:
-                            loop = asyncio.get_event_loop()
-                            await loop.run_in_executor(None, recorder.stop)
-                            
-                        recorder = ReplayRecorder(session_uuid=session_uuid)
-                        if args.record:
-                            loop = asyncio.get_event_loop()
-                            await loop.run_in_executor(None, recorder.start)
+                session_uuid = await establish_session(base_url, args, recorder_manager)
+                if active_session_uuid and active_session_uuid != session_uuid:
+                    print(
+                        f"[!] Server returned a different UUID ({session_uuid}) "
+                        f"than active ({active_session_uuid}). Resyncing."
+                    )
+                active_session_uuid = session_uuid
 
-                ws_url = f"ws://{host}:{port}/ws?id={session_uuid}"
+                await prepare_client(base_url, session_uuid)
 
-                # 3. Fetch Exam Configuration and Files
-                await fetch_exam_prep(base_url, session_uuid)
-
-                # 4. HTTP health check
-                await check_health(base_url)
-
-                # 5. WebSocket session
                 print()
-                await run_ws(ws_url, recorder)
+                await run_ws(
+                    build_ws_url(host, port, session_uuid),
+                    recorder_manager.recorder,
+                )
             except ValueError as e:
-                # Fatal login error (e.g., wrong password), we should probably exit
                 print(f"\n[FATAL] {e}")
                 sys.exit(1)
             except (aiohttp.ClientError, ConnectionError, OSError) as e:
                 print(f"\n[!] Connection lost: {e}")
 
-            # If we get here, server died or connection dropped
             print(f"[!] Reconnecting in {args.reconnect} seconds...\n")
             await asyncio.sleep(args.reconnect)
     finally:
-        if args.record and recorder:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, recorder.stop)
+        await recorder_manager.stop()
+
 
 def validate_args(args):
     errors = []
@@ -113,19 +142,19 @@ def validate_args(args):
     if not args.id.strip():
         errors.append("--id cannot be empty")
     if errors:
-        for e in errors:
-            print(f"[ERROR] {e}")
+        for error in errors:
+            print(f"[ERROR] {error}")
         sys.exit(1)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Client")
-    parser.add_argument("--login-id",  required=True, help="Client login ID")
-    parser.add_argument("--password",  required=True, help="Client password")
-    parser.add_argument("--id",        default="default", help="Server ID to connect to (default: default)")
-    parser.add_argument("--host",      default=None,      help="Server host (skip discovery, connect directly)")
-    parser.add_argument("--port",      default=8080, type=int, help="Server port (default: 8080)")
-    parser.add_argument("--timeout",   default=15, type=float, help="Discovery timeout in seconds (default: 15)")
+    parser.add_argument("--login-id", required=True, help="Client login ID")
+    parser.add_argument("--password", required=True, help="Client password")
+    parser.add_argument("--id", default="default", help="Server ID to connect to (default: default)")
+    parser.add_argument("--host", default=None, help="Server host (skip discovery, connect directly)")
+    parser.add_argument("--port", default=8080, type=int, help="Server port (default: 8080)")
+    parser.add_argument("--timeout", default=15, type=float, help="Discovery timeout in seconds (default: 15)")
     parser.add_argument("--reconnect", default=3, type=float, help="Seconds to wait before reconnecting (default: 3)")
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
     parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
@@ -138,6 +167,7 @@ def main():
         asyncio.run(main_loop(args))
     except KeyboardInterrupt:
         print("\nBye!")
+
 
 if __name__ == "__main__":
     main()

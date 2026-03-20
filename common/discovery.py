@@ -166,26 +166,26 @@ def _join_multicast(sock: socket.socket, group: str = MULTICAST_GROUP):
         print(f"[DISCOVERY] Multicast join failed for {group}: {e}")
 
 
-async def discover_server(
-    server_id: str = "default",
-    timeout: float = 10.0,
-    listen_multicast: bool = True,
-    bind_host: str = "",
+async def _listen_for_server(
+    server_id: str,
+    timeout: float,
+    listen_multicast: bool,
+    bind_host: str,
+    *,
+    error_prefix: str,
+    bind_failure_result,
+    on_bind_failure=None,
+    on_timeout=None,
 ):
-    """
-    Listen for a server beacon.
-    Only matches servers with the given server_id.
-    Returns (host, port) of the first matching server, or None on timeout.
-    """
-    print(f"[DISCOVERY] Searching for server '{server_id}' (timeout {timeout}s)...")
-
     try:
         sock = _create_listen_socket(bind_host=bind_host)
         if listen_multicast:
             _join_multicast(sock)
     except OSError as e:
-        print(f"[DISCOVERY] ERROR: Could not bind to UDP port {DISCOVERY_PORT}: {e}")
-        return None
+        print(f"{error_prefix} {e}")
+        if on_bind_failure:
+            on_bind_failure()
+        return bind_failure_result
 
     loop = asyncio.get_event_loop()
 
@@ -198,28 +198,61 @@ async def discover_server(
                     loop.sock_recvfrom(sock, 1024),
                     timeout=min(remaining, 1.0),
                 )
-                msg = json.loads(data.decode("ascii"))
-                
-                is_magic_match = (msg.get("magic") == BEACON_MAGIC)
-                is_id_match = (msg.get("server_id") == server_id)
-                
-                if is_magic_match and is_id_match:
-                    host = msg.get("host")
-                    if not host:
-                        host = addr[0]
-                        
-                    port = msg["port"]
-                    print(f"[DISCOVERY] Found server '{server_id}' at {host}:{port}")
-                    return host, port
             except asyncio.TimeoutError:
                 continue
-            except (json.JSONDecodeError, KeyError):
-                continue
+
+            server_info = _parse_server_beacon(data, addr, server_id)
+            if server_info is not None:
+                return server_info
     finally:
         sock.close()
 
-    print("[DISCOVERY] No server found.")
+    if on_timeout:
+        on_timeout()
     return None
+
+
+def _parse_server_beacon(data: bytes, addr: Tuple[str, int], server_id: str):
+    try:
+        msg = json.loads(data.decode("ascii"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+    if msg.get("magic") != BEACON_MAGIC or msg.get("server_id") != server_id:
+        return None
+
+    host = msg.get("host") or addr[0]
+    port = msg.get("port")
+    if port is None:
+        return None
+    return host, port
+
+
+async def discover_server(
+    server_id: str = "default",
+    timeout: float = 10.0,
+    listen_multicast: bool = True,
+    bind_host: str = "",
+):
+    """
+    Listen for a server beacon.
+    Only matches servers with the given server_id.
+    Returns (host, port) of the first matching server, or None on timeout.
+    """
+    print(f"[DISCOVERY] Searching for server '{server_id}' (timeout {timeout}s)...")
+    result = await _listen_for_server(
+        server_id,
+        timeout,
+        listen_multicast,
+        bind_host,
+        error_prefix=f"[DISCOVERY] ERROR: Could not bind to UDP port {DISCOVERY_PORT}:",
+        bind_failure_result=None,
+        on_timeout=lambda: print("[DISCOVERY] No server found."),
+    )
+    if result is not None:
+        host, port = result
+        print(f"[DISCOVERY] Found server '{server_id}' at {host}:{port}")
+    return result
 
 
 async def check_duplicate_server(
@@ -233,44 +266,13 @@ async def check_duplicate_server(
     return its (host, port). Otherwise return None.
     """
     print(f"[CHECK] Checking for existing server '{server_id}' on the network...")
-
-    try:
-        sock = _create_listen_socket(bind_host=bind_host)
-        if listen_multicast:
-            _join_multicast(sock)
-    except OSError as e:
-        print(f"[CHECK] WARNING: Could not bind UDP port {DISCOVERY_PORT}: {e}")
-        print("[CHECK] Skipping duplicate check, proceeding anyway.")
-        return None
-
-    loop = asyncio.get_event_loop()
-
-    try:
-        end_time = loop.time() + timeout
-        while loop.time() < end_time:
-            remaining = end_time - loop.time()
-            try:
-                data, addr = await asyncio.wait_for(
-                    loop.sock_recvfrom(sock, 1024),
-                    timeout=min(remaining, 1.0),
-                )
-                msg = json.loads(data.decode("ascii"))
-                
-                is_magic_match = (msg.get("magic") == BEACON_MAGIC)
-                is_id_match = (msg.get("server_id") == server_id)
-                
-                if is_magic_match and is_id_match:
-                    host = msg.get("host")
-                    if not host:
-                        host = addr[0]
-                        
-                    port = msg["port"]
-                    return host, port
-            except asyncio.TimeoutError:
-                continue
-            except (json.JSONDecodeError, KeyError):
-                continue
-    finally:
-        sock.close()
-
-    return None
+    return await _listen_for_server(
+        server_id,
+        timeout,
+        listen_multicast,
+        bind_host,
+        error_prefix=f"[CHECK] WARNING: Could not bind UDP port {DISCOVERY_PORT}:",
+        bind_failure_result=None,
+        on_bind_failure=lambda: print("[CHECK] Skipping duplicate check, proceeding anyway."),
+        on_timeout=None,
+    )
