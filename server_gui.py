@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Thread
 from tkinter import messagebox, ttk
 
+from common.manager_support import install_close_guard
 from common.runtime_logging import setup_runtime_logging
 
 
@@ -64,7 +65,7 @@ class ServerGUI(tk.Tk):
 
         self.title("Server Monitor Dashboard")
         self.geometry("800x400")
-        self.protocol("WM_DELETE_WINDOW", self.on_close_request)
+        install_close_guard(self, self.on_close_request, bind_all=True)
 
         self._build_layout()
         self.after(1000, self.update_timers)
@@ -390,14 +391,11 @@ class ServerGUI(tk.Tk):
         self.log_text.config(state=tk.DISABLED)
 
     def on_close_request(self):
-        should_close = messagebox.askyesno(
-            "Close Server Dashboard",
-            "Close the monitoring dashboard?\n\nThe server will keep running, and you can reopen the dashboard later with /gui.",
-            default=messagebox.NO,
+        messagebox.showwarning(
+            "Dashboard Protected",
+            "The monitoring dashboard is protected while the server session is active.\n\n"
+            "Use the Server Manager or server commands to control the session instead of OS close shortcuts.",
         )
-        if not should_close:
-            return
-        self.destroy()
 
     def log_message(self, client_id, message):
         data = self.clients_data.get(client_id, {})

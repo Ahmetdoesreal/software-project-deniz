@@ -74,7 +74,7 @@ def main():
             print(f"[GUI] Failed to launch gui: {e}")
 
     # Check for duplicate server with same ID
-    dup = asyncio.run(check_duplicate_server(args.id, timeout=5.0))
+    dup = asyncio.run(check_duplicate_server(args.id, timeout=5.0, local_port=args.port))
     if dup:
         host, port = dup
         print(f"[ERROR] A server with id '{args.id}' is already running at {host}:{port}")

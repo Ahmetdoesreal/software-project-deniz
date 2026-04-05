@@ -39,9 +39,22 @@ def _gui_process():
     return state.get_gui_process()
 
 
+def _queue_input(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, value):
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, value)
+    except RuntimeError:
+        # The event loop is already shutting down.
+        pass
+
+
 def _queue_stdin_line(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
-    for line in sys.stdin:
-        loop.call_soon_threadsafe(queue.put_nowait, line)
+    try:
+        for line in sys.stdin:
+            _queue_input(loop, queue, line)
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        print(f"[CMD] Console input unavailable; continuing without stdin commands: {exc}")
+    finally:
+        _queue_input(loop, queue, None)
 
 
 def _write_to_gui(payload: dict):
@@ -764,7 +777,7 @@ async def console_reader(app: web.Application):
     try:
         while True:
             line = await input_queue.get()
-            if not line:
+            if line is None:
                 break
             await handle_admin_command(line, app)
     except asyncio.CancelledError:

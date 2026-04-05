@@ -5,7 +5,7 @@ from pathlib import Path
 
 import aiohttp
 
-from common.discovery import discover_server
+from common.discovery import discover_server_with_local_fallback
 from common.runtime_logging import install_asyncio_exception_logging, setup_runtime_logging
 from custommodules.replay_recorder import ReplayRecorder
 from .auth import check_health, perform_login
@@ -45,10 +45,14 @@ class RecorderManager:
         self.recorder = None
 
 
-async def discover_loop(server_id: str, timeout: float):
+async def discover_loop(server_id: str, timeout: float, port: int):
     """Keep searching until we find a server."""
     while True:
-        result = await discover_server(server_id=server_id, timeout=timeout)
+        result = await discover_server_with_local_fallback(
+            server_id=server_id,
+            timeout=timeout,
+            local_port=port,
+        )
         if result is not None:
             return result
         print("No server found yet, retrying...")
@@ -60,13 +64,17 @@ async def resolve_server_target(args) -> tuple[str, int]:
         return args.host, args.port
 
     if getattr(args, "check_login", False):
-        server_info = await discover_server(args.id, args.timeout)
+        server_info = await discover_server_with_local_fallback(
+            args.id,
+            args.timeout,
+            local_port=args.port,
+        )
         if not server_info:
             print(f"\n[FATAL] Could not discover server '{args.id}' on the local network.")
             sys.exit(1)
         return server_info
 
-    return await discover_loop(args.id, args.timeout)
+    return await discover_loop(args.id, args.timeout, args.port)
 
 
 async def establish_session(base_url: str, args, recorder_manager: RecorderManager) -> str:

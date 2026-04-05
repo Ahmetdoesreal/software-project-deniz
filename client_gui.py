@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 
+from common.manager_support import install_close_guard
 from client.submission import build_file_preview, format_bytes
 
 from common.runtime_logging import setup_runtime_logging
@@ -41,7 +42,7 @@ class ExamTimerGUI:
         self.root.title("Exam Timer")
         self.root.geometry("400x200")
         self.root.attributes("-topmost", True)
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        install_close_guard(self.root, self.on_closing, bind_all=True)
 
     def _build_widgets(self):
         self.main_frame = ttk.Frame(self.root, padding="20")
@@ -175,30 +176,15 @@ class ExamTimerGUI:
             )
             return
 
-        self._focus_submission_window()
-        title, message = self._close_sequence_message()
-        messagebox.showwarning(title, message)
+        if self.submission_window and self.submission_window.winfo_exists():
+            self.submission_window.iconify()
+        self.root.iconify()
 
     def _focus_submission_window(self):
         if not self.submission_window or not self.submission_window.winfo_exists():
             return
         self.submission_window.lift()
         self.submission_window.focus_force()
-
-    def _close_sequence_message(self) -> tuple[str, str]:
-        if self.started:
-            return (
-                "Exam In Progress",
-                "The exam window cannot be closed directly.\n\n"
-                "Use Finish Exam to submit your file, or wait for server instructions.",
-            )
-
-        return (
-            "Exam Client Active",
-            "This window is controlled by the exam client and cannot be closed from here.\n\n"
-            "Wait for the exam to start, or stop the client from the main process if needed.",
-        )
-
 
 class SubmissionWindow(tk.Toplevel):
     def __init__(self, parent, submit_callback, close_callback):
@@ -209,7 +195,7 @@ class SubmissionWindow(tk.Toplevel):
 
         self.title("Finish Exam")
         self.geometry("760x500")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        install_close_guard(self, self._on_close_attempt, include_quit_shortcuts=False)
 
         self.path_var = tk.StringVar(value="No file selected.")
         self.status_var = tk.StringVar(value="Choose a file to preview and upload.")
@@ -396,9 +382,12 @@ class SubmissionWindow(tk.Toplevel):
         self.upload_button.config(state=tk.NORMAL)
         self.status_var.set(message)
 
-    def _on_close(self):
-        self.close_callback()
-        self.destroy()
+    def _on_close_attempt(self):
+        messagebox.showwarning(
+            "Finish Exam",
+            "This submission window stays protected while the client session is active.\n\n"
+            "Choose a file and upload it from here, or return to the timer window.",
+        )
 
     def _show_tree_preview(self):
         self.text_preview.pack_forget()
