@@ -19,6 +19,7 @@ def build_submission_bundle(
     process_report_path: str | None,
     replay_path: str | None,
     hardware_report_path: str | None,
+    focused_window_report_path: str | None = None,
 ) -> str:
     student_file = Path(student_file_path).expanduser().resolve()
     bundle_dir = Path("data") / "client" / session_uuid / "submission_bundle"
@@ -31,6 +32,7 @@ def build_submission_bundle(
         process_report_path,
         replay_path,
         hardware_report_path,
+        focused_window_report_path,
     )
     manifest = _build_bundle_manifest(student_file, runtime_files)
 
@@ -178,6 +180,7 @@ def _collect_runtime_bundle_files(
     process_report_path: str | None,
     replay_path: str | None,
     hardware_report_path: str | None,
+    focused_window_report_path: str | None,
 ) -> list[dict]:
     runtime_files: list[dict] = []
     _append_runtime_file(
@@ -209,6 +212,18 @@ def _collect_runtime_bundle_files(
         role="hardware_change_log",
         file_path=_hardware_log_path(session_uuid),
         arcname="runtime/hardware_changes.jsonl",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="focused_window_snapshot",
+        file_path=focused_window_report_path,
+        arcname="runtime/focused_window_snapshot.json",
+    )
+    _append_runtime_file(
+        runtime_files,
+        role="focused_window_log",
+        file_path=_focused_window_log_path(session_uuid),
+        arcname="runtime/focused_window.jsonl",
     )
     _append_runtime_file(
         runtime_files,
@@ -275,6 +290,10 @@ def _process_log_path(session_uuid: str) -> Path:
 
 def _hardware_log_path(session_uuid: str) -> Path:
     return Path("data") / "client" / session_uuid / "hardware_changes.jsonl"
+
+
+def _focused_window_log_path(session_uuid: str) -> Path:
+    return Path("data") / "client" / session_uuid / "focused_window.jsonl"
 
 
 def _latest_client_log(prefix: str) -> Path | None:

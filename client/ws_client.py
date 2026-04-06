@@ -16,6 +16,7 @@ from .transfers import (
     upload_runtime_artifact,
     upload_submission_bundle,
 )
+from custommodules.focused_window_monitor import FocusedWindowMonitor
 from custommodules.hardware_monitor import HardwareMonitor
 from custommodules.process_monitor import ProcessMonitor
 from custommodules.replay_recorder import ReplayRecorder
@@ -229,6 +230,7 @@ class WebSocketSession:
         self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
         self.process_monitor = self._create_process_monitor()
         self.hardware_monitor = self._create_hardware_monitor()
+        self.focused_window_monitor = self._create_focused_window_monitor()
 
     def _create_process_monitor(self):
         client_uuid = protocol.extract_client_uuid(self.ws_url)
@@ -247,6 +249,13 @@ class WebSocketSession:
         monitor.start()
         return monitor
 
+    def _create_focused_window_monitor(self):
+        client_uuid = protocol.extract_client_uuid(self.ws_url)
+        out_dir = os.path.join("data", "client", client_uuid)
+        monitor = FocusedWindowMonitor(out_dir, interval_seconds=1.0, emit_on_change_only=True)
+        monitor.start()
+        return monitor
+
     async def run(self):
         listener_task = asyncio.create_task(self.listener())
         try:
@@ -258,6 +267,7 @@ class WebSocketSession:
             self.gui.close()
             self.process_monitor.stop()
             self.hardware_monitor.stop()
+            self.focused_window_monitor.stop()
 
         if self.state.disconnected.is_set() and not self.state.intentional_shutdown:
             raise ConnectionError("Server disconnected")
@@ -501,6 +511,7 @@ class WebSocketSession:
         try:
             process_report_path = self.process_monitor.export_requested_report()
             hardware_report_path = self.hardware_monitor.export_current_snapshot()
+            focused_window_report_path = self.focused_window_monitor.export_current_snapshot()
             replay_path = None
             if self.recorder:
                 replay_path = await self.loop.run_in_executor(None, self.recorder.save_replay)
@@ -511,6 +522,7 @@ class WebSocketSession:
                 process_report_path,
                 replay_path,
                 hardware_report_path,
+                focused_window_report_path,
             )
             response = await upload_submission_bundle(
                 self.base_url,
