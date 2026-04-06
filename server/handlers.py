@@ -7,9 +7,10 @@ import zipfile
 from pathlib import Path
 from aiohttp import web, WSMsgType
 
-from common import protocol, events
+from common import protocol, events, security
 from .state import state
 from .submissions import build_artifact_path, build_submission_path, safe_relative_path
+from . import session_state
 
 
 def _json_error(message: str, status: int) -> web.Response:
@@ -41,6 +42,11 @@ def _relay_text_to_gui(client_id: str, text: str):
     _relay_client_message_to_gui(client_id, text)
 
 
+def _protect_payload(client_id: str, payload: str) -> str:
+    client_data = state.clients.get(client_id, {})
+    return security.protect_wire_message(payload, client_data.get("security"))
+
+
 def _register_new_user(login_id: str, password: str) -> web.Response:
     new_uuid = str(uuid.uuid4())
     state.users_db[login_id] = {
@@ -67,6 +73,46 @@ def _remaining_seconds(request: web.Request, user: dict) -> int:
     return max(0, exam_duration_sec + extra_time_sec - int(time_spent_seconds))
 
 
+def _session_remaining_seconds(request: web.Request, user: dict) -> int:
+    state_name = session_state.derive_state(user)
+    if state_name in session_state.PAUSED_STATES or state_name == session_state.AWAITING_SUBMISSION:
+        paused_remaining = int(user.get("paused_remaining_seconds", 0) or 0)
+        return paused_remaining or _remaining_seconds(request, user)
+    return _remaining_seconds(request, user)
+
+
+def _session_reason(user: dict) -> str:
+    return str(
+        user.get("session_state_reason")
+        or user.get("admin_pause_reason")
+        or ""
+    )
+
+
+def _session_state_payload(request: web.Request, user: dict, *, reason: str = "") -> str:
+    return events.session_state(
+        session_state.derive_state(user),
+        _session_remaining_seconds(request, user),
+        reason=reason or _session_reason(user),
+        resume_allowed=session_state.reconnect_resume_allowed(user, state.session_policy()),
+        policy_version=state.current_exam_policy().get("policy_version", ""),
+        pause_source=session_state.pause_source(user),
+    )
+
+
+def _sync_time_payload(request: web.Request, user: dict, *, reason: str = "") -> str:
+    state_name = session_state.derive_state(user)
+    remaining = _session_remaining_seconds(request, user)
+    timer_state = "paused" if state_name in session_state.PAUSED_STATES else "running"
+    pause_source = session_state.pause_source(user)
+    return events.sync_time(
+        remaining,
+        timer_state=timer_state,
+        pause_source=pause_source,
+        reason=reason or _session_reason(user),
+    )
+
+
 def _client_ip(request: web.Request) -> str:
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
@@ -86,11 +132,7 @@ def _user_has_submission(user: dict) -> bool:
 
 
 def _user_needs_submission(user: dict) -> bool:
-    return (
-        user.get("exam_started", False)
-        and user.get("exam_finished", False)
-        and not _user_has_submission(user)
-    )
+    return session_state.derive_state(user) == session_state.AWAITING_SUBMISSION
 
 
 def _login_block_reason(request: web.Request, user: dict | None) -> str | None:
@@ -105,6 +147,15 @@ def _login_block_reason(request: web.Request, user: dict | None) -> str | None:
     if not user.get("exam_started", False):
         return "Exam has already finished."
     return None
+
+
+def _update_user_incident_summary(user: dict, incident: dict):
+    user["latest_incident_id"] = str(incident.get("incident_id", "") or "")
+    user["latest_incident_rule_id"] = str(incident.get("rule_id", "") or "")
+    user["latest_incident_severity"] = str(incident.get("severity", "") or "")
+    user["latest_incident_status"] = str(incident.get("status", "") or "")
+    user["latest_incident_summary"] = str(incident.get("summary", "") or "")
+    user["latest_incident_artifact_path"] = str(incident.get("artifact_path", "") or "")
 
 
 def _is_supported_archive(archive_path: Path) -> bool:
@@ -164,7 +215,7 @@ async def _read_optional_field(reader, expected_name: str) -> str:
 
 
 async def _handle_ping_event(ws: web.WebSocketResponse, client_id: str, data: dict):
-    await ws.send_str(events.echo(data, protocol.now_iso()))
+    await ws.send_str(_protect_payload(client_id, events.echo(data, protocol.now_iso())))
     short_id = client_id[:8]
     print(f"[{short_id}] PING: {data}")
     _relay_client_message_to_gui(client_id, data)
@@ -234,6 +285,140 @@ async def _handle_process_catch_event(
     _relay_text_to_gui(client_id, f"[BLACKLIST] {match_text} [v{version}]")
 
 
+async def _handle_policy_applied_event(
+    ws: web.WebSocketResponse,
+    client_id: str,
+    data: dict,
+):
+    _, user = state.find_user_by_uuid(client_id)
+    if not user:
+        return
+
+    policy_version = str(data.get("policy_version", "")).strip()
+    ok = bool(data.get("ok", False))
+    reason = str(data.get("reason", "")).strip()
+    user["applied_policy_version"] = policy_version if ok else user.get("applied_policy_version", "")
+    user["last_action"] = f"Policy {'applied' if ok else 'rejected'}"
+    state.save_users()
+    if ok:
+        print(f"[POLICY] Client {client_id} applied policy {policy_version}.")
+    else:
+        await ws.send_str(_protect_payload(client_id, events.error(f"Policy rejected by client: {reason or 'unknown reason'}")))
+        print(f"[POLICY] Client {client_id} rejected policy {policy_version}: {reason or 'unknown reason'}")
+
+
+async def _handle_incident_report_event(
+    ws: web.WebSocketResponse,
+    request: web.Request,
+    client_id: str,
+    data: dict,
+):
+    login_id, user = state.find_user_by_uuid(client_id)
+    if not user:
+        await ws.send_str(_protect_payload(client_id, events.error("Unknown client for incident report.")))
+        return
+
+    incident_id = str(data.get("incident_id", "")).strip()
+    rule_id = str(data.get("rule_id", "")).strip()
+    status = str(data.get("status", "")).strip()
+    if not incident_id or not rule_id or not status:
+        await ws.send_str(_protect_payload(client_id, events.error("Incident report requires incident_id, rule_id, and status.")))
+        return
+
+    incident = dict(data)
+    incident["client_id"] = client_id
+    incident["login_id"] = login_id
+    incident["server_received_at"] = protocol.now_iso()
+    incident["incident_id"] = incident_id
+    incident["rule_id"] = rule_id
+    incident["status"] = status
+
+    should_violation_pause = (
+        status == "opened"
+        and str(incident.get("severity", "")).strip().lower() == "violation"
+        and bool(state.rule_config(rule_id).get("auto_violation_pause", False))
+    )
+    if should_violation_pause:
+        remaining = _session_remaining_seconds(request, user)
+        session_state.set_state(
+            user,
+            session_state.VIOLATION_PAUSED,
+            reason=str(incident.get("summary", "") or rule_id),
+            remaining_seconds=remaining,
+            blocking_incident_id=incident_id,
+            blocking_rule_id=rule_id,
+        )
+        incident["blocking"] = True
+
+    state.append_incident(incident)
+
+    user["last_action"] = (
+        f"Violation paused: {rule_id}" if should_violation_pause else f"Incident {status}: {rule_id}"
+    )
+    if rule_id == "process_blacklist" and incident.get("process_name"):
+        user["blacklist_catch_count"] = int(user.get("blacklist_catch_count", 0)) + (1 if status == "opened" else 0)
+        user["last_blacklist_match"] = [str(incident.get("process_name"))]
+    _update_user_incident_summary(user, incident)
+    state.save_users()
+
+    summary = str(incident.get("summary", "") or rule_id)
+    print(f"[INCIDENT] {login_id} ({client_id}) {status} {rule_id}: {summary}")
+    _relay_text_to_gui(client_id, f"[INCIDENT] {status} {rule_id}: {summary}")
+    if should_violation_pause:
+        remaining = _session_remaining_seconds(request, user)
+        await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))
+        await ws.send_str(
+            _protect_payload(client_id, events.pause_exam(
+                remaining,
+                source="violation",
+                reason=str(incident.get("summary", "") or rule_id),
+            ))
+        )
+    await ws.send_str(
+        _protect_payload(client_id, events.incident_received(
+            incident_id,
+            artifact_path=str(incident.get("artifact_path", "") or ""),
+        ))
+    )
+
+
+async def _handle_kill_process_result_event(
+    ws: web.WebSocketResponse,
+    client_id: str,
+    data: dict,
+):
+    login_id, user = state.find_user_by_uuid(client_id)
+    if not user:
+        await ws.send_str(_protect_payload(client_id, events.error("Unknown client for kill result.")))
+        return
+
+    pid = int(data.get("pid", 0) or 0)
+    incident_id = str(data.get("incident_id", "")).strip()
+    ok = bool(data.get("ok", False))
+    process_name = str(data.get("process_name", "")).strip()
+    message = str(data.get("message", "")).strip()
+    result_text = f"{'succeeded' if ok else 'failed'} for pid {pid}"
+    if process_name:
+        result_text = f"{result_text} ({process_name})"
+    if message:
+        result_text = f"{result_text}: {message}"
+
+    user["last_action"] = f"Kill PID {'ok' if ok else 'failed'}"
+    state.save_users()
+
+    if incident_id and incident_id in state.active_incidents:
+        state.active_incidents[incident_id]["last_kill_result"] = {
+            "ok": ok,
+            "pid": pid,
+            "process_name": process_name,
+            "message": message,
+            "at": protocol.now_iso(),
+        }
+
+    print(f"[INCIDENT] Kill result from {login_id} ({client_id}): {result_text}")
+    _relay_text_to_gui(client_id, f"[KILL] {result_text}")
+
+
 async def _handle_start_exam(
     ws: web.WebSocketResponse,
     request: web.Request,
@@ -243,28 +428,36 @@ async def _handle_start_exam(
     if not user:
         return
     if _user_has_submission(user):
-        await ws.send_str(events.error("Submission already received for this user."))
+        await ws.send_str(_protect_payload(client_id, events.error("Submission already received for this user.")))
         return
-    if user.get("exam_finished", False):
-        await ws.send_str(events.error("Exam has already finished."))
+    state_name = session_state.derive_state(user)
+    if state_name in {session_state.AWAITING_SUBMISSION, session_state.SUBMITTED}:
+        await ws.send_str(_protect_payload(client_id, events.error("Exam has already finished.")))
         return
-    if user.get("exam_started", False):
-        await ws.send_str(events.sync_time(_remaining_seconds(request, user)))
+    if state_name in {
+        session_state.RUNNING,
+        session_state.ADMIN_PAUSED,
+        session_state.DISCONNECTED_PAUSED,
+        session_state.VIOLATION_PAUSED,
+    }:
+        await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))
+        await ws.send_str(_protect_payload(client_id, _sync_time_payload(request, user)))
         return
 
     exam_phase = request.app.get("exam_phase", "waiting")
     if exam_phase != "running":
         if exam_phase == "finished":
-            await ws.send_str(events.error("Exam has already finished."))
+            await ws.send_str(_protect_payload(client_id, events.error("Exam has already finished.")))
         else:
-            await ws.send_str(events.error("Exam is not started yet."))
+            await ws.send_str(_protect_payload(client_id, events.error("Exam is not started yet.")))
         return
 
-    user["exam_started"] = True
+    session_state.set_state(user, session_state.RUNNING, reason="Exam started.")
     user["last_action"] = "Started"
     state.save_users()
     print(f"[EXAM] Client {client_id} started their exam.")
-    await ws.send_str(events.sync_time(_remaining_seconds(request, user)))
+    await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))
+    await ws.send_str(_protect_payload(client_id, _sync_time_payload(request, user)))
 
 
 # -- HTTP Routes -----------------------------------------------------------
@@ -342,7 +535,7 @@ async def exam_submission(request: web.Request) -> web.Response:
     state.ensure_user_defaults(user)
     if user.get("banned", False):
         return web.json_response({"error": "This user is banned."}, status=403)
-    if not user.get("exam_started", False):
+    if session_state.derive_state(user) == session_state.WAITING:
         return web.json_response({"error": "Exam has not started for this client."}, status=409)
     if _user_has_submission(user):
         return web.json_response({"error": "Submission already received for this user."}, status=409)
@@ -373,7 +566,12 @@ async def exam_submission(request: web.Request) -> web.Response:
         _remove_file_if_present(destination)
         return web.json_response({"error": "Uploaded submission checksum mismatch."}, status=400)
 
-    user["exam_finished"] = True
+    session_state.set_state(
+        user,
+        session_state.SUBMITTED,
+        reason="Submission uploaded successfully.",
+        clear_blocking=True,
+    )
     user["submitted_at"] = protocol.now_iso()
     user["submission_name"] = Path(file_part.filename).name
     user["submission_path"] = safe_relative_path(destination)
@@ -509,29 +707,67 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         "short_id": short_id,
         "ip": ip,
         "computer_name": user.get("computer_name", "") if user else "",
+        "security": security.build_session_context(client_id, str(user.get("password", "") or "")) if user else None,
     }
     print(f"[+] Client connected: {client_id} (short: {short_id}, ip: {ip})")
 
     # Send welcome with their ID
-    await ws.send_str(events.welcome(client_id, request.app["server_id"]))
+    await ws.send_str(_protect_payload(client_id, events.welcome(client_id, request.app["server_id"])))
+    await ws.send_str(_protect_payload(client_id, events.exam_policy(state.current_exam_policy())))
     await ws.send_str(
-        events.process_blacklist(
+        _protect_payload(client_id, events.process_blacklist(
             state.process_blacklist,
             state.process_blacklist_version,
-        )
+        ))
     )
     if user:
-        user["last_action"] = "Awaiting submission" if _user_needs_submission(user) else "Connected"
+        current_state = session_state.derive_state(user)
+        if current_state == session_state.DISCONNECTED_PAUSED and session_state.reconnect_resume_allowed(
+            user,
+            state.session_policy(),
+        ):
+            session_state.set_state(
+                user,
+                session_state.RUNNING,
+                reason="Reconnected and resumed automatically.",
+                remaining_seconds=_session_remaining_seconds(request, user),
+                clear_blocking=True,
+            )
+            current_state = session_state.RUNNING
+            user["last_action"] = "Reconnected"
+        elif current_state == session_state.AWAITING_SUBMISSION:
+            user["last_action"] = "Awaiting submission"
+        elif current_state in session_state.PAUSED_STATES:
+            user["last_action"] = "Reconnected paused"
+        elif current_state == session_state.RUNNING:
+            user["last_action"] = "Connected"
+        else:
+            user["last_action"] = "Connected"
         state.save_users()
-        if _user_needs_submission(user):
-            await ws.send_str(events.finish_exam("Your exam has ended. Please upload your file."))
+        await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))
+        current_state = session_state.derive_state(user)
+        if current_state == session_state.AWAITING_SUBMISSION:
+            await ws.send_str(_protect_payload(client_id, events.finish_exam("Your exam has ended. Please upload your file.")))
+        elif current_state in {session_state.RUNNING, *session_state.PAUSED_STATES}:
+            await ws.send_str(_protect_payload(client_id, _sync_time_payload(request, user)))
+            if current_state in session_state.PAUSED_STATES:
+                await ws.send_str(
+                    _protect_payload(client_id, events.pause_exam(
+                        _session_remaining_seconds(request, user),
+                        source=session_state.pause_source(user),
+                        reason=_session_reason(user),
+                    ))
+                )
 
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
-                event, data = protocol.decode(msg.data)
+                event, data = security.decode_wire_message(
+                    msg.data,
+                    state.clients.get(client_id, {}).get("security"),
+                )
                 if event == protocol.DECODE_ERROR:
-                    await ws.send_str(events.error(data.get("reason", "protocol decode failed")))
+                    await ws.send_str(_protect_payload(client_id, events.error(data.get("reason", "protocol decode failed"))))
                     continue
 
                 if event == events.PING:
@@ -542,16 +778,32 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     await _handle_start_exam(ws, request, client_id)
                 elif event == events.PROCESS_CATCH:
                     await _handle_process_catch_event(ws, client_id, data)
+                elif event == events.POLICY_APPLIED:
+                    await _handle_policy_applied_event(ws, client_id, data)
+                elif event == events.INCIDENT_REPORT:
+                    await _handle_incident_report_event(ws, request, client_id, data)
+                elif event == events.KILL_PROCESS_RESULT:
+                    await _handle_kill_process_result_event(ws, client_id, data)
                 else:
-                    await ws.send_str(events.error(f"unknown event: {event}"))
+                    await ws.send_str(_protect_payload(client_id, events.error(f"unknown event: {event}")))
 
             elif msg.type == WSMsgType.ERROR:
                 print(f"[!] Client {client_id} error: {ws.exception()}")
     finally:
         # Unregister on disconnect
         state.clients.pop(client_id, None)
-        if user and user.get("last_action") == "Connected":
-            user["last_action"] = "Disconnected"
+        if user:
+            current_state = session_state.derive_state(user)
+            if current_state == session_state.RUNNING:
+                session_state.set_state(
+                    user,
+                    session_state.DISCONNECTED_PAUSED,
+                    reason="Disconnected from server.",
+                    remaining_seconds=_remaining_seconds(request, user),
+                )
+                user["last_action"] = "Disconnected paused"
+            elif current_state == session_state.WAITING:
+                user["last_action"] = "Disconnected"
             state.save_users()
         print(f"[-] Client {client_id} disconnected  ({len(state.clients)} total)")
 

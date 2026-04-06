@@ -52,6 +52,25 @@ class HardwareMonitor:
         self._previous_snapshot = snapshot
         return report_path
 
+    def append_state_marker(
+        self,
+        *,
+        remaining_seconds: int,
+        timer_state: str,
+        source: str,
+        reason: str = "",
+    ):
+        payload = {
+            "timestamp": protocol.now_iso(),
+            "type": "exam_state_marker",
+            "remaining_seconds": remaining_seconds,
+            "timer_state": timer_state,
+            "source": source,
+        }
+        if reason:
+            payload["reason"] = reason
+        self._write_log(payload)
+
     def _current_snapshot(self) -> dict:
         snapshot = collect_hardware_snapshot()
         system_name = platform.system()

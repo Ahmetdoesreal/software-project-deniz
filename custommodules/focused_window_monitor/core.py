@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import platform
+from collections.abc import Callable
 
 from common import protocol
 
@@ -18,12 +19,14 @@ class FocusedWindowMonitor:
         *,
         interval_seconds: float = CHECK_INTERVAL_SECONDS,
         emit_on_change_only: bool = True,
+        snapshot_callback: Callable[[dict], None] | None = None,
     ):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         self.log_file = os.path.join(self.output_dir, "focused_window.jsonl")
         self.interval_seconds = interval_seconds
         self.emit_on_change_only = emit_on_change_only
+        self.snapshot_callback = snapshot_callback
         self.active = False
         self._task = None
         self._previous_snapshot = None
@@ -37,6 +40,8 @@ class FocusedWindowMonitor:
         initial_snapshot = self._current_snapshot()
         self._previous_snapshot = initial_snapshot
         self._write_log(self._snapshot_entry("focused_window_initial", initial_snapshot))
+        if self.snapshot_callback:
+            self.snapshot_callback(initial_snapshot)
         self._task = asyncio.create_task(self._loop())
         print(f"[FOCUS] Monitor started. Logging to {self.log_file}")
 
@@ -63,6 +68,25 @@ class FocusedWindowMonitor:
         print(f"[FOCUS] Wrote current focused window snapshot to {report_path}")
         self._previous_snapshot = snapshot
         return report_path
+
+    def append_state_marker(
+        self,
+        *,
+        remaining_seconds: int,
+        timer_state: str,
+        source: str,
+        reason: str = "",
+    ):
+        payload = {
+            "timestamp": protocol.now_iso(),
+            "type": "exam_state_marker",
+            "remaining_seconds": remaining_seconds,
+            "timer_state": timer_state,
+            "source": source,
+        }
+        if reason:
+            payload["reason"] = reason
+        self._write_log(payload)
 
     def _current_snapshot(self) -> dict:
         if platform.system() == "Windows":
@@ -112,6 +136,8 @@ class FocusedWindowMonitor:
             while self.active:
                 await asyncio.sleep(self.interval_seconds)
                 current_snapshot = self._current_snapshot()
+                if self.snapshot_callback:
+                    self.snapshot_callback(current_snapshot)
 
                 if self.emit_on_change_only:
                     if current_snapshot == self._previous_snapshot:

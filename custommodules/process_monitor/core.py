@@ -20,6 +20,7 @@ class ProcessMonitor:
         output_dir: str,
         *,
         catch_callback: Callable[[list[dict], str], None] | None = None,
+        poll_callback: Callable[[set[tuple[int, str]], str], None] | None = None,
     ):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
@@ -29,6 +30,7 @@ class ProcessMonitor:
         self._task = None
         self.current_remaining_time = 0
         self.catch_callback = catch_callback
+        self.poll_callback = poll_callback
         self.blacklist_entries: list[str] = []
         self.blacklist_names: set[str] = set()
         self.blacklist_version = "0"
@@ -84,6 +86,15 @@ class ProcessMonitor:
         print(f"[PROCESS] Wrote requested full process report to {report_path}")
         self.previous_procs = current_procs
         return report_path
+
+    def append_state_marker(self, *, timer_state: str, source: str, reason: str = ""):
+        payload = self._build_base_payload("exam_state_marker")
+        payload["remaining_seconds"] = self.current_remaining_time
+        payload["timer_state"] = timer_state
+        payload["source"] = source
+        if reason:
+            payload["reason"] = reason
+        self._write_log(payload)
 
     def _get_current_processes(self) -> set[tuple[int, str]]:
         if platform.system() == "Darwin":
@@ -175,6 +186,8 @@ class ProcessMonitor:
                 await asyncio.sleep(DIFF_INTERVAL_SECONDS)
                 tick_count += 1
                 current_procs = self._get_current_processes()
+                if self.poll_callback:
+                    self.poll_callback(current_procs, self.blacklist_version)
                 self._report_blacklist_matches(self._detect_blacklist_matches(current_procs))
 
                 if tick_count >= ticks_per_full_snapshot:

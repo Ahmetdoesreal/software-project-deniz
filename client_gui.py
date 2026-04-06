@@ -31,6 +31,8 @@ class ExamTimerGUI:
         self.remaining = 0
         self.active = True
         self.started = False
+        self.timer_state = "idle"
+        self.pause_reason = ""
         self.submission_window = None
         self.finish_in_progress = False
 
@@ -79,7 +81,7 @@ class ExamTimerGUI:
         self.label_var.set("Starting...")
 
     def update_clock(self):
-        if self.active and self.started:
+        if self.active and self.started and self.timer_state != "paused":
             if self.remaining > 0:
                 self.label_var.set(_format_time(self.remaining))
                 self.remaining -= 1
@@ -94,10 +96,13 @@ class ExamTimerGUI:
             return
 
         self.remaining = seconds
+        if self.timer_state != "paused":
+            self.label_var.set(_format_time(self.remaining))
         if self.started:
             return
 
         self.started = True
+        self.timer_state = "running"
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL)
@@ -140,6 +145,7 @@ class ExamTimerGUI:
 
     def prompt_finish_from_server(self, message: str):
         self.started = True
+        self.timer_state = "submission_only"
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
@@ -161,6 +167,31 @@ class ExamTimerGUI:
         if self.submission_window and self.submission_window.winfo_exists():
             self.submission_window.set_ready_after_error(message)
         messagebox.showerror("Upload Failed", message)
+
+    def pause_timer(self, remaining_seconds: int, reason: str = ""):
+        self.started = True
+        self.timer_state = "paused"
+        self.pause_reason = reason
+        self.remaining = max(0, int(remaining_seconds))
+        self.start_btn.pack_forget()
+        self.finish_btn.pack()
+        self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
+        pause_text = f"Paused at {_format_time(self.remaining)}"
+        if reason:
+            pause_text = f"{pause_text}\n{reason}"
+        self.label_var.set(pause_text)
+        self.label.config(font=("Helvetica", 22, "bold"))
+
+    def resume_timer(self, remaining_seconds: int, reason: str = ""):
+        self.started = True
+        self.timer_state = "running"
+        self.pause_reason = ""
+        self.remaining = max(0, int(remaining_seconds))
+        self.start_btn.pack_forget()
+        self.finish_btn.pack()
+        self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
+        self.label.config(font=("Helvetica", 32, "bold"))
+        self.label_var.set(_format_time(self.remaining))
 
     def _clear_submission_window(self):
         self.submission_window = None
@@ -409,6 +440,22 @@ def ipc_reader(app: ExamTimerGUI):
         try:
             if command == "SYNC":
                 app.root.after(0, app.set_remaining, int(value))
+            elif command == "PAUSE":
+                payload = json.loads(value) if value else {}
+                app.root.after(
+                    0,
+                    app.pause_timer,
+                    int(payload.get("remaining_seconds", 0) or 0),
+                    str(payload.get("reason", "") or ""),
+                )
+            elif command == "RESUME":
+                payload = json.loads(value) if value else {}
+                app.root.after(
+                    0,
+                    app.resume_timer,
+                    int(payload.get("remaining_seconds", 0) or 0),
+                    str(payload.get("reason", "") or ""),
+                )
             elif command == "END":
                 app.root.after(0, app.set_remaining, -1)
             elif command == "RESET":

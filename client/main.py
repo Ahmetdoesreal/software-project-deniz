@@ -130,6 +130,7 @@ async def main_loop(args):
                     build_ws_url(host, port, session_uuid),
                     base_url,
                     session_uuid,
+                    args.password,
                     recorder_manager.recorder,
                 )
                 if submission_completed:

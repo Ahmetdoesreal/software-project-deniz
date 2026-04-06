@@ -8,10 +8,14 @@ from dataclasses import dataclass
 from threading import Thread
 
 import aiohttp
+import psutil
 
-from common import events, protocol
+from common import events, protocol, security
+from .exam_state import ExamStateLogger
+from .incidents import ClientIncidentEngine
 from .submission import validate_submission_file
 from .transfers import (
+    build_incident_bundle,
     build_submission_bundle,
     upload_runtime_artifact,
     upload_submission_bundle,
@@ -133,6 +137,12 @@ class ClientGUIBridge:
     def send_sync(self, remaining_seconds: int):
         self._write(f"SYNC:{remaining_seconds}\n")
 
+    def send_pause(self, remaining_seconds: int, reason: str = ""):
+        self._write(f"PAUSE:{json.dumps({'remaining_seconds': remaining_seconds, 'reason': reason})}\n")
+
+    def send_resume(self, remaining_seconds: int, reason: str = ""):
+        self._write(f"RESUME:{json.dumps({'remaining_seconds': remaining_seconds, 'reason': reason})}\n")
+
     def send_end(self):
         self._write("END:-1\n")
 
@@ -205,6 +215,12 @@ class SessionState:
     submission_only: bool = False
     submission_completed: bool = False
     intentional_shutdown: bool = False
+    current_remaining_seconds: int = 0
+    timer_state: str = "idle"
+    pause_source: str = ""
+    applied_policy_version: str = ""
+    session_state: str = "waiting"
+    resume_allowed: bool = False
 
 
 class WebSocketSession:
@@ -213,46 +229,53 @@ class WebSocketSession:
         ws_url: str,
         base_url: str,
         session_uuid: str,
+        password: str,
         ws,
         recorder: ReplayRecorder | None,
     ):
         self.ws_url = ws_url
         self.base_url = base_url
         self.session_uuid = session_uuid
+        self.password = password
         self.ws = ws
         self.recorder = recorder
         self.loop = asyncio.get_running_loop()
+        self.security = security.build_session_context(session_uuid, password)
         self.state = SessionState(
             disconnected=asyncio.Event(),
             start_event=asyncio.Event(),
         )
+        self.output_dir = os.path.join("data", "client", self.session_uuid)
         self.stdin = StdinBridge(self.loop)
         self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
+        self.exam_state_logger = ExamStateLogger(self.output_dir)
+        self.incident_engine = ClientIncidentEngine()
+        self._background_tasks: set[asyncio.Task] = set()
         self.process_monitor = self._create_process_monitor()
         self.hardware_monitor = self._create_hardware_monitor()
         self.focused_window_monitor = self._create_focused_window_monitor()
+        self._record_timer_transition(timer_state="idle", source="client", reason="session_initialized")
 
     def _create_process_monitor(self):
-        client_uuid = protocol.extract_client_uuid(self.ws_url)
-        out_dir = os.path.join("data", "client", client_uuid)
         monitor = ProcessMonitor(
-            out_dir,
-            catch_callback=self._queue_process_catch_report,
+            self.output_dir,
+            poll_callback=self._queue_process_snapshot,
         )
         monitor.start()
         return monitor
 
     def _create_hardware_monitor(self):
-        client_uuid = protocol.extract_client_uuid(self.ws_url)
-        out_dir = os.path.join("data", "client", client_uuid)
-        monitor = HardwareMonitor(out_dir)
+        monitor = HardwareMonitor(self.output_dir)
         monitor.start()
         return monitor
 
     def _create_focused_window_monitor(self):
-        client_uuid = protocol.extract_client_uuid(self.ws_url)
-        out_dir = os.path.join("data", "client", client_uuid)
-        monitor = FocusedWindowMonitor(out_dir, interval_seconds=1.0, emit_on_change_only=True)
+        monitor = FocusedWindowMonitor(
+            self.output_dir,
+            interval_seconds=1.0,
+            emit_on_change_only=True,
+            snapshot_callback=self._queue_focused_window_snapshot,
+        )
         monitor.start()
         return monitor
 
@@ -260,6 +283,60 @@ class WebSocketSession:
         self.process_monitor.stop()
         self.hardware_monitor.stop()
         self.focused_window_monitor.stop()
+
+    def _schedule_background_task(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def _send_payload(self, payload: str):
+        await self.ws.send_str(security.protect_wire_message(payload, self.security))
+
+    def _record_timer_transition(self, *, timer_state: str, source: str, reason: str = ""):
+        remaining = int(self.state.current_remaining_seconds or 0)
+        self.exam_state_logger.record(
+            remaining_seconds=remaining,
+            timer_state=timer_state,
+            source=source,
+            reason=reason,
+        )
+        self.process_monitor.append_state_marker(
+            timer_state=timer_state,
+            source=source,
+            reason=reason,
+        )
+        self.focused_window_monitor.append_state_marker(
+            remaining_seconds=remaining,
+            timer_state=timer_state,
+            source=source,
+            reason=reason,
+        )
+        self.hardware_monitor.append_state_marker(
+            remaining_seconds=remaining,
+            timer_state=timer_state,
+            source=source,
+            reason=reason,
+        )
+
+    def _update_timer_state(
+        self,
+        *,
+        remaining_seconds: int,
+        timer_state: str,
+        source: str,
+        reason: str = "",
+    ):
+        previous_state = self.state.timer_state
+        previous_remaining = self.state.current_remaining_seconds
+        self.state.current_remaining_seconds = int(max(0, remaining_seconds))
+        self.state.timer_state = timer_state
+        self.state.pause_source = source if timer_state == "paused" else ""
+        self.process_monitor.update_time(self.state.current_remaining_seconds)
+        if previous_state != timer_state or (
+            timer_state == "paused" and previous_remaining != self.state.current_remaining_seconds
+        ):
+            self._record_timer_transition(timer_state=timer_state, source=source, reason=reason)
 
     async def run(self):
         listener_task = asyncio.create_task(self.listener())
@@ -271,6 +348,8 @@ class WebSocketSession:
             listener_task.cancel()
             self.gui.close()
             self._stop_runtime_monitors()
+            for task in list(self._background_tasks):
+                task.cancel()
 
         if self.state.disconnected.is_set() and not self.state.intentional_shutdown:
             raise ConnectionError("Server disconnected")
@@ -316,7 +395,7 @@ class WebSocketSession:
             return
 
         self.state.start_request_pending = True
-        await self.ws.send_str(events.start_exam())
+        await self._send_payload(events.start_exam())
         print("[EXAM] Start request sent...")
 
     async def sender(self):
@@ -355,7 +434,7 @@ class WebSocketSession:
                 continue
 
             if text:
-                await self.ws.send_str(events.ping(text))
+                await self._send_payload(events.ping(text))
 
     async def listener(self):
         try:
@@ -370,7 +449,7 @@ class WebSocketSession:
             self.state.disconnected.set()
 
     async def handle_text_message(self, raw_message: str):
-        event, data = protocol.decode(raw_message)
+        event, data = security.decode_wire_message(raw_message, self.security)
         if event == protocol.DECODE_ERROR:
             print(f"[WS] Protocol error: {data.get('reason', 'decode failed')}")
             return
@@ -378,7 +457,15 @@ class WebSocketSession:
         if event == events.WELCOME:
             print(f"[WS] Connected! Server assigned ID: {data['id']}")
             self.gui.ensure_started()
-            await self.ws.send_str(events.client_info(_computer_name()))
+            await self._send_payload(events.client_info(_computer_name()))
+            return
+
+        if event == events.EXAM_POLICY:
+            await self.handle_exam_policy(data, update_kind="initial")
+            return
+
+        if event == events.POLICY_UPDATE:
+            await self.handle_exam_policy(data, update_kind="update")
             return
 
         if event == events.ECHO:
@@ -390,6 +477,18 @@ class WebSocketSession:
 
         if event == events.SYNC_TIME:
             self.handle_sync_time(data)
+            return
+
+        if event == events.SESSION_STATE:
+            self.handle_session_state(data)
+            return
+
+        if event == events.PAUSE_EXAM:
+            self.handle_pause_exam(data)
+            return
+
+        if event == events.RESUME_EXAM:
+            self.handle_resume_exam(data)
             return
 
         if event == events.ERROR:
@@ -431,11 +530,28 @@ class WebSocketSession:
             self.handle_process_blacklist(data)
             return
 
+        if event == events.INCIDENT_RECEIVED:
+            incident_id = data.get("incident_id", "")
+            print(f"[INCIDENT] Server acknowledged incident {incident_id}.")
+            return
+
+        if event == events.KILL_PROCESS:
+            await self.handle_kill_process(data)
+            return
+
         print(f"[WS] {event}: {data}")
 
     def handle_sync_time(self, data: dict):
-        remaining = data.get("remaining_seconds", 0)
-        self.process_monitor.update_time(remaining)
+        remaining = int(data.get("remaining_seconds", 0) or 0)
+        timer_state = str(data.get("timer_state", "running") or "running")
+        pause_source = str(data.get("pause_source", "") or "")
+        reason = str(data.get("reason", "") or "")
+        self._update_timer_state(
+            remaining_seconds=remaining,
+            timer_state=timer_state,
+            source=pause_source or "server",
+            reason=reason,
+        )
         self.gui.ensure_started()
         self.state.start_request_pending = False
 
@@ -444,7 +560,141 @@ class WebSocketSession:
             self.state.start_event.set()
 
         self.gui.send_sync(remaining)
+        if timer_state == "paused":
+            self.gui.send_pause(remaining, reason)
+        else:
+            self.gui.send_resume(remaining, reason)
         self._print_remaining_time(remaining)
+
+    def handle_session_state(self, data: dict):
+        state_name = str(data.get("state", "waiting") or "waiting")
+        remaining = int(data.get("remaining_seconds", self.state.current_remaining_seconds) or 0)
+        reason = str(data.get("reason", "") or "")
+        pause_source = str(data.get("pause_source", "") or "")
+        self.state.session_state = state_name
+        self.state.resume_allowed = bool(data.get("resume_allowed", False))
+
+        if state_name == "waiting":
+            self.state.start_request_pending = False
+            self._update_timer_state(
+                remaining_seconds=remaining,
+                timer_state="idle",
+                source="server",
+                reason=reason or "waiting",
+            )
+            return
+
+        self.gui.ensure_started()
+
+        if state_name == "awaiting_submission":
+            self.state.submission_only = True
+            self.state.start_event.set()
+            self._record_timer_transition(
+                timer_state="submission_only",
+                source="server",
+                reason=reason or "awaiting_submission",
+            )
+            self.gui.send_open_finish(reason or "Your exam has ended. Please upload your file.")
+            print(f"[EXAM] {reason or 'Submission is required.'}")
+            return
+
+        if state_name in {"running", "admin_paused", "disconnected_paused", "violation_paused"}:
+            self.state.start_request_pending = False
+            self.state.start_event.set()
+
+        if state_name == "running":
+            self._update_timer_state(
+                remaining_seconds=remaining,
+                timer_state="running",
+                source="server",
+                reason=reason,
+            )
+            self.gui.send_resume(remaining, reason)
+            if reason:
+                print(f"[EXAM] {reason}")
+            return
+
+        if state_name in {"admin_paused", "disconnected_paused", "violation_paused"}:
+            self._update_timer_state(
+                remaining_seconds=remaining,
+                timer_state="paused",
+                source=pause_source or "server",
+                reason=reason,
+            )
+            self.gui.send_pause(remaining, reason)
+            if reason:
+                print(f"[EXAM] {reason}")
+            elif state_name == "violation_paused":
+                print("[EXAM] Session is violation-paused pending administrator action.")
+            elif state_name == "disconnected_paused":
+                print("[EXAM] Session is paused pending reconnect approval.")
+            else:
+                print("[EXAM] Session is paused by the server.")
+            return
+
+        if state_name == "submitted":
+            self.state.submission_only = False
+            self.state.submission_completed = True
+            self._record_timer_transition(
+                timer_state="submitted",
+                source="server",
+                reason=reason or "submitted",
+            )
+            return
+
+        if state_name == "banned":
+            self.handle_server_error({"reason": reason or "This user is banned."})
+            return
+
+    async def handle_exam_policy(self, data: dict, *, update_kind: str):
+        ok, reason = self.incident_engine.apply_policy(data)
+        policy_version = str(data.get("policy_version", "")).strip()
+        if ok:
+            self.state.applied_policy_version = policy_version
+            self._apply_blacklist_from_policy(data)
+            print(f"[POLICY] Applied {update_kind} policy version {policy_version}.")
+            await self._send_payload(events.policy_applied(policy_version, ok=True))
+            return
+
+        print(f"[POLICY] Failed to apply {update_kind} policy: {reason}")
+        await self._send_payload(events.policy_applied(policy_version, ok=False, reason=reason))
+
+    def _apply_blacklist_from_policy(self, policy: dict):
+        for rule in policy.get("rules", []):
+            if not isinstance(rule, dict):
+                continue
+            if str(rule.get("rule_id")) != "process_blacklist":
+                continue
+            entries = [str(entry).strip() for entry in rule.get("entries", []) if str(entry).strip()]
+            version = str(rule.get("blacklist_version", "") or policy.get("policy_version", "0"))
+            self.process_monitor.set_blacklist(entries, version)
+            return
+
+    def handle_pause_exam(self, data: dict):
+        remaining = int(data.get("remaining_seconds", self.state.current_remaining_seconds) or 0)
+        reason = str(data.get("reason", "") or "")
+        self._update_timer_state(
+            remaining_seconds=remaining,
+            timer_state="paused",
+            source=str(data.get("source", "admin") or "admin"),
+            reason=reason,
+        )
+        self.gui.ensure_started()
+        self.gui.send_pause(remaining, reason)
+        print(f"[EXAM] Timer paused. {reason}".strip())
+
+    def handle_resume_exam(self, data: dict):
+        remaining = int(data.get("remaining_seconds", self.state.current_remaining_seconds) or 0)
+        reason = str(data.get("reason", "") or "")
+        self._update_timer_state(
+            remaining_seconds=remaining,
+            timer_state="running",
+            source=str(data.get("source", "admin") or "admin"),
+            reason=reason,
+        )
+        self.gui.ensure_started()
+        self.gui.send_resume(remaining, reason)
+        print("[EXAM] Timer resumed.")
 
     def handle_server_error(self, data: dict):
         reason = data.get("reason", "Unknown server error.")
@@ -475,6 +725,7 @@ class WebSocketSession:
         print(f"[EXAM] {reason}")
         self.gui.ensure_started()
         self.gui.send_open_finish(reason)
+        self._record_timer_transition(timer_state="submission_only", source="server", reason=reason)
 
     def handle_exam_end(self):
         print("\n===============================")
@@ -482,6 +733,7 @@ class WebSocketSession:
         print("===============================")
         self.state.exam_active = False
         self.gui.send_end()
+        self._record_timer_transition(timer_state="finished", source="server", reason="exam_end")
         self.state.disconnected.set()
 
     async def finish_exam(self, archive_path: str):
@@ -510,6 +762,7 @@ class WebSocketSession:
 
         self.state.finish_request_pending = True
         self.state.submission_only = True
+        self._record_timer_transition(timer_state="submission_upload", source="client", reason="finish_exam")
         print(f"[EXAM] Uploading file: {archive_path}")
         try:
             self._stop_runtime_monitors()
@@ -566,16 +819,142 @@ class WebSocketSession:
         except Exception as exc:
             print(f"[UPLOAD] Failed to upload {artifact_kind}: {exc}")
 
-    def _queue_process_catch_report(self, matches: list[dict], blacklist_version: str):
-        asyncio.create_task(self._send_process_catch_report(matches, blacklist_version))
+    def _queue_process_snapshot(self, processes: set[tuple[int, str]], _blacklist_version: str):
+        self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_processes(processes)))
 
-    async def _send_process_catch_report(self, matches: list[dict], blacklist_version: str):
-        if not matches:
+    def _queue_focused_window_snapshot(self, snapshot: dict):
+        self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_focused_window(snapshot)))
+
+    async def _process_local_incidents(self, incidents: list[dict]):
+        if not incidents or self.state.disconnected.is_set():
             return
+        for incident in incidents:
+            await self._report_incident(incident)
+
+    async def _report_incident(self, incident: dict):
+        incident_payload = dict(incident)
+        incident_payload["session_uuid"] = self.session_uuid
+        incident_payload["computer_name"] = _computer_name()
+        incident_payload["reported_at"] = protocol.now_iso()
+
+        upload_failed = False
+        if incident_payload.get("needs_evidence"):
+            artifact_path = await self._upload_incident_evidence(incident_payload)
+            if artifact_path:
+                incident_payload["artifact_path"] = artifact_path
+            else:
+                upload_failed = True
+                incident_payload["evidence_upload_failed"] = True
+                self._schedule_background_task(self._retry_incident_evidence_upload(dict(incident_payload)))
+
         try:
-            await self.ws.send_str(events.process_catch(matches, blacklist_version))
+            await self._send_payload(events.incident_report(incident_payload))
         except Exception as exc:
-            print(f"[PROCESS] Failed to send blacklist catch report: {exc}")
+            print(f"[INCIDENT] Failed to send incident {incident_payload.get('incident_id')}: {exc}")
+            return
+
+        status = incident_payload.get("status", "")
+        rule_name = incident_payload.get("rule_name") or incident_payload.get("rule_id")
+        summary = incident_payload.get("summary", "")
+        suffix = " (evidence upload pending)" if upload_failed else ""
+        print(f"[INCIDENT] {status} {rule_name}: {summary}{suffix}")
+
+    async def _upload_incident_evidence(self, incident: dict) -> str | None:
+        process_report_path = self.process_monitor.export_requested_report()
+        focused_window_report_path = self.focused_window_monitor.export_current_snapshot()
+        hardware_report_path = None
+        if str(incident.get("source", "")) == "hardware_monitor":
+            hardware_report_path = self.hardware_monitor.export_current_snapshot()
+
+        replay_path = None
+        if self.recorder:
+            replay_path = await self.loop.run_in_executor(None, self.recorder.save_replay)
+
+        bundle_path = build_incident_bundle(
+            self.session_uuid,
+            incident,
+            process_report_path,
+            replay_path,
+            hardware_report_path,
+            focused_window_report_path,
+        )
+        try:
+            response = await upload_runtime_artifact(
+                self.base_url,
+                self.session_uuid,
+                bundle_path,
+                "incident_bundle",
+                {
+                    "incident_id": incident.get("incident_id"),
+                    "rule_id": incident.get("rule_id"),
+                    "status": incident.get("status"),
+                },
+            )
+            return response.get("path")
+        except Exception as exc:
+            print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}: {exc}")
+            return None
+
+    async def _retry_incident_evidence_upload(self, incident: dict):
+        if self.state.disconnected.is_set():
+            return
+        await asyncio.sleep(1.0)
+        artifact_path = await self._upload_incident_evidence(incident)
+        if not artifact_path:
+            return
+
+        retry_payload = dict(incident)
+        retry_payload["artifact_path"] = artifact_path
+        retry_payload["evidence_retry"] = True
+        retry_payload["evidence_upload_failed"] = False
+        retry_payload["reported_at"] = protocol.now_iso()
+        try:
+            await self._send_payload(events.incident_report(retry_payload))
+            print(f"[INCIDENT] Evidence retry succeeded for {incident.get('incident_id')}.")
+        except Exception as exc:
+            print(f"[INCIDENT] Failed to report retried evidence upload: {exc}")
+
+    async def handle_kill_process(self, data: dict):
+        pid = int(data.get("pid", 0) or 0)
+        incident_id = str(data.get("incident_id", "") or "")
+        process_name = str(data.get("process_name", "") or "")
+        if pid <= 0:
+            await self._send_payload(
+                events.kill_process_result(
+                    pid,
+                    incident_id=incident_id,
+                    ok=False,
+                    process_name=process_name,
+                    message="invalid pid",
+                )
+            )
+            return
+
+        ok, message = await self.loop.run_in_executor(None, self._kill_local_process, pid)
+        await self._send_payload(
+            events.kill_process_result(
+                pid,
+                incident_id=incident_id,
+                ok=ok,
+                process_name=process_name,
+                message=message,
+            )
+        )
+
+    def _kill_local_process(self, pid: int) -> tuple[bool, str]:
+        try:
+            process = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.Error) as exc:
+            return False, str(exc)
+
+        try:
+            process.kill()
+            process.wait(timeout=3)
+            return True, f"terminated pid {pid}"
+        except psutil.TimeoutExpired:
+            return False, f"timed out waiting for pid {pid} to exit"
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.Error, OSError) as exc:
+            return False, str(exc)
 
     def _print_remaining_time(self, remaining: int):
         last_remaining = self.state.last_printed_remaining
@@ -588,9 +967,10 @@ async def run_ws(
     ws_url: str,
     base_url: str,
     session_uuid: str,
+    password: str,
     recorder: ReplayRecorder | None,
 ):
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
-            return await WebSocketSession(ws_url, base_url, session_uuid, ws, recorder).run()
+            return await WebSocketSession(ws_url, base_url, session_uuid, password, ws, recorder).run()

@@ -4,7 +4,11 @@ setup.py -- Cross-platform setup script.
 
 Checks for and installs:
   1. Python packages from requirements.txt (via pip)
-  2. FFmpeg (via brew / choco / apt)
+  2. FFmpeg (via brew / winget when available)
+
+Current Python dependencies include:
+  - aiohttp / psutil for the core client-server app
+  - cryptography for protected websocket signing/encryption
 
 Run:  python3 setup.py
 """
@@ -67,7 +71,8 @@ def run(cmd, capture=True):
         result = subprocess.run(
             cmd, capture_output=capture, text=True, timeout=60
         )
-        return result.returncode == 0, result.stdout.strip()
+        stdout = result.stdout.strip() if capture and result.stdout else ""
+        return result.returncode == 0, stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False, ""
 
@@ -129,6 +134,8 @@ def check_pip_packages():
     if not packages:
         print(f"  {OK} No Python packages required")
         return True
+
+    print(f"  {INFO} Using requirements file: {os.path.abspath(req_path)}")
 
     all_installed = True
     missing = []
@@ -226,6 +233,8 @@ def main():
 
     print(Color.bold("\n  Python Packages"))
     pip_ok = check_pip_packages()
+    if pip_ok:
+        print(f"  {INFO} Protected websocket messaging requires 'cryptography' at runtime.")
 
     print(Color.bold("\n  FFmpeg"))
     ffmpeg_ok = check_ffmpeg()

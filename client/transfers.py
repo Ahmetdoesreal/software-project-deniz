@@ -46,6 +46,42 @@ def build_submission_bundle(
     return str(bundle_path)
 
 
+def build_incident_bundle(
+    session_uuid: str,
+    incident: dict,
+    process_report_path: str | None,
+    replay_path: str | None,
+    hardware_report_path: str | None,
+    focused_window_report_path: str | None = None,
+) -> str:
+    bundle_dir = Path("data") / "client" / session_uuid / "incident_bundles"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    incident_id = str(incident.get("incident_id", "incident")).strip() or "incident"
+    bundle_path = bundle_dir / f"incident_bundle_{incident_id}_{timestamp}.zip"
+    runtime_files = _collect_runtime_bundle_files(
+        session_uuid,
+        process_report_path,
+        replay_path,
+        hardware_report_path,
+        focused_window_report_path,
+    )
+    runtime_files = _snapshot_runtime_files_for_bundle(bundle_dir, runtime_files)
+    manifest = {
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "incident": incident,
+        "entries": _manifest_entries_for_runtime_files(runtime_files),
+    }
+
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        _write_manifest(archive, manifest)
+        archive.writestr("incident.json", json.dumps(incident, indent=2))
+        _add_runtime_files(archive, runtime_files)
+
+    return str(bundle_path)
+
+
 def _snapshot_runtime_files_for_bundle(bundle_dir: Path, runtime_files: list[dict]) -> list[dict]:
     staging_dir = bundle_dir / "runtime_staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +306,12 @@ def _collect_runtime_bundle_files(
     )
     _append_runtime_file(
         runtime_files,
+        role="exam_state_log",
+        file_path=_exam_state_log_path(session_uuid),
+        arcname="runtime/exam_state.jsonl",
+    )
+    _append_runtime_file(
+        runtime_files,
         role="client_cli_log",
         file_path=_latest_client_log("client_cli_"),
         arcname="runtime/logs/client_cli.jsonl",
@@ -337,6 +379,10 @@ def _hardware_log_path(session_uuid: str) -> Path:
 
 def _focused_window_log_path(session_uuid: str) -> Path:
     return Path("data") / "client" / session_uuid / "focused_window.jsonl"
+
+
+def _exam_state_log_path(session_uuid: str) -> Path:
+    return Path("data") / "client" / session_uuid / "exam_state.jsonl"
 
 
 def _latest_client_log(prefix: str) -> Path | None:
