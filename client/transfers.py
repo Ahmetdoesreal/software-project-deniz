@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import time
 import zipfile
 from pathlib import Path
@@ -34,6 +35,7 @@ def build_submission_bundle(
         hardware_report_path,
         focused_window_report_path,
     )
+    runtime_files = _snapshot_runtime_files_for_bundle(bundle_dir, runtime_files)
     manifest = _build_bundle_manifest(student_file, runtime_files)
 
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -42,6 +44,47 @@ def build_submission_bundle(
         _add_runtime_files(archive, runtime_files)
 
     return str(bundle_path)
+
+
+def _snapshot_runtime_files_for_bundle(bundle_dir: Path, runtime_files: list[dict]) -> list[dict]:
+    staging_dir = bundle_dir / "runtime_staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    snapped_files: list[dict] = []
+    for runtime_file in runtime_files:
+        source = runtime_file["path"]
+        staged_path = staging_dir / runtime_file["role"] / source.name
+        staged_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not _copy_runtime_file_with_retries(source, staged_path):
+            print(f"[BUNDLE] Skipping runtime file after copy failure: {source}")
+            continue
+
+        snapped_files.append(
+            {
+                **runtime_file,
+                "path": staged_path,
+            }
+        )
+
+    return snapped_files
+
+
+def _copy_runtime_file_with_retries(source: Path, destination: Path, attempts: int = 3) -> bool:
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            shutil.copy2(source, destination)
+            return True
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            time.sleep(0.1 * attempt)
+
+    print(f"[BUNDLE] Failed to stage runtime file {source}: {last_error}")
+    return False
 
 
 async def upload_runtime_artifact(

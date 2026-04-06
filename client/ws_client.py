@@ -256,6 +256,11 @@ class WebSocketSession:
         monitor.start()
         return monitor
 
+    def _stop_runtime_monitors(self):
+        self.process_monitor.stop()
+        self.hardware_monitor.stop()
+        self.focused_window_monitor.stop()
+
     async def run(self):
         listener_task = asyncio.create_task(self.listener())
         try:
@@ -265,9 +270,7 @@ class WebSocketSession:
         finally:
             listener_task.cancel()
             self.gui.close()
-            self.process_monitor.stop()
-            self.hardware_monitor.stop()
-            self.focused_window_monitor.stop()
+            self._stop_runtime_monitors()
 
         if self.state.disconnected.is_set() and not self.state.intentional_shutdown:
             raise ConnectionError("Server disconnected")
@@ -509,6 +512,7 @@ class WebSocketSession:
         self.state.submission_only = True
         print(f"[EXAM] Uploading file: {archive_path}")
         try:
+            self._stop_runtime_monitors()
             process_report_path = self.process_monitor.export_requested_report()
             hardware_report_path = self.hardware_monitor.export_current_snapshot()
             focused_window_report_path = self.focused_window_monitor.export_current_snapshot()
