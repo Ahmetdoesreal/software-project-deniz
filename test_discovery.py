@@ -1,3 +1,4 @@
+import asyncio
 import json
 import socket
 import unittest
@@ -58,18 +59,16 @@ class DiscoveryTests(unittest.TestCase):
                     "name": "en0",
                     "ip": "192.168.1.50",
                     "broadcast": "192.168.1.255",
-                    "looks_like_vpn": False,
                 },
                 {
                     "name": "utun4",
                     "ip": "10.7.0.9",
                     "broadcast": None,
-                    "looks_like_vpn": True,
                 },
             ],
         )
 
-    def test_candidate_ipv4_hosts_prefers_broadcast_capable_lan_over_vpn_route(self):
+    def test_candidate_ipv4_hosts_prefers_broadcast_capable_interface(self):
         with (
             patch(
                 "common.discovery._iter_ipv4_interfaces",
@@ -78,13 +77,11 @@ class DiscoveryTests(unittest.TestCase):
                         "name": "utun4",
                         "ip": "10.7.0.9",
                         "broadcast": None,
-                        "looks_like_vpn": True,
                     },
                     {
                         "name": "en0",
                         "ip": "192.168.1.50",
                         "broadcast": "192.168.1.255",
-                        "looks_like_vpn": False,
                     },
                 ],
             ),
@@ -95,7 +92,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hosts[0], "192.168.1.50")
         self.assertEqual(hosts[:3], ["192.168.1.50", "10.7.0.9", "127.0.0.1"])
 
-    def test_broadcast_targets_include_each_active_ipv4_network(self):
+    def test_broadcast_targets_only_use_real_interface_broadcasts(self):
         announcer = ServerAnnouncer(server_host="0.0.0.0", server_port=8080)
 
         with patch(
@@ -105,13 +102,11 @@ class DiscoveryTests(unittest.TestCase):
                     "name": "en0",
                     "ip": "192.168.1.50",
                     "broadcast": "192.168.1.255",
-                    "looks_like_vpn": False,
                 },
                 {
                     "name": "utun4",
                     "ip": "10.7.0.9",
                     "broadcast": None,
-                    "looks_like_vpn": True,
                 },
             ],
         ):
@@ -122,7 +117,6 @@ class DiscoveryTests(unittest.TestCase):
             [
                 BROADCAST_ADDR,
                 "192.168.1.255",
-                "10.7.0.255",
             ],
         )
 
@@ -158,6 +152,23 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class DiscoveryAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_check_waits_full_guard_interval_before_returning(self):
+        with (
+            patch("common.discovery._listen_for_server", new=AsyncMock(return_value=None)),
+            patch(
+                "common.discovery._probe_local_server",
+                new=AsyncMock(return_value=None),
+            ) as probe_mock,
+        ):
+            loop = asyncio.get_running_loop()
+            started_at = loop.time()
+            result = await check_duplicate_server("default", timeout=0.05, local_port=8080)
+            elapsed = loop.time() - started_at
+
+        self.assertIsNone(result)
+        self.assertGreaterEqual(elapsed, 0.045)
+        probe_mock.assert_awaited_once_with("default", 8080, log_prefix="[CHECK]")
+
     async def test_duplicate_check_uses_local_probe_when_udp_lookup_fails(self):
         with (
             patch("common.discovery._listen_for_server", new=AsyncMock(return_value=None)),

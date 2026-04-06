@@ -12,6 +12,7 @@ from common.runtime_logging import setup_runtime_logging
 from .state import state
 from .app import create_app
 
+
 def validate_args(args):
     errors = []
     if not 1 <= args.port <= 65535:
@@ -26,6 +27,12 @@ def validate_args(args):
         for e in errors:
             print(f"[ERROR] {e}")
         sys.exit(1)
+
+
+def _duplicate_check_timeout(announce_interval: float) -> float:
+    # Wait for at least two announce windows plus a small buffer so a second
+    # server has a realistic chance to hear an existing beacon before booting.
+    return max(5.0, announce_interval * 2.0 + 1.0)
 
 
 def main():
@@ -74,7 +81,18 @@ def main():
             print(f"[GUI] Failed to launch gui: {e}")
 
     # Check for duplicate server with same ID
-    dup = asyncio.run(check_duplicate_server(args.id, timeout=5.0, local_port=args.port))
+    duplicate_timeout = _duplicate_check_timeout(args.announce)
+    print(
+        f"[CHECK] Waiting up to {duplicate_timeout:.1f}s for an existing server "
+        f"with id '{args.id}' to announce itself..."
+    )
+    dup = asyncio.run(
+        check_duplicate_server(
+            args.id,
+            timeout=duplicate_timeout,
+            local_port=args.port,
+        )
+    )
     if dup:
         host, port = dup
         print(f"[ERROR] A server with id '{args.id}' is already running at {host}:{port}")

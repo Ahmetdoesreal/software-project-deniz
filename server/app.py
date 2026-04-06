@@ -1,7 +1,8 @@
 import asyncio
 from aiohttp import web
+from aiohttp.web_runner import GracefulExit
 
-from common.discovery import ServerAnnouncer
+from common.discovery import ServerAnnouncer, _candidate_ipv4_hosts, _normalize_ipv4, check_duplicate_server
 from common.runtime_logging import install_asyncio_exception_logging
 from .state import state
 from .shutdown import ServerShutdownRoutine
@@ -16,6 +17,50 @@ from .handlers import (
 )
 from .tasks import time_broadcaster, console_reader
 
+
+def _duplicate_guard_timeout(announce_interval: float) -> float:
+    return max(5.0, announce_interval * 2.0 + 1.0)
+
+
+def _server_identity_hosts(bind_host: str) -> set[str]:
+    hosts = {host for host in _candidate_ipv4_hosts() if host}
+    explicit_host = _normalize_ipv4(bind_host)
+    if explicit_host and explicit_host != "0.0.0.0":
+        hosts.add(explicit_host)
+    return hosts
+
+
+def _is_same_server_instance(app: web.Application, host: str, port: int) -> bool:
+    return port == app["port"] and host in _server_identity_hosts(app["host"])
+
+
+async def duplicate_server_guard(app: web.Application):
+    timeout = _duplicate_guard_timeout(app["announce_interval"])
+    loop = asyncio.get_running_loop()
+
+    while True:
+        found = await check_duplicate_server(
+            app["server_id"],
+            timeout=timeout,
+            local_port=None,
+        )
+        if found is None:
+            continue
+
+        host, port = found
+        if _is_same_server_instance(app, host, port):
+            continue
+
+        print(f"[ERROR] Duplicate server detected for id '{app['server_id']}' at {host}:{port}")
+        print("[ERROR] Refusing to continue while another server with the same id is reachable.")
+
+        def _raise_graceful_exit():
+            raise GracefulExit()
+
+        loop.call_soon(_raise_graceful_exit)
+        return
+
+
 async def start_background_tasks(app: web.Application):
     install_asyncio_exception_logging(asyncio.get_running_loop())
     app["time_broadcaster"] = asyncio.create_task(time_broadcaster(app))
@@ -26,12 +71,13 @@ async def start_background_tasks(app: web.Application):
                                 interval=app["announce_interval"])
     await announcer.start()
     app["announcer"] = announcer
+    app["duplicate_guard"] = asyncio.create_task(duplicate_server_guard(app))
 
 
 async def cleanup_background_tasks(app: web.Application):
     await app["shutdown_routine"].run()
 
-    for task_name in ("time_broadcaster", "console_reader"):
+    for task_name in ("time_broadcaster", "console_reader", "duplicate_guard"):
         app[task_name].cancel()
         try:
             await app[task_name]
