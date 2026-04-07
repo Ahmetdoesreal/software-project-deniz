@@ -7,20 +7,21 @@ from pathlib import Path, PurePosixPath
 
 TEXT_EXTENSIONS = {
     ".txt",
-    ".md",
     ".py",
     ".json",
+    ".jsonl",
     ".csv",
     ".log",
-    ".yaml",
-    ".yml",
+    ".h",
+    ".c",
     ".xml",
     ".html",
     ".css",
     ".js",
-    ".ts",
+    ".cpp",
+
 }
-TEXT_PREVIEW_LIMIT = 12000
+TEXT_PREVIEW_LIMIT = 10240
 
 
 @dataclass
