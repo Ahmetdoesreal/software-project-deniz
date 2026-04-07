@@ -1,6 +1,7 @@
 import json
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
@@ -35,6 +36,9 @@ class ExamTimerGUI:
         self.pause_reason = ""
         self.submission_window = None
         self.finish_in_progress = False
+        self.timer_text = tk.StringVar(value="Waiting")
+        self.status_text = tk.StringVar(value="Waiting for exam start.")
+        self.footer_text = tk.StringVar(value="Ready.")
 
         self._configure_window()
         self._build_widgets()
@@ -42,24 +46,44 @@ class ExamTimerGUI:
 
     def _configure_window(self):
         self.root.title("Exam Timer")
-        self.root.geometry("400x200")
+        self.root.geometry("430x260")
         self.root.attributes("-topmost", True)
         install_close_guard(self.root, self.on_closing, bind_all=True)
+        self.timer_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.timer_font.configure(size=max(int(self.timer_font.cget("size")) + 12, 20), weight="bold")
 
     def _build_widgets(self):
-        self.main_frame = ttk.Frame(self.root, padding="20")
+        self.main_frame = ttk.Frame(self.root, padding=12)
         self.main_frame.pack(expand=True, fill="both")
 
-        self.label_var = tk.StringVar(value="Waiting to start...")
-        self.label = ttk.Label(
-            self.main_frame,
-            textvariable=self.label_var,
-            font=("Helvetica", 16),
-        )
-        self.label.pack(expand=True, pady=10)
+        status_frame = ttk.LabelFrame(self.main_frame, text="Exam Status", padding=10)
+        status_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.button_frame = ttk.Frame(self.main_frame)
-        self.button_frame.pack(pady=10)
+        self.timer_display = tk.Label(
+            status_frame,
+            textvariable=self.timer_text,
+            font=self.timer_font,
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            anchor=tk.CENTER,
+            padx=12,
+            pady=10,
+        )
+        self.timer_display.pack(fill=tk.X)
+
+        self.status_label = ttk.Label(
+            status_frame,
+            textvariable=self.status_text,
+            justify=tk.LEFT,
+            wraplength=360,
+        )
+        self.status_label.pack(anchor=tk.W, fill=tk.X, pady=(10, 0))
+
+        command_frame = ttk.LabelFrame(self.main_frame, text="Commands", padding=10)
+        command_frame.pack(fill=tk.X, pady=(10, 0))
+
+        self.button_frame = ttk.Frame(command_frame)
+        self.button_frame.pack(anchor=tk.W)
 
         self.start_btn = ttk.Button(
             self.button_frame,
@@ -75,18 +99,31 @@ class ExamTimerGUI:
             state=tk.DISABLED,
         )
 
+        self.footer_label = tk.Label(
+            self.main_frame,
+            textvariable=self.footer_text,
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            anchor=tk.W,
+            padx=6,
+            pady=3,
+        )
+        self.footer_label.pack(fill=tk.X, pady=(10, 0))
+
     def on_start_click(self):
         _emit_command({"cmd": "start_exam"})
         self.start_btn.config(state=tk.DISABLED)
-        self.label_var.set("Starting...")
+        self.timer_text.set("Starting")
+        self.status_text.set("Start request sent. Waiting for server confirmation.")
+        self.footer_text.set("Waiting for approval.")
 
     def update_clock(self):
         if self.active and self.started and self.timer_state != "paused":
             if self.remaining > 0:
-                self.label_var.set(_format_time(self.remaining))
+                self.timer_text.set(_format_time(self.remaining))
                 self.remaining -= 1
             elif self.remaining == 0:
-                self.label_var.set("00:00")
+                self.timer_text.set("00:00")
 
         self.root.after(1000, self.update_clock)
 
@@ -97,7 +134,9 @@ class ExamTimerGUI:
 
         self.remaining = seconds
         if self.timer_state != "paused":
-            self.label_var.set(_format_time(self.remaining))
+            self.timer_text.set(_format_time(self.remaining))
+            self.status_text.set("Exam is running.")
+            self.footer_text.set("Timer synchronized.")
         if self.started:
             return
 
@@ -106,16 +145,20 @@ class ExamTimerGUI:
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL)
-        self.label.config(font=("Helvetica", 32, "bold"))
+        self.status_text.set("Exam is running.")
+        self.footer_text.set("Exam started.")
 
     def reset_to_ready(self):
         if self.started:
             return
         self.start_btn.config(state=tk.NORMAL)
-        self.label_var.set("Waiting to start...")
+        self.timer_text.set("Waiting")
+        self.status_text.set("Waiting for exam start.")
+        self.footer_text.set("Ready.")
 
     def show_error_popup(self, message: str):
         self.reset_to_ready()
+        self.footer_text.set(message or "Request failed.")
         title = "Exam Finished" if "finished" in message.lower() else "Exam Not Started"
         messagebox.showerror(title, message)
 
@@ -149,7 +192,9 @@ class ExamTimerGUI:
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
-        self.label_var.set("Upload your file to finish.")
+        self.timer_text.set("Finish")
+        self.status_text.set("Upload your file to finish the exam.")
+        self.footer_text.set("Submission required.")
         self.open_finish_window()
         if message:
             messagebox.showinfo("Finish Exam", message)
@@ -164,6 +209,7 @@ class ExamTimerGUI:
     def handle_upload_error(self, message: str):
         self.finish_in_progress = False
         self.finish_btn.config(state=tk.NORMAL)
+        self.footer_text.set(message or "Upload failed.")
         if self.submission_window and self.submission_window.winfo_exists():
             self.submission_window.set_ready_after_error(message)
         messagebox.showerror("Upload Failed", message)
@@ -176,11 +222,9 @@ class ExamTimerGUI:
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
-        pause_text = f"Paused at {_format_time(self.remaining)}"
-        if reason:
-            pause_text = f"{pause_text}\n{reason}"
-        self.label_var.set(pause_text)
-        self.label.config(font=("Helvetica", 22, "bold"))
+        self.timer_text.set(_format_time(self.remaining))
+        self.status_text.set(reason or "Exam paused by administrator.")
+        self.footer_text.set("Timer paused.")
 
     def resume_timer(self, remaining_seconds: int, reason: str = ""):
         self.started = True
@@ -190,8 +234,9 @@ class ExamTimerGUI:
         self.start_btn.pack_forget()
         self.finish_btn.pack()
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
-        self.label.config(font=("Helvetica", 32, "bold"))
-        self.label_var.set(_format_time(self.remaining))
+        self.timer_text.set(_format_time(self.remaining))
+        self.status_text.set(reason or "Exam resumed.")
+        self.footer_text.set("Timer resumed.")
 
     def _clear_submission_window(self):
         self.submission_window = None
@@ -238,18 +283,17 @@ class SubmissionWindow(tk.Toplevel):
         container = ttk.Frame(self, padding=12)
         container.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            container,
-            text="Select a file to submit.",
-            font=("Helvetica", 12, "bold"),
-        ).pack(anchor=tk.W)
+        submit_frame = ttk.LabelFrame(container, text="Submission", padding=10)
+        submit_frame.pack(fill=tk.X)
 
-        ttk.Label(container, textvariable=self.path_var, wraplength=700).pack(
+        ttk.Label(submit_frame, text="Select a file to submit.").pack(anchor=tk.W)
+
+        ttk.Label(submit_frame, textvariable=self.path_var, wraplength=700, justify=tk.LEFT).pack(
             anchor=tk.W,
             pady=(6, 8),
         )
 
-        action_frame = ttk.Frame(container)
+        action_frame = ttk.Frame(submit_frame)
         action_frame.pack(fill=tk.X, pady=(0, 10))
 
         self.choose_button = ttk.Button(
@@ -267,17 +311,17 @@ class SubmissionWindow(tk.Toplevel):
         )
         self.upload_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        ttk.Label(container, textvariable=self.summary_var, foreground="#355070").pack(
+        ttk.Label(submit_frame, textvariable=self.summary_var, wraplength=700, justify=tk.LEFT).pack(
             anchor=tk.W,
             pady=(0, 6),
         )
-        ttk.Label(container, textvariable=self.status_var, foreground="#666666").pack(
+        ttk.Label(submit_frame, textvariable=self.status_var, wraplength=700, justify=tk.LEFT).pack(
             anchor=tk.W,
             pady=(0, 8),
         )
 
         preview_frame = ttk.LabelFrame(container, text="File Preview")
-        preview_frame.pack(fill=tk.BOTH, expand=True)
+        preview_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
         self.preview_frame = preview_frame
         columns = ("size", "modified")
@@ -298,6 +342,14 @@ class SubmissionWindow(tk.Toplevel):
         self.tree_scrollbar = scrollbar
 
         self.text_preview = tk.Text(preview_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.text_preview.configure(
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=6,
+            font=tkfont.nametofont("TkFixedFont"),
+        )
         self.text_scrollbar = ttk.Scrollbar(
             preview_frame,
             orient=tk.VERTICAL,

@@ -248,6 +248,14 @@ class ServerGUI(tk.Tk):
         log_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=(10, 0))
 
         self.log_text = tk.Text(log_frame, height=7, state=tk.DISABLED, wrap=tk.WORD)
+        self.log_text.configure(
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=6,
+            font="TkFixedFont",
+        )
         log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
 
@@ -255,11 +263,11 @@ class ServerGUI(tk.Tk):
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_action_panel(self, parent):
-        action_frame = ttk.Frame(parent)
+        action_frame = ttk.LabelFrame(parent, text="Selected User")
         action_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
 
-        ttk.Button(action_frame, text="Show Info", command=self.show_info).pack(fill=tk.X, pady=5)
-        ttk.Button(action_frame, text="Options", command=self.show_options).pack(fill=tk.X, pady=5)
+        ttk.Button(action_frame, text="Show Info", command=self.show_info).pack(fill=tk.X, padx=10, pady=(10, 5))
+        ttk.Button(action_frame, text="Options", command=self.show_options).pack(fill=tk.X, padx=10, pady=(5, 10))
 
     def _build_rule_breakings_tab(self):
         container = ttk.Frame(self.rules_tab, padding=10)
@@ -322,7 +330,6 @@ class ServerGUI(tk.Tk):
         self.incident_tree.column("process", width=140)
         self.incident_tree.column("pid", width=80, anchor=tk.CENTER)
         self.incident_tree.column("status", width=100, anchor=tk.CENTER)
-        self.incident_tree.tag_configure("active", background="#fff4cc")
         self.incident_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_incident_detail())
 
         incident_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.incident_tree.yview)
@@ -335,6 +342,14 @@ class ServerGUI(tk.Tk):
         detail_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
         self.incident_detail = tk.Text(detail_frame, wrap=tk.WORD, height=14, state=tk.DISABLED)
+        self.incident_detail.configure(
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=6,
+            font="TkFixedFont",
+        )
         detail_scroll = ttk.Scrollbar(detail_frame, orient=tk.VERTICAL, command=self.incident_detail.yview)
         self.incident_detail.configure(yscrollcommand=detail_scroll.set)
 
@@ -427,51 +442,54 @@ class ServerGUI(tk.Tk):
         top.geometry("340x420")
         self._register_window(window_key, top)
 
-        ttk.Label(top, text="User Actions:").pack(pady=10)
+        frame = ttk.Frame(top, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="User Actions:").pack(anchor=tk.W, pady=(0, 10))
         ttk.Button(
-            top,
+            frame,
             text="Kick Client",
             command=lambda: self._send_window_command(top, "kick", client_id),
             state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
         ttk.Button(
-            top,
+            frame,
             text="Ban User",
             command=lambda: self._send_window_command(top, "ban", client_id),
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
         ttk.Button(
-            top,
+            frame,
             text="Pause Exam",
             command=lambda: self._send_window_command(top, "pause_exam", client_id),
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
         ttk.Button(
-            top,
+            frame,
             text="Resume Exam",
             command=lambda: self._send_window_command(top, "resume_exam", client_id),
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
         ttk.Button(
-            top,
+            frame,
             text="Unban User",
             command=lambda: self._send_window_command(top, "unban", client_id),
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
 
-        ttk.Separator(top, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=20, pady=8)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
 
-        ttk.Label(top, text="Connected Client Commands:").pack(pady=4)
+        ttk.Label(frame, text="Connected Client Commands:").pack(anchor=tk.W, pady=4)
         ttk.Button(
-            top,
+            frame,
             text="Request Save Screen",
             command=lambda: self._send_client_command(top, "savescreen", client_id),
             state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
         ttk.Button(
-            top,
+            frame,
             text="Request Process Report",
             command=lambda: self._send_client_command(top, "get_processes", client_id),
             state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, padx=20, pady=5)
+        ).pack(fill=tk.X, pady=5)
 
-        add_time_frame = ttk.Frame(top, padding=(20, 10))
+        add_time_frame = ttk.Frame(frame, padding=(0, 10, 0, 0))
         add_time_frame.pack(fill=tk.X)
 
         ttk.Label(add_time_frame, text="Add Minutes:").pack(side=tk.LEFT)
@@ -712,6 +730,14 @@ class ServerGUI(tk.Tk):
         frame.pack(fill=tk.BOTH, expand=True)
 
         details = tk.Text(frame, wrap=tk.WORD, height=12)
+        details.configure(
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=6,
+            font="TkFixedFont",
+        )
         details.pack(fill=tk.BOTH, expand=True)
         details.insert(tk.END, "\n".join(lines))
         details.config(state=tk.DISABLED)
@@ -876,6 +902,9 @@ class ServerGUI(tk.Tk):
 
         for incident in self.incidents_data:
             incident_id = str(incident.get("incident_id", "") or "")
+            status_text = str(incident.get("status", "") or "")
+            if incident.get("active"):
+                status_text = f"{status_text} (active)"
             values = (
                 incident_id,
                 incident.get("event_at", ""),
@@ -885,10 +914,9 @@ class ServerGUI(tk.Tk):
                 incident.get("source", ""),
                 incident.get("process_name", ""),
                 incident.get("pid", ""),
-                incident.get("status", ""),
+                status_text,
             )
-            tags = ("active",) if incident.get("active") else ()
-            item_id = self.incident_tree.insert("", tk.END, values=values, tags=tags)
+            item_id = self.incident_tree.insert("", tk.END, values=values)
             self.incident_items[incident_id] = item_id
             if selected_incident and selected_incident == incident_id:
                 self.incident_tree.selection_set(item_id)

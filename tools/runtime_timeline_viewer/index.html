@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runtime Timeline Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-copy">
+      <div class="eyebrow">Local Investigation Tool</div>
+      <h1>Runtime Timeline Viewer</h1>
+      <p>
+        Load extracted runtime folders, incident bundles, or a mix of <code>.json</code>,
+        <code>.jsonl</code>, and optional <code>process_blacklist.txt</code> files. The viewer
+        combines process, focused-window, hardware, incident, audit, and runtime log data into one
+        timeline and evaluates blacklist and focused-window rules from the policy you provide.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <span class="hero-pill">No server required</span>
+      <span class="hero-pill">Works from <code>file://</code></span>
+      <span class="hero-pill">Folder or file loading</span>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="sidebar">
+      <section class="sidebar-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Load Data</h2>
+            <p>Open extracted folders or select individual artifacts.</p>
+          </div>
+        </div>
+
+        <div id="dropZone" class="drop-zone">
+          <strong>Drop extracted runtime files here</strong>
+          <span>or use the buttons below</span>
+        </div>
+
+        <div class="upload-grid">
+          <label class="upload-tile" for="fileInput">
+            <input id="fileInput" class="sr-only" type="file" accept=".json,.jsonl,.txt" multiple>
+            <span class="upload-title">Select Files</span>
+            <span class="upload-subtitle">JSON, JSONL, TXT</span>
+          </label>
+
+          <label class="upload-tile" for="folderInput">
+            <input id="folderInput" class="sr-only" type="file" webkitdirectory directory multiple>
+            <span class="upload-title">Open Folder</span>
+            <span class="upload-subtitle">Submission or runtime folder</span>
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="clearButton" type="button">Clear Loaded Data</button>
+        </div>
+
+        <div id="loadStatus" class="status-banner">
+          No data loaded yet.
+        </div>
+      </section>
+
+      <section class="sidebar-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Filters</h2>
+            <p>Narrow the timeline to the events you care about.</p>
+          </div>
+        </div>
+
+        <div class="control-stack">
+          <input id="searchInput" class="search-input" type="search" placeholder="Search summary, rule, process, window, file">
+
+          <label class="checkbox-row">
+            <input id="policyHitsOnly" type="checkbox">
+            <span>Show only policy hits</span>
+          </label>
+        </div>
+
+        <div id="laneFilters" class="lane-filters"></div>
+      </section>
+
+      <section class="sidebar-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Summary</h2>
+            <p>Quick totals across the currently loaded data.</p>
+          </div>
+        </div>
+        <div id="summaryGrid" class="summary-grid"></div>
+      </section>
+
+      <details class="sidebar-panel" open>
+        <summary>Loaded Rules</summary>
+        <div class="details-body">
+          <div id="rulesPanel" class="rules-grid"></div>
+        </div>
+      </details>
+
+      <details class="sidebar-panel">
+        <summary>Loaded Files</summary>
+        <div class="details-body">
+          <div id="fileList" class="list-block"></div>
+        </div>
+      </details>
+    </aside>
+
+    <div class="viewer">
+      <section class="panel timeline-panel">
+        <div class="toolbar">
+          <div>
+            <strong>Timeline</strong>
+            <div id="timeRangeLabel" class="meta">No timestamped events loaded yet.</div>
+          </div>
+          <div class="toolbar-right">
+            <div class="legend">
+              <span class="badge info">Info</span>
+              <span class="badge warning">Warning</span>
+              <span class="badge violation">Violation</span>
+              <span class="badge success">Resolved / Allowed</span>
+            </div>
+            <div id="timelineMeta" class="meta">0 visible events</div>
+          </div>
+        </div>
+        <div class="timeline-wrap">
+          <svg id="timelineSvg" role="img" aria-label="Timeline graph"></svg>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <div>
+            <strong>Event List</strong>
+            <div class="meta">Click a row or marker to inspect the raw entry and derived rule analysis.</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 180px;">Time</th>
+                <th style="width: 130px;">Lane</th>
+                <th style="width: 120px;">Severity</th>
+                <th>Summary</th>
+                <th style="width: 220px;">Source File</th>
+              </tr>
+            </thead>
+            <tbody id="eventRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel detail-shell">
+        <div class="detail-header">
+          <strong id="detailTitle">Event Details</strong>
+          <div id="detailBadges" class="badge-row"></div>
+          <div id="detailMeta" class="detail-meta">No event selected.</div>
+        </div>
+        <pre id="detailPane">Select a timeline marker or event row.</pre>
+      </section>
+    </div>
+  </main>
+
+  <script defer src="app.js"></script>
+</body>
+</html>
