@@ -1,6 +1,7 @@
 import json
 import sys
 import tkinter as tk
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
@@ -75,6 +76,8 @@ def _incident_detail_lines(incident: dict) -> list[str]:
         f"Process: {incident.get('process_name') or '-'}",
         f"PID: {incident.get('pid') or '-'}",
         f"Active: {'Yes' if incident.get('active') else 'No'}",
+        f"Auto Action: {incident.get('auto_action_name') or '-'}",
+        f"Auto Action State: {incident.get('auto_action_state_label') or incident.get('auto_action_state') or '-'}",
         f"Session State: {incident.get('session_state') or '-'}",
         f"Reconnect Allowed: {'Yes' if incident.get('resume_allowed') else 'No'}",
         f"Blocking Incident: {'Yes' if incident.get('blocking') else 'No'}",
@@ -89,6 +92,44 @@ def _incident_detail_lines(incident: dict) -> list[str]:
     ]
 
 
+def _format_counter(values: list[str]) -> str:
+    counts = Counter(value for value in values if value)
+    if not counts:
+        return "-"
+    return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
+
+
+def _multi_incident_detail_lines(incidents: list[dict]) -> list[str]:
+    users = sorted({str(incident.get("login_id") or "-") for incident in incidents})
+    lines = [
+        f"Selected Incidents: {len(incidents)}",
+        f"Users: {', '.join(users[:8])}{' ...' if len(users) > 8 else ''}" if users else "Users: -",
+        f"Active: {sum(1 for incident in incidents if incident.get('active'))}",
+        f"Blocking Incidents: {sum(1 for incident in incidents if incident.get('blocking'))}",
+        f"Kill Available: {sum(1 for incident in incidents if incident.get('kill_available'))}",
+        f"Severity Mix: {_format_counter([str(incident.get('severity') or '-') for incident in incidents])}",
+        f"Status Mix: {_format_counter([str(incident.get('status') or '-') for incident in incidents])}",
+        f"Auto Action States: {_format_counter([str(incident.get('auto_action_state_label') or incident.get('auto_action_state') or '-') for incident in incidents])}",
+        "",
+        "Selected Rows:",
+    ]
+    for incident in incidents[:25]:
+        lines.append(
+            " | ".join(
+                [
+                    str(incident.get("incident_id") or "-"),
+                    str(incident.get("login_id") or "-"),
+                    str(incident.get("rule_name") or incident.get("rule_id") or "-"),
+                    str(incident.get("status") or "-"),
+                    str(incident.get("auto_action_state_label") or incident.get("auto_action_state") or "-"),
+                ]
+            )
+        )
+    if len(incidents) > 25:
+        lines.append(f"... and {len(incidents) - 25} more")
+    return lines
+
+
 class ServerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -99,6 +140,7 @@ class ServerGUI(tk.Tk):
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self._incident_tree_refreshing = False
 
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
@@ -305,12 +347,12 @@ class ServerGUI(tk.Tk):
         tree_frame = ttk.LabelFrame(middle, text="Incident History")
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = ("incident_id", "time", "user", "severity", "rule", "source", "process", "pid", "status")
+        columns = ("incident_id", "time", "user", "severity", "rule", "source", "process", "pid", "auto_action", "status")
         self.incident_tree = ttk.Treeview(
             tree_frame,
             columns=columns,
             show="headings",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.incident_tree.heading("incident_id", text="Incident ID")
         self.incident_tree.heading("time", text="Time")
@@ -320,6 +362,7 @@ class ServerGUI(tk.Tk):
         self.incident_tree.heading("source", text="Source")
         self.incident_tree.heading("process", text="Process")
         self.incident_tree.heading("pid", text="PID")
+        self.incident_tree.heading("auto_action", text="Auto Action")
         self.incident_tree.heading("status", text="Status")
         self.incident_tree.column("incident_id", width=0, stretch=False)
         self.incident_tree.column("time", width=150)
@@ -329,6 +372,7 @@ class ServerGUI(tk.Tk):
         self.incident_tree.column("source", width=110)
         self.incident_tree.column("process", width=140)
         self.incident_tree.column("pid", width=80, anchor=tk.CENTER)
+        self.incident_tree.column("auto_action", width=115, anchor=tk.CENTER)
         self.incident_tree.column("status", width=100, anchor=tk.CENTER)
         self.incident_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_incident_detail())
 
@@ -389,15 +433,52 @@ class ServerGUI(tk.Tk):
         return client_id, self.clients_data.get(client_id)
 
     def _selected_incident(self):
-        selected = self.incident_tree.selection()
-        if not selected:
-            return None
-        item_id = selected[0]
-        incident_id = self.incident_tree.item(item_id, "values")[0]
-        for incident in self.incidents_data:
-            if incident.get("incident_id") == incident_id:
-                return incident
-        return None
+        incidents = self._selected_incidents()
+        return incidents[0] if incidents else None
+
+    def _selected_incident_ids(self) -> list[str]:
+        incident_ids: list[str] = []
+        for item_id in self.incident_tree.selection():
+            values = self.incident_tree.item(item_id, "values")
+            if values:
+                incident_ids.append(str(values[0]))
+        return incident_ids
+
+    def _selected_incidents(self) -> list[dict]:
+        selected_ids = set(self._selected_incident_ids())
+        if not selected_ids:
+            return []
+        return [
+            incident
+            for incident in self.incidents_data
+            if str(incident.get("incident_id", "") or "") in selected_ids
+        ]
+
+    def _incident_connected(self, incident: dict) -> bool:
+        client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
+        return client.get("connection_status") == "Connected"
+
+    def _incident_session_state(self, incident: dict) -> str:
+        client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
+        return str(client.get("session_state") or incident.get("session_state") or "")
+
+    def _unique_client_incidents(self, incidents: list[dict], predicate) -> list[dict]:
+        selected: list[dict] = []
+        seen_client_ids: set[str] = set()
+        for incident in incidents:
+            client_id = str(incident.get("client_id", "") or "")
+            if not client_id or client_id in seen_client_ids:
+                continue
+            if not predicate(incident):
+                continue
+            seen_client_ids.add(client_id)
+            selected.append(incident)
+        return selected
+
+    def _incident_target_label(self, incidents: list[dict], plural_label: str) -> str:
+        if len(incidents) == 1:
+            return str(incidents[0].get("login_id") or incidents[0].get("client_id") or "Unknown")
+        return f"{len(incidents)} selected {plural_label}"
 
     def update_timers(self):
         for client_id, data in self.clients_data.items():
@@ -502,88 +583,138 @@ class ServerGUI(tk.Tk):
         ).pack(side=tk.LEFT)
 
     def kill_selected_pid(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._selected_incidents()
+        if not incidents:
             return
-        pid = int(incident.get("pid", 0) or 0)
-        if pid <= 0:
-            messagebox.showinfo("Kill PID", "The selected incident has no process id.")
+        eligible: list[dict] = []
+        seen_targets: set[tuple[str, int]] = set()
+        for incident in incidents:
+            pid = int(incident.get("pid", 0) or 0)
+            client_id = str(incident.get("client_id", "") or "")
+            if pid <= 0 or not client_id:
+                continue
+            if not incident.get("kill_available") or not self._incident_connected(incident):
+                continue
+            target = (client_id, pid)
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            eligible.append(incident)
+        if not eligible:
+            messagebox.showinfo("Kill PID", "No selected incidents have a killable live process.")
             return
-        user = incident.get("login_id") or "Unknown"
-        process_name = incident.get("process_name") or "Unknown"
-        if self._confirm_action(
-            "confirm_kill_pid",
-            "Kill PID",
-            f"Kill process for user {user}?\n\nProcess: {process_name}\nPID: {pid}",
-        ) is False:
-            return
+        if len(eligible) == 1:
+            incident = eligible[0]
+            pid = int(incident.get("pid", 0) or 0)
+            user = incident.get("login_id") or "Unknown"
+            process_name = incident.get("process_name") or "Unknown"
+            if self._confirm_action(
+                "confirm_kill_pid",
+                "Kill PID",
+                f"Kill process for user {user}?\n\nProcess: {process_name}\nPID: {pid}",
+            ) is False:
+                return
+        else:
+            user_count = len({str(incident.get("client_id", "") or "") for incident in eligible})
+            if self._confirm_action(
+                "confirm_kill_pid",
+                "Kill PID",
+                f"Kill {len(eligible)} selected process(es) across {user_count} user(s)?",
+            ) is False:
+                return
 
-        print(
-            json.dumps(
-                {
-                    "cmd": "kill_pid",
-                    "uuid": incident.get("client_id"),
-                    "incident_id": incident.get("incident_id"),
-                    "process_name": process_name,
-                    "pid": pid,
-                }
-            ),
-            flush=True,
+        for incident in eligible:
+            print(
+                json.dumps(
+                    {
+                        "cmd": "kill_pid",
+                        "uuid": incident.get("client_id"),
+                        "incident_id": incident.get("incident_id"),
+                        "process_name": incident.get("process_name") or "Unknown",
+                        "pid": int(incident.get("pid", 0) or 0),
+                    }
+                ),
+                flush=True,
+            )
+        self._append_log(
+            f"[ADMIN] Requested PID kill for {len(eligible)} selected process(es)"
         )
-        self._append_log(f"[ADMIN] Requested PID kill for {user}: {process_name} ({pid})")
 
     def kick_selected_user(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._unique_client_incidents(
+            self._selected_incidents(),
+            lambda incident: self._incident_connected(incident),
+        )
+        if not incidents:
             return
+        target_count = len(incidents)
+        target_label = self._incident_target_label(incidents, "user(s)")
         if self._confirm_action(
             "confirm_kick",
             "Kick User",
-            f"Disconnect user {incident.get('login_id') or incident.get('client_id')}?",
+            f"Disconnect user {target_label}?" if target_count == 1 else f"Disconnect {target_label}?",
         ) is False:
             return
-        self._emit_incident_user_command("kick", incident)
+        self._emit_incident_user_commands("kick", incidents)
 
     def ban_selected_user(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._unique_client_incidents(self._selected_incidents(), lambda _incident: True)
+        if not incidents:
             return
+        target_count = len(incidents)
+        target_label = self._incident_target_label(incidents, "user(s)")
         if self._confirm_action(
             "confirm_ban",
             "Ban User",
-            f"Ban user {incident.get('login_id') or incident.get('client_id')}?",
+            f"Ban user {target_label}?" if target_count == 1 else f"Ban {target_label}?",
         ) is False:
             return
-        self._emit_incident_user_command("ban", incident)
+        self._emit_incident_user_commands("ban", incidents)
 
     def pause_selected_exam(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._unique_client_incidents(
+            self._selected_incidents(),
+            lambda incident: self._incident_session_state(incident) == "running",
+        )
+        if not incidents:
             return
+        target_count = len(incidents)
+        target_label = self._incident_target_label(incidents, "exam session(s)")
         if self._confirm_action(
             "confirm_pause",
             "Pause Exam",
-            f"Pause exam for {incident.get('login_id') or incident.get('client_id')}?",
+            f"Pause exam for {target_label}?" if target_count == 1 else f"Pause {target_label}?",
         ) is False:
             return
-        self._emit_incident_user_command("pause_exam", incident)
+        self._emit_incident_user_commands("pause_exam", incidents)
 
     def resume_selected_exam(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._unique_client_incidents(
+            self._selected_incidents(),
+            lambda incident: self._incident_session_state(incident) in {"admin_paused", "disconnected_paused"},
+        )
+        if not incidents:
             return
-        self._emit_incident_user_command("resume_exam", incident)
+        self._emit_incident_user_commands("resume_exam", incidents)
 
     def forgive_selected_violation(self):
-        incident = self._selected_incident()
-        if not incident:
+        incidents = self._unique_client_incidents(
+            sorted(self._selected_incidents(), key=lambda incident: (not incident.get("blocking"), str(incident.get("incident_id") or ""))),
+            lambda incident: self._incident_session_state(incident) == "violation_paused" and bool(incident.get("blocking")),
+        )
+        if not incidents:
             return
+        target_count = len(incidents)
         if not messagebox.askyesno(
             "Forgive Violation",
-            f"Forgive blocking violation for {incident.get('login_id') or incident.get('client_id')}?",
+            (
+                f"Forgive blocking violation for {incidents[0].get('login_id') or incidents[0].get('client_id')}?"
+                if target_count == 1
+                else f"Forgive blocking violations for {target_count} selected user(s)?"
+            ),
         ):
             return
-        self._emit_incident_user_command("forgive_violation", incident)
+        self._emit_incident_user_commands("forgive_violation", incidents)
 
     def _emit_incident_user_command(self, command: str, incident: dict):
         print(
@@ -600,17 +731,37 @@ class ServerGUI(tk.Tk):
             f"[ADMIN] Sent {command} for user {incident.get('login_id') or incident.get('client_id')}"
         )
 
+    def _emit_incident_user_commands(self, command: str, incidents: list[dict]):
+        for incident in incidents:
+            print(
+                json.dumps(
+                    {
+                        "cmd": command,
+                        "uuid": incident.get("client_id"),
+                        "incident_id": incident.get("incident_id"),
+                    }
+                ),
+                flush=True,
+            )
+        self._append_log(
+            f"[ADMIN] Sent {command} for {len(incidents)} selected user(s)"
+        )
+
     def _update_incident_detail(self):
-        incident = self._selected_incident()
+        if self._incident_tree_refreshing:
+            return
+        incidents = self._selected_incidents()
         self.incident_detail.config(state=tk.NORMAL)
         self.incident_detail.delete("1.0", tk.END)
-        if incident:
-            self.incident_detail.insert(tk.END, "\n".join(_incident_detail_lines(incident)))
+        if len(incidents) == 1:
+            self.incident_detail.insert(tk.END, "\n".join(_incident_detail_lines(incidents[0])))
+        elif incidents:
+            self.incident_detail.insert(tk.END, "\n".join(_multi_incident_detail_lines(incidents)))
         self.incident_detail.config(state=tk.DISABLED)
-        self._sync_incident_buttons(incident)
+        self._sync_incident_buttons(incidents)
 
-    def _sync_incident_buttons(self, incident: dict | None):
-        if not incident:
+    def _sync_incident_buttons(self, incidents: list[dict]):
+        if not incidents:
             for button in (
                 self.kill_pid_button,
                 self.kick_user_button,
@@ -622,20 +773,35 @@ class ServerGUI(tk.Tk):
                 button.config(state=tk.DISABLED)
             return
 
-        client = self.clients_data.get(str(incident.get("client_id", "")), {})
-        connected = client.get("connection_status") == "Connected"
-        session_name = str(client.get("session_state") or incident.get("session_state") or "")
         self.kill_pid_button.config(
-            state=tk.NORMAL if connected and bool(incident.get("kill_available")) else tk.DISABLED
+            state=tk.NORMAL
+            if any(self._incident_connected(incident) and bool(incident.get("kill_available")) for incident in incidents)
+            else tk.DISABLED
         )
-        self.kick_user_button.config(state=tk.NORMAL if connected else tk.DISABLED)
+        self.kick_user_button.config(
+            state=tk.NORMAL if any(self._incident_connected(incident) for incident in incidents) else tk.DISABLED
+        )
         self.ban_user_button.config(state=tk.NORMAL)
-        self.pause_exam_button.config(state=tk.NORMAL if session_name == "running" else tk.DISABLED)
+        self.pause_exam_button.config(
+            state=tk.NORMAL
+            if any(self._incident_session_state(incident) == "running" for incident in incidents)
+            else tk.DISABLED
+        )
         self.resume_exam_button.config(
-            state=tk.NORMAL if session_name in {"admin_paused", "disconnected_paused"} else tk.DISABLED
+            state=tk.NORMAL
+            if any(
+                self._incident_session_state(incident) in {"admin_paused", "disconnected_paused"}
+                for incident in incidents
+            )
+            else tk.DISABLED
         )
         self.forgive_violation_button.config(
-            state=tk.NORMAL if session_name == "violation_paused" and incident.get("blocking") else tk.DISABLED
+            state=tk.NORMAL
+            if any(
+                self._incident_session_state(incident) == "violation_paused" and incident.get("blocking")
+                for incident in incidents
+            )
+            else tk.DISABLED
         )
 
     def _send_client_command(self, window, command: str, client_id: str):
@@ -891,40 +1057,59 @@ class ServerGUI(tk.Tk):
         self.tree_items[client_id] = self.tree.insert("", tk.END, values=values)
 
     def _rebuild_incident_tree(self):
-        selected_incident = None
-        current_selection = self._selected_incident()
-        if current_selection:
-            selected_incident = current_selection.get("incident_id")
+        selected_incidents = set(self._selected_incident_ids())
+        focus_item = self.incident_tree.focus()
+        focus_values = self.incident_tree.item(focus_item, "values") if focus_item else ()
+        focused_incident_id = str(focus_values[0]) if focus_values else ""
+        yview = self.incident_tree.yview()
+        restored_selection: list[str] = []
+        restored_focus = ""
 
-        for item_id in self.incident_tree.get_children():
-            self.incident_tree.delete(item_id)
-        self.incident_items = {}
+        self._incident_tree_refreshing = True
+        try:
+            for item_id in self.incident_tree.get_children():
+                self.incident_tree.delete(item_id)
+            self.incident_items = {}
 
-        for incident in self.incidents_data:
-            incident_id = str(incident.get("incident_id", "") or "")
-            status_text = str(incident.get("status", "") or "")
-            if incident.get("active"):
-                status_text = f"{status_text} (active)"
-            values = (
-                incident_id,
-                incident.get("event_at", ""),
-                incident.get("login_id", ""),
-                incident.get("severity", ""),
-                incident.get("rule_name", ""),
-                incident.get("source", ""),
-                incident.get("process_name", ""),
-                incident.get("pid", ""),
-                status_text,
-            )
-            item_id = self.incident_tree.insert("", tk.END, values=values)
-            self.incident_items[incident_id] = item_id
-            if selected_incident and selected_incident == incident_id:
-                self.incident_tree.selection_set(item_id)
+            for incident in self.incidents_data:
+                incident_id = str(incident.get("incident_id", "") or "")
+                status_text = str(incident.get("status", "") or "")
+                if incident.get("active"):
+                    status_text = f"{status_text} (active)"
+                values = (
+                    incident_id,
+                    incident.get("event_at", ""),
+                    incident.get("login_id", ""),
+                    incident.get("severity", ""),
+                    incident.get("rule_name", ""),
+                    incident.get("source", ""),
+                    incident.get("process_name", ""),
+                    incident.get("pid", ""),
+                    incident.get("auto_action_state_label", ""),
+                    status_text,
+                )
+                item_id = self.incident_tree.insert("", tk.END, values=values)
+                self.incident_items[incident_id] = item_id
+                if incident_id in selected_incidents:
+                    restored_selection.append(item_id)
+                if focused_incident_id and incident_id == focused_incident_id:
+                    restored_focus = item_id
 
-        if not self.incident_tree.selection():
-            children = self.incident_tree.get_children()
-            if children:
-                self.incident_tree.selection_set(children[0])
+            if restored_selection:
+                self.incident_tree.selection_set(restored_selection)
+            else:
+                self.incident_tree.selection_remove(self.incident_tree.selection())
+
+            if restored_focus:
+                self.incident_tree.focus(restored_focus)
+            elif restored_selection:
+                self.incident_tree.focus(restored_selection[0])
+
+            if yview:
+                self.incident_tree.yview_moveto(yview[0])
+        finally:
+            self._incident_tree_refreshing = False
+
         self._update_incident_detail()
 
 

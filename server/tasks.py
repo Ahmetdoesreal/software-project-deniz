@@ -248,14 +248,29 @@ def _build_gui_incidents() -> list[dict]:
         active = bool(incident_id and incident_id in state.active_incidents)
         login_id = str(incident.get("login_id", "") or "")
         user = state.users_db.get(login_id, {})
+        rule_id = str(incident.get("rule_id", "") or "")
+        status = str(incident.get("status", "") or "")
+        severity = str(incident.get("severity", "") or "")
+        rule_config = state.rule_config(rule_id)
+        blocking = incident_id and incident_id == str(user.get("blocking_incident_id", "") or "")
+        auto_action_name = ""
+        auto_action_state = "manual"
+        if bool(rule_config.get("auto_violation_pause", False)) and severity.strip().lower() == "violation":
+            auto_action_name = "auto_violation_pause"
+            if blocking:
+                auto_action_state = "applied"
+            elif incident.get("blocking"):
+                auto_action_state = "released"
+            else:
+                auto_action_state = "configured"
         incidents.append(
             {
                 "incident_id": incident_id,
                 "client_id": str(incident.get("client_id", "") or ""),
                 "login_id": login_id,
-                "status": str(incident.get("status", "") or ""),
-                "severity": str(incident.get("severity", "") or ""),
-                "rule_id": str(incident.get("rule_id", "") or ""),
+                "status": status,
+                "severity": severity,
+                "rule_id": rule_id,
                 "rule_name": str(incident.get("rule_name", "") or incident.get("rule_id", "")),
                 "source": str(incident.get("source", "") or ""),
                 "summary": str(incident.get("summary", "") or ""),
@@ -272,11 +287,14 @@ def _build_gui_incidents() -> list[dict]:
                 "active": active,
                 "kill_available": (
                     int(incident.get("pid", 0) or 0) > 0
-                    and bool(state.rule_config(str(incident.get("rule_id", "") or "")).get("allow_remote_kill", True))
+                    and bool(rule_config.get("allow_remote_kill", True))
                 ),
                 "session_state": session_state.derive_state(user) if user else "",
                 "resume_allowed": session_state.reconnect_resume_allowed(user, state.session_policy()) if user else False,
-                "blocking": incident_id and incident_id == str(user.get("blocking_incident_id", "") or ""),
+                "blocking": blocking,
+                "auto_action_name": auto_action_name,
+                "auto_action_state": auto_action_state,
+                "auto_action_state_label": auto_action_state.replace("_", " ").title(),
                 "details": incident,
             }
         )
