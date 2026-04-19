@@ -6,7 +6,6 @@ from collections.abc import Callable
 
 from common import protocol
 
-from .macos import get_processes_for_macos
 from .psutil_collector import get_processes_via_psutil
 
 
@@ -97,8 +96,6 @@ class ProcessMonitor:
         self._write_log(payload)
 
     def _get_current_processes(self) -> set[tuple[int, str]]:
-        if platform.system() == "Darwin":
-            return get_processes_for_macos()
         return get_processes_via_psutil()
 
     def _build_base_payload(self, entry_type: str) -> dict:

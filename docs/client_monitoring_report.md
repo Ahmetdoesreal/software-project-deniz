@@ -53,7 +53,6 @@ The running-process detector is implemented in:
 
 - `custommodules/process_monitor/core.py`
 - `custommodules/process_monitor/psutil_collector.py`
-- `custommodules/process_monitor/macos.py`
 
 Its job is to track the processes that are running during the exam and keep a structured audit trail.
 

@@ -1,0 +1,10 @@
+📌 Takım Arkadaşları İçin Entegrasyon Görevleri
+
+Engin: network_sender.py dosyasındaki request_start_exam payload'una password alanını eklemelisin. Sunucu artık CATS/Orion üzerinden canlı doğrulama yapıyor, şifre gelmezse bağlantıyı reddeder. Ayrıca öğrenci bağlandığında hemen süre başlamıyor; monitor_loop.py dosyanın sunucudan gelecek olan exam_started_ack sinyalini bekleyecek ("Bekleme Odası") şekilde güncellenmesi gerekiyor.
+
+Ahmet: Senin protocol.py ve events.py modüllerin sunucuya tam entegre edildi. Engin'in veri güvenilirliği için eklediği yeni alanlar (seq, session_id, buffered) senin decode mantığını veya checksum hesaplamanı bozmamalı. Eğer bu alanlar checksum hatasına sebep oluyorsa, protocol.py içinde bu durumu handle etmelisin.
+
+Naz: Senin şifreleme katmanın (Katman 1) sunucuda sorunsuz çalışıyor. Ancak şifre doğrulamasını artık sunucu tarafında Web Scraping ile canlı yapıyoruz. Bu yüzden AuthClient içinde şifreyi hash'lemene gerek yok; öğrencinin girdiği ham şifreyi (plain text) güvenli paketinin içine koyup yollaman yeterli.
+
+Mert: Senin db_manager.py modülün sunucunun merkezine bağlandı. İhlaller (violations), bağlantılar (student_connections) ve audit_log tabloların aktif olarak doluyor. Sunucu çökse bile senin DB'ne yazdığımız state sayesinde öğrencileri anında kurtarabiliyoruz (Crash Recovery).
+

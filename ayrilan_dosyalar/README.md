@@ -1,18 +1,14 @@
-# Ayrılan Dosyalar
+# Ayrilan Dosyalar
 
-Bu klasör, `client.py` ve `server.py` çekirdek akışından bağımsız veya ikincil nitelikte bulunan dosyaları toplamak için oluşturuldu.
+Bu klasor, `client.py` ve `server.py` cekirdek akisindan bagimsiz veya ikincil nitelikte bulunan dosyalari toplamak icin olusturuldu.
 
-İçerik özeti:
+Icerik ozeti:
 
 - `exam_tls_demo/`
-  Ayrı bir TLS demo uygulaması.
+  Ayri bir TLS demo uygulamasi.
 - `exam_tls_demo.zip`
-  Yukarıdaki demo için arşiv çıktı.
+  Yukaridaki demo icin arsiv ciktisi.
 - `CHEATSHEET.md`
-  TLS demo notları; mevcut kök uygulama akışıyla birebir örtüşmüyor.
+  TLS demo notlari; mevcut kok uygulama akisiyla birebir ortusmuyor.
 - `session_archive/`
-  Geçmiş plan/walkthrough belgeleri.
-- `custommodules/replay_recorder_macos.py`
-  Kullanılmayan alternatif macOS kayıt modülü.
-- `custommodules/replay_recorder_macos_auto.py`
-  Kullanılmayan alternatif macOS otomatik kayıt modülü.
+  Gecmis plan/walkthrough belgeleri.
