@@ -46,11 +46,14 @@ class ExamTimerGUI:
 
     def _configure_window(self):
         self.root.title("Exam Timer")
-        self.root.geometry("430x260")
+        self.root.geometry("500x320")
+        self.root.minsize(460, 290)
         self.root.attributes("-topmost", True)
         install_close_guard(self.root, self.on_closing, bind_all=True)
-        self.timer_font = tkfont.nametofont("TkDefaultFont").copy()
-        self.timer_font.configure(size=max(int(self.timer_font.cget("size")) + 12, 20), weight="bold")
+        default_font = tkfont.nametofont("TkDefaultFont")
+        self.timer_font = default_font.copy()
+        timer_size = max(int(default_font.cget("size")) + 6, 16)
+        self.timer_font.configure(size=timer_size, weight="bold")
 
     def _build_widgets(self):
         self.main_frame = ttk.Frame(self.root, padding=12)
@@ -75,7 +78,7 @@ class ExamTimerGUI:
             status_frame,
             textvariable=self.status_text,
             justify=tk.LEFT,
-            wraplength=360,
+            wraplength=430,
         )
         self.status_label.pack(anchor=tk.W, fill=tk.X, pady=(10, 0))
 
@@ -83,14 +86,14 @@ class ExamTimerGUI:
         command_frame.pack(fill=tk.X, pady=(10, 0))
 
         self.button_frame = ttk.Frame(command_frame)
-        self.button_frame.pack(anchor=tk.W)
+        self.button_frame.pack(fill=tk.X)
 
         self.start_btn = ttk.Button(
             self.button_frame,
             text="Request Start",
             command=self.on_start_click,
         )
-        self.start_btn.pack()
+        self.start_btn.pack(fill=tk.X)
 
         self.finish_btn = ttk.Button(
             self.button_frame,
@@ -143,7 +146,7 @@ class ExamTimerGUI:
         self.started = True
         self.timer_state = "running"
         self.start_btn.pack_forget()
-        self.finish_btn.pack()
+        self.finish_btn.pack(fill=tk.X)
         self.finish_btn.config(state=tk.NORMAL)
         self.status_text.set("Exam is running.")
         self.footer_text.set("Exam started.")
@@ -190,7 +193,7 @@ class ExamTimerGUI:
         self.started = True
         self.timer_state = "submission_only"
         self.start_btn.pack_forget()
-        self.finish_btn.pack()
+        self.finish_btn.pack(fill=tk.X)
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
         self.timer_text.set("Finish")
         self.status_text.set("Upload your file to finish the exam.")
@@ -220,7 +223,7 @@ class ExamTimerGUI:
         self.pause_reason = reason
         self.remaining = max(0, int(remaining_seconds))
         self.start_btn.pack_forget()
-        self.finish_btn.pack()
+        self.finish_btn.pack(fill=tk.X)
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
         self.timer_text.set(_format_time(self.remaining))
         self.status_text.set(reason or "Exam paused by administrator.")
@@ -232,7 +235,7 @@ class ExamTimerGUI:
         self.pause_reason = ""
         self.remaining = max(0, int(remaining_seconds))
         self.start_btn.pack_forget()
-        self.finish_btn.pack()
+        self.finish_btn.pack(fill=tk.X)
         self.finish_btn.config(state=tk.NORMAL if not self.finish_in_progress else tk.DISABLED)
         self.timer_text.set(_format_time(self.remaining))
         self.status_text.set(reason or "Exam resumed.")
@@ -268,9 +271,11 @@ class SubmissionWindow(tk.Toplevel):
         self.submit_callback = submit_callback
         self.close_callback = close_callback
         self.selected_file = ""
+        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
 
         self.title("Finish Exam")
-        self.geometry("760x500")
+        self.geometry("820x560")
+        self.minsize(720, 500)
         install_close_guard(self, self._on_close_attempt, include_quit_shortcuts=False)
 
         self.path_var = tk.StringVar(value="No file selected.")
@@ -282,26 +287,38 @@ class SubmissionWindow(tk.Toplevel):
     def _build_widgets(self):
         container = ttk.Frame(self, padding=12)
         container.pack(fill=tk.BOTH, expand=True)
+        style = ttk.Style(self)
+        style.configure("SubmissionMono.TLabel", font=self.mono_font)
 
         submit_frame = ttk.LabelFrame(container, text="Submission", padding=10)
         submit_frame.pack(fill=tk.X)
 
         ttk.Label(submit_frame, text="Select a file to submit.").pack(anchor=tk.W)
 
-        ttk.Label(submit_frame, textvariable=self.path_var, wraplength=700, justify=tk.LEFT).pack(
+        ttk.Label(
+            submit_frame,
+            textvariable=self.path_var,
+            style="SubmissionMono.TLabel",
             anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=760,
+        ).pack(
+            anchor=tk.W,
+            fill=tk.X,
             pady=(6, 8),
         )
 
         action_frame = ttk.Frame(submit_frame)
         action_frame.pack(fill=tk.X, pady=(0, 10))
+        action_frame.columnconfigure(0, weight=1)
+        action_frame.columnconfigure(1, weight=1)
 
         self.choose_button = ttk.Button(
             action_frame,
             text="Choose File",
             command=self.choose_file,
         )
-        self.choose_button.pack(side=tk.LEFT)
+        self.choose_button.grid(row=0, column=0, sticky=tk.EW)
 
         self.upload_button = ttk.Button(
             action_frame,
@@ -309,26 +326,43 @@ class SubmissionWindow(tk.Toplevel):
             command=self._submit_selected_file,
             state=tk.DISABLED,
         )
-        self.upload_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.upload_button.grid(row=0, column=1, sticky=tk.EW, padx=(8, 0))
 
-        ttk.Label(submit_frame, textvariable=self.summary_var, wraplength=700, justify=tk.LEFT).pack(
+        ttk.Label(
+            submit_frame,
+            textvariable=self.summary_var,
+            style="SubmissionMono.TLabel",
             anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=760,
+        ).pack(
+            anchor=tk.W,
+            fill=tk.X,
             pady=(0, 6),
         )
-        ttk.Label(submit_frame, textvariable=self.status_var, wraplength=700, justify=tk.LEFT).pack(
+        ttk.Label(submit_frame, textvariable=self.status_var, wraplength=760, justify=tk.LEFT).pack(
             anchor=tk.W,
             pady=(0, 8),
         )
 
         preview_frame = ttk.LabelFrame(container, text="File Preview")
         preview_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
 
-        self.preview_frame = preview_frame
         columns = ("size", "modified")
+        self.tree_style = ttk.Style(self)
+        self.tree_style.configure("Monospace.Treeview", font=self.mono_font)
+
+        self.tree_container = ttk.Frame(preview_frame)
+        self.tree_container.columnconfigure(0, weight=1)
+        self.tree_container.rowconfigure(0, weight=1)
+
         self.tree = ttk.Treeview(
-            preview_frame,
+            self.tree_container,
             columns=columns,
             show="tree headings",
+            style="Monospace.Treeview",
         )
         self.tree.heading("#0", text="Name", anchor=tk.W)
         self.tree.heading("size", text="Size", anchor=tk.E)
@@ -337,25 +371,37 @@ class SubmissionWindow(tk.Toplevel):
         self.tree.column("size", width=110, anchor=tk.E)
         self.tree.column("modified", width=180, anchor=tk.W)
 
-        scrollbar = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree_scrollbar = scrollbar
+        self.tree_scrollbar = ttk.Scrollbar(self.tree_container, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree_x_scrollbar = ttk.Scrollbar(self.tree_container, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(
+            yscrollcommand=self.tree_scrollbar.set,
+            xscrollcommand=self.tree_x_scrollbar.set,
+        )
+        self.tree.grid(row=0, column=0, sticky=tk.NSEW)
+        self.tree_scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        self.tree_x_scrollbar.grid(row=1, column=0, sticky=tk.EW)
 
-        self.text_preview = tk.Text(preview_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.text_container = ttk.Frame(preview_frame)
+        self.text_container.columnconfigure(0, weight=1)
+        self.text_container.rowconfigure(0, weight=1)
+        self.text_preview = tk.Text(self.text_container, wrap=tk.NONE, state=tk.DISABLED)
         self.text_preview.configure(
             relief=tk.SUNKEN,
             borderwidth=1,
             highlightthickness=0,
             padx=6,
             pady=6,
-            font=tkfont.nametofont("TkFixedFont"),
+            font=self.mono_font,
         )
-        self.text_scrollbar = ttk.Scrollbar(
-            preview_frame,
-            orient=tk.VERTICAL,
-            command=self.text_preview.yview,
+        self.text_scrollbar = ttk.Scrollbar(self.text_container, orient=tk.VERTICAL, command=self.text_preview.yview)
+        self.text_x_scrollbar = ttk.Scrollbar(self.text_container, orient=tk.HORIZONTAL, command=self.text_preview.xview)
+        self.text_preview.configure(
+            yscrollcommand=self.text_scrollbar.set,
+            xscrollcommand=self.text_x_scrollbar.set,
         )
-        self.text_preview.configure(yscrollcommand=self.text_scrollbar.set)
+        self.text_preview.grid(row=0, column=0, sticky=tk.NSEW)
+        self.text_scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        self.text_x_scrollbar.grid(row=1, column=0, sticky=tk.EW)
 
         self._show_tree_preview()
 
@@ -473,16 +519,12 @@ class SubmissionWindow(tk.Toplevel):
         )
 
     def _show_tree_preview(self):
-        self.text_preview.pack_forget()
-        self.text_scrollbar.pack_forget()
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text_container.grid_remove()
+        self.tree_container.grid(row=0, column=0, sticky=tk.NSEW)
 
     def _show_text_preview(self):
-        self.tree.pack_forget()
-        self.tree_scrollbar.pack_forget()
-        self.text_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.text_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_container.grid_remove()
+        self.text_container.grid(row=0, column=0, sticky=tk.NSEW)
 
 
 def ipc_reader(app: ExamTimerGUI):

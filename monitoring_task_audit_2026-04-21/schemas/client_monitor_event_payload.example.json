@@ -1,0 +1,14 @@
+﻿{
+  "source": "focused_window",
+  "event_type": "focused_window_status",
+  "severity": "info",
+  "timestamp": "2026-04-21T10:00:10Z",
+  "window": {
+    "process_name": "exam.exe",
+    "window_title": "Exam App",
+    "process_id": 1044,
+    "event_type": "focused_window_poll",
+    "severity": "info",
+    "timestamp": "2026-04-21T10:00:10Z"
+  }
+}

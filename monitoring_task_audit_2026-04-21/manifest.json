@@ -1,0 +1,127 @@
+﻿{
+    "generated_at":  "2026-04-21T12:08:26",
+    "report_root":  "C:\\Users\\Deniz\\Desktop\\6064\\software-project\\monitoring_task_audit_2026-04-21",
+    "file_count":  24,
+    "files":  [
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\client\\incidents.py",
+                      "size_bytes":  20323,
+                      "sha256":  "f61868c27fa1c9e9fd5ff90c06ee9c421344619babb1cb546557ac8425e1d288"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\client\\ws_client.py",
+                      "size_bytes":  39820,
+                      "sha256":  "844ecb63b6a14cfeda47c8ee1161905e31c9dda1269dfb6be5ced8467533fd84"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\common\\events.py",
+                      "size_bytes":  8337,
+                      "sha256":  "ee930bc0b981ed47f415e3ac334aa9d65a88cc58abe74979c2eb7659f90756ea"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\custommodules\\focused_window_monitor\\core.py",
+                      "size_bytes":  8335,
+                      "sha256":  "f4f53c27e1d76f7382204bf0bedc37b4c8881eceac7525beb8c669669ef13409"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\custommodules\\process_monitor\\core.py",
+                      "size_bytes":  10639,
+                      "sha256":  "b72a27d68c9b36dfb880c1a01af92a2698b39e538be4374b38c492951ea7f974"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\server\\handlers.py",
+                      "size_bytes":  34926,
+                      "sha256":  "c25a29cbacabc55ab45873c00d0305a0f8cc134cd8985b2ef9db653505dbe971"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\server\\state.py",
+                      "size_bytes":  27743,
+                      "sha256":  "d748b72770b80336267e5bd0ee609fcafb57562a5ef3df178b5b84e93ff9d807"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\server_gui.py",
+                      "size_bytes":  52896,
+                      "sha256":  "53ea9aee78e17035e84db2892d7c56bafcc67677158d98a056c9332207e81f69"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\tests\\unit\\test_focused_window_monitor.py",
+                      "size_bytes":  4095,
+                      "sha256":  "317ec383de322dc76c604f621e133b30c69066f59c4ca168a090132f7d314e30"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\tests\\unit\\test_manager_support.py",
+                      "size_bytes":  2659,
+                      "sha256":  "154e1a917196affd6b7ac18e93c0917097e8f3a6e82590990f5582fd988697d5"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\tests\\unit\\test_server_state.py",
+                      "size_bytes":  8199,
+                      "sha256":  "129bc05a74e8822e9b1eeceb34b5ec381b75fb89c18352ca0919aa81931b8772"
+                  },
+                  {
+                      "relative_path":  "files_changed\\near final delivery\\tests\\unit\\test_transfers.py",
+                      "size_bytes":  6952,
+                      "sha256":  "49afe2ccb52821e248be64707bc259107e120faa57a89721a30f1095f7b143d9"
+                  },
+                  {
+                      "relative_path":  "files_generated\\runtime_outputs_catalog.json",
+                      "size_bytes":  414,
+                      "sha256":  "1d62824eec49777838b2c8498bb73310c1ee55be71e2cabfc9fb95a61295909e"
+                  },
+                  {
+                      "relative_path":  "files_used\\near final delivery\\client\\transfers.py",
+                      "size_bytes":  14657,
+                      "sha256":  "c32f244e8074e1bca92976ec9bba861593783c9a6bf5be882cb8d22aca7432fb"
+                  },
+                  {
+                      "relative_path":  "files_used\\near final delivery\\tests\\unit\\test_client_incidents.py",
+                      "size_bytes":  8521,
+                      "sha256":  "cac0efb83b03fcf088a442ca9cae1301ce315156d45356eb547204ff6fd6eca8"
+                  },
+                  {
+                      "relative_path":  "files_used\\near final delivery\\tests\\unit\\test_server_handlers.py",
+                      "size_bytes":  3363,
+                      "sha256":  "9d5b52f434eff607460036063d8d89457532fe79e2a77baea3a4e4ef57a310d0"
+                  },
+                  {
+                      "relative_path":  "REPORT.md",
+                      "size_bytes":  4873,
+                      "sha256":  "d5b0b70a8772dd75e9137fb61468177f5a4559b62b32300ad7f15347453f57d3"
+                  },
+                  {
+                      "relative_path":  "REPORT_LLM.json",
+                      "size_bytes":  2705,
+                      "sha256":  "ec00690e7f161afbb9800b59c28e5a5206b8b09df757e58eb9ca7871af332736"
+                  },
+                  {
+                      "relative_path":  "schemas\\client_monitor_event_payload.example.json",
+                      "size_bytes":  351,
+                      "sha256":  "ecddcdf2077c3047712f46ab5a5ddf5cf855e004c7812e8935de626d0555d1cb"
+                  },
+                  {
+                      "relative_path":  "schemas\\focused_window_jsonl_line.example.json",
+                      "size_bytes":  360,
+                      "sha256":  "4d0752a32a9744a24f0bd2c30b38b80eecc1502d334c72565ced2ff35bce9c8d"
+                  },
+                  {
+                      "relative_path":  "schemas\\incident_report_opened.example.json",
+                      "size_bytes":  592,
+                      "sha256":  "67f194f3d7373921c4c9167931c0f858cb6568d9b0fe0e4ced1b40b5c063e834"
+                  },
+                  {
+                      "relative_path":  "schemas\\incident_report_resolved.example.json",
+                      "size_bytes":  638,
+                      "sha256":  "c2cd2691093f2597248a5f7f301ab90d52cff0fffd331253cc515a3c4afc324c"
+                  },
+                  {
+                      "relative_path":  "validation\\monitoring_test_results_clean.txt",
+                      "size_bytes":  2878,
+                      "sha256":  "5be8549b07b391ba7d1e52c41daf23b9c91528c6252a87d053d8b1389b23668c"
+                  },
+                  {
+                      "relative_path":  "validation\\summary.json",
+                      "size_bytes":  316,
+                      "sha256":  "36fa3a3312e1c0f76121607e72f1e1eb8d692e6806dae0a95254a4b1cebb05de"
+                  }
+              ]
+}

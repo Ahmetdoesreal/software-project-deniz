@@ -1,0 +1,18 @@
+﻿{
+  "incident_id": "f23f8f6a-58d3-4ad6-9cfd-6657f9395221",
+  "policy_version": "policy-abc123",
+  "rule_id": "rapid_application_switching",
+  "rule_name": "rapid_application_switching",
+  "source": "focused_window",
+  "severity": "warning",
+  "status": "opened",
+  "summary": "Rapid application switching detected: 11 changes in last 60 seconds",
+  "event_type": "rapid_application_switching",
+  "event_at": "2026-04-21T10:00:30Z",
+  "timestamp": "2026-04-21T10:00:30Z",
+  "switch_count": 11,
+  "threshold": 10,
+  "window_seconds": 60,
+  "recent_switches": [],
+  "needs_evidence": true
+}

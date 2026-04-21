@@ -1,0 +1,13 @@
+﻿{
+  "runtime_outputs": [
+    "data/client/<session_uuid>/focused_window.jsonl",
+    "data/client/<session_uuid>/focused_window_snapshot.json",
+    "data/client/<session_uuid>/processes.jsonl",
+    "data/server/incidents.jsonl"
+  ],
+  "wire_events": [
+    "client_monitor_event",
+    "incident_report"
+  ],
+  "artifact_note": "Paths are workspace-local and compatible with data/client and data/server rules."
+}

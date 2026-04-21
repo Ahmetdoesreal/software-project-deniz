@@ -1,0 +1,16 @@
+﻿{
+  "timestamp": "2026-04-21T10:00:05Z",
+  "type": "focused_window_change",
+  "event_type": "focused_window_change",
+  "severity": "info",
+  "previous": {
+    "process_name": "exam.exe",
+    "window_title": "Exam App",
+    "process_id": 1044
+  },
+  "current": {
+    "process_name": "chrome.exe",
+    "window_title": "Browser",
+    "process_id": 2251
+  }
+}

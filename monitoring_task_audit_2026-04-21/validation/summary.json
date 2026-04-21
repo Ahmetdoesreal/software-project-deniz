@@ -1,0 +1,7 @@
+﻿{
+  "suite": "monitoring_extension_validation",
+  "command": "python -m unittest tests.unit.test_client_incidents tests.unit.test_focused_window_monitor tests.unit.test_server_state tests.unit.test_server_handlers tests.unit.test_process_monitor",
+  "result": "pass",
+  "ran_tests": 19,
+  "date": "2026-04-21"
+}

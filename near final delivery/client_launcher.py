@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -39,9 +40,10 @@ class ClientManager(tk.Tk):
         install_close_guard(self, self.on_close_request, bind_all=True)
 
         style = ttk.Style(self)
-        style.configure(".", font=("Helvetica", 14))
-        style.configure("TButton", padding=(14, 8))
-        style.configure("TLabelframe.Label", font=("Helvetica", 13, "bold"))
+        style.configure("TButton", padding=(10, 6))
+        style.configure("TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        style.configure("Mono.TLabel", font=self.mono_font)
         self.columnconfigure(1, weight=1)
 
         self.status_var = tk.StringVar(
@@ -157,21 +159,18 @@ class ClientManager(tk.Tk):
             controls,
             text="Connect & Login",
             command=self.start_client,
-            width=16,
         )
         self.start_button.grid(row=0, column=0, sticky=tk.EW, padx=8, pady=10)
         self.stop_button = ttk.Button(
             controls,
             text="Stop Client",
             command=self.stop_client,
-            width=16,
         )
         self.stop_button.grid(row=0, column=1, sticky=tk.EW, padx=8, pady=10)
         self.cli_button = ttk.Button(
             controls,
             text="Open Session CLI",
             command=self.open_cli,
-            width=16,
         )
         self.cli_button.grid(row=0, column=2, sticky=tk.EW, padx=8, pady=10)
 
@@ -192,13 +191,29 @@ class ClientManager(tk.Tk):
             padx=10,
             pady=4,
         )
-        ttk.Label(status_frame, textvariable=self.session_log_var, wraplength=700).pack(
+        ttk.Label(
+            status_frame,
+            textvariable=self.session_log_var,
+            style="Mono.TLabel",
             anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(
+            anchor=tk.W,
+            fill=tk.X,
             padx=10,
             pady=4,
         )
-        ttk.Label(status_frame, textvariable=self.runtime_log_var, wraplength=700).pack(
+        ttk.Label(
+            status_frame,
+            textvariable=self.runtime_log_var,
+            style="Mono.TLabel",
             anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(
+            anchor=tk.W,
+            fill=tk.X,
             padx=10,
             pady=(4, 10),
         )

@@ -1,6 +1,7 @@
 import json
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -144,6 +145,11 @@ class ServerGUI(tk.Tk):
 
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
+        self.minsize(1000, 680)
+        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        self.tree_style = ttk.Style(self)
+        self.tree_style.configure("Monospace.Treeview", font=self.mono_font)
+        self.tree_style.configure("Mono.TLabel", font=self.mono_font)
         install_close_guard(self, self.on_close_request, bind_all=True)
 
         self._build_layout()
@@ -198,48 +204,50 @@ class ServerGUI(tk.Tk):
 
         blacklist_frame = ttk.Frame(info_frame, padding=(8, 6, 8, 0))
         blacklist_frame.pack(fill=tk.X)
+        for column in range(3):
+            blacklist_frame.columnconfigure(column, weight=1)
 
         self.edit_blacklist_button = ttk.Button(
             blacklist_frame,
             text="Edit Blacklist",
             command=self.edit_blacklist,
         )
-        self.edit_blacklist_button.pack(side=tk.LEFT)
+        self.edit_blacklist_button.grid(row=0, column=0, sticky=tk.EW)
 
         self.apply_blacklist_button = ttk.Button(
             blacklist_frame,
             text="Apply Blacklist",
             command=self.apply_blacklist,
         )
-        self.apply_blacklist_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.apply_blacklist_button.grid(row=0, column=1, sticky=tk.EW, padx=(8, 0))
 
         self.edit_policy_button = ttk.Button(
             blacklist_frame,
             text="Edit Policy",
             command=self.edit_policy,
         )
-        self.edit_policy_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.edit_policy_button.grid(row=0, column=2, sticky=tk.EW, padx=(8, 0))
 
         self.apply_policy_button = ttk.Button(
             blacklist_frame,
             text="Apply Policy",
             command=self.apply_policy,
         )
-        self.apply_policy_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.apply_policy_button.grid(row=1, column=0, sticky=tk.EW, pady=(8, 0))
 
         self.export_settings_button = ttk.Button(
             blacklist_frame,
             text="Export Settings",
             command=self.export_settings,
         )
-        self.export_settings_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.export_settings_button.grid(row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
 
         self.import_settings_button = ttk.Button(
             blacklist_frame,
             text="Import Settings",
             command=self.import_settings,
         )
-        self.import_settings_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.import_settings_button.grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
 
         remember_toggle = ttk.Checkbutton(
             info_frame,
@@ -253,8 +261,11 @@ class ServerGUI(tk.Tk):
         info_label = ttk.Label(
             info_frame,
             textvariable=self.server_info_var,
+            style="Mono.TLabel",
+            anchor=tk.W,
             justify=tk.LEFT,
             padding=8,
+            wraplength=980,
         )
         info_label.pack(fill=tk.X)
 
@@ -268,6 +279,7 @@ class ServerGUI(tk.Tk):
             columns=columns,
             show="headings",
             selectmode="browse",
+            style="Monospace.Treeview",
         )
         self.tree.heading("login_id", text="Login ID", anchor=tk.W)
         self.tree.heading("status", text="Status", anchor=tk.CENTER)
@@ -280,28 +292,38 @@ class ServerGUI(tk.Tk):
         self.tree.column("uuid", width=320)
 
         y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=y_scroll.set)
+        x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(
+            yscrollcommand=y_scroll.set,
+            xscrollcommand=x_scroll.set,
+        )
 
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_log_area(self, parent):
         log_frame = ttk.LabelFrame(parent, text="Live Client Message Log")
         log_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        self.log_text = tk.Text(log_frame, height=7, state=tk.DISABLED, wrap=tk.WORD)
+        self.log_text = tk.Text(log_frame, height=7, state=tk.DISABLED, wrap=tk.NONE)
         self.log_text.configure(
             relief=tk.SUNKEN,
             borderwidth=1,
             highlightthickness=0,
             padx=6,
             pady=6,
-            font="TkFixedFont",
+            font=self.mono_font,
         )
         log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=log_scroll.set)
+        log_x_scroll = ttk.Scrollbar(log_frame, orient=tk.HORIZONTAL, command=self.log_text.xview)
+        self.log_text.configure(
+            yscrollcommand=log_scroll.set,
+            xscrollcommand=log_x_scroll.set,
+        )
 
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.log_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        log_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_action_panel(self, parent):
@@ -353,6 +375,7 @@ class ServerGUI(tk.Tk):
             columns=columns,
             show="headings",
             selectmode="extended",
+            style="Monospace.Treeview",
         )
         self.incident_tree.heading("incident_id", text="Incident ID")
         self.incident_tree.heading("time", text="Time")
@@ -377,27 +400,37 @@ class ServerGUI(tk.Tk):
         self.incident_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_incident_detail())
 
         incident_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.incident_tree.yview)
-        self.incident_tree.configure(yscrollcommand=incident_scroll.set)
+        incident_x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.incident_tree.xview)
+        self.incident_tree.configure(
+            yscrollcommand=incident_scroll.set,
+            xscrollcommand=incident_x_scroll.set,
+        )
 
-        self.incident_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.incident_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        incident_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         incident_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         detail_frame = ttk.LabelFrame(middle, text="Incident Details")
         detail_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        self.incident_detail = tk.Text(detail_frame, wrap=tk.WORD, height=14, state=tk.DISABLED)
+        self.incident_detail = tk.Text(detail_frame, wrap=tk.NONE, height=14, state=tk.DISABLED)
         self.incident_detail.configure(
             relief=tk.SUNKEN,
             borderwidth=1,
             highlightthickness=0,
             padx=6,
             pady=6,
-            font="TkFixedFont",
+            font=self.mono_font,
         )
         detail_scroll = ttk.Scrollbar(detail_frame, orient=tk.VERTICAL, command=self.incident_detail.yview)
-        self.incident_detail.configure(yscrollcommand=detail_scroll.set)
+        detail_x_scroll = ttk.Scrollbar(detail_frame, orient=tk.HORIZONTAL, command=self.incident_detail.xview)
+        self.incident_detail.configure(
+            yscrollcommand=detail_scroll.set,
+            xscrollcommand=detail_x_scroll.set,
+        )
 
-        self.incident_detail.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.incident_detail.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        detail_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_command_bar(self):
@@ -520,7 +553,7 @@ class ServerGUI(tk.Tk):
 
         top = tk.Toplevel(self)
         top.title(f"Options: {data.get('login_id', 'Unknown')}")
-        top.geometry("340x420")
+        top.geometry("430x500")
         self._register_window(window_key, top)
 
         frame = ttk.Frame(top, padding=12)
@@ -889,22 +922,32 @@ class ServerGUI(tk.Tk):
     def _open_detail_window(self, window_key, title: str, lines: list[str]):
         top = tk.Toplevel(self)
         top.title(title)
-        top.geometry("460x420")
+        top.geometry("560x460")
         self._register_window(window_key, top)
 
         frame = ttk.Frame(top, padding=12)
         frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
 
-        details = tk.Text(frame, wrap=tk.WORD, height=12)
+        details = tk.Text(frame, wrap=tk.NONE, height=12)
         details.configure(
             relief=tk.SUNKEN,
             borderwidth=1,
             highlightthickness=0,
             padx=6,
             pady=6,
-            font="TkFixedFont",
+            font=self.mono_font,
         )
-        details.pack(fill=tk.BOTH, expand=True)
+        detail_scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=details.yview)
+        detail_x_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=details.xview)
+        details.configure(
+            yscrollcommand=detail_scroll.set,
+            xscrollcommand=detail_x_scroll.set,
+        )
+        details.grid(row=0, column=0, sticky=tk.NSEW)
+        detail_scroll.grid(row=0, column=1, sticky=tk.NS)
+        detail_x_scroll.grid(row=1, column=0, sticky=tk.EW)
         details.insert(tk.END, "\n".join(lines))
         details.config(state=tk.DISABLED)
 

@@ -3,6 +3,7 @@ import signal
 import subprocess
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -245,26 +246,51 @@ class ConsoleWindow(tk.Toplevel):
         frame = ttk.Frame(self, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
 
+        mono_font = tkfont.nametofont("TkFixedFont")
+        style = ttk.Style(self)
+        style.configure("ConsoleMono.TLabel", font=mono_font)
         ttk.Label(frame, textvariable=self.status_var).pack(anchor=tk.W)
-        ttk.Label(frame, textvariable=self.path_var, wraplength=900).pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(frame, textvariable=self.runtime_log_var, wraplength=900).pack(
+        ttk.Label(
+            frame,
+            textvariable=self.path_var,
+            style="ConsoleMono.TLabel",
             anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=900,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(4, 0))
+        ttk.Label(
+            frame,
+            textvariable=self.runtime_log_var,
+            style="ConsoleMono.TLabel",
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=900,
+        ).pack(
+            anchor=tk.W,
+            fill=tk.X,
             pady=(2, 8),
         )
 
         text_frame = ttk.Frame(frame)
         text_frame.pack(fill=tk.BOTH, expand=True)
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
 
         self.output_text = tk.Text(
             text_frame,
-            wrap=tk.WORD,
+            wrap=tk.NONE,
             state=tk.DISABLED,
-            font=("TkFixedFont", 11),
+            font=mono_font,
         )
-        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.output_text.yview)
-        self.output_text.configure(yscrollcommand=scroll.set)
-        self.output_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        y_scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.output_text.yview)
+        x_scroll = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL, command=self.output_text.xview)
+        self.output_text.configure(
+            yscrollcommand=y_scroll.set,
+            xscrollcommand=x_scroll.set,
+        )
+        self.output_text.grid(row=0, column=0, sticky=tk.NSEW)
+        y_scroll.grid(row=0, column=1, sticky=tk.NS)
+        x_scroll.grid(row=1, column=0, sticky=tk.EW)
 
         command_frame = ttk.Frame(frame, padding=(0, 8, 0, 0))
         command_frame.pack(fill=tk.X)
