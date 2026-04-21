@@ -1,0 +1,88 @@
+﻿{
+  "report_version": "1.0",
+  "generated_at": "2026-04-21",
+  "task": "Extend client monitoring with event/violation detection and structured outputs for server interpretation",
+  "workspace_root": "C:\\Users\\Deniz\\Desktop\\6064\\software-project",
+  "overall_status": "completed",
+  "requirements": [
+    {
+      "id": "R1",
+      "name": "prohibited_application_detection",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/client/incidents.py",
+        "near final delivery/client/ws_client.py"
+      ]
+    },
+    {
+      "id": "R2",
+      "name": "focus_loss_detection",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/client/incidents.py",
+        "near final delivery/custommodules/focused_window_monitor/core.py"
+      ]
+    },
+    {
+      "id": "R3",
+      "name": "rapid_switching_detection_10_in_60",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/client/incidents.py",
+        "near final delivery/server/state.py"
+      ]
+    },
+    {
+      "id": "R4",
+      "name": "unexpected_process_detection",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/client/incidents.py"
+      ]
+    },
+    {
+      "id": "R5",
+      "name": "structured_outputs_event_type_timestamp_severity",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/custommodules/focused_window_monitor/core.py",
+        "near final delivery/custommodules/process_monitor/core.py",
+        "near final delivery/client/incidents.py"
+      ]
+    },
+    {
+      "id": "R6",
+      "name": "focused_window_polling_and_snapshot_intervals",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/client/ws_client.py",
+        "near final delivery/custommodules/focused_window_monitor/core.py"
+      ]
+    },
+    {
+      "id": "R7",
+      "name": "server_receives_and_displays_warning_signal",
+      "status": "completed",
+      "evidence_files": [
+        "near final delivery/server/handlers.py",
+        "near final delivery/server_gui.py"
+      ]
+    }
+  ],
+  "validation": {
+    "executed_tests": [
+      "tests.unit.test_client_incidents",
+      "tests.unit.test_focused_window_monitor",
+      "tests.unit.test_server_state",
+      "tests.unit.test_server_handlers",
+      "tests.unit.test_process_monitor"
+    ],
+    "result": "pass",
+    "tests_run_count": 19,
+    "log_file": "validation/monitoring_test_results_clean.txt"
+  },
+  "notes": [
+    "Rapid switching and other rules are policy-configurable and can be enabled/disabled by exam policy.",
+    "All artifacts in this package use workspace-local paths only."
+  ]
+}
