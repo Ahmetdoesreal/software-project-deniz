@@ -9,18 +9,12 @@ Classification values:
 - `client/`
 - `server/`
 - `common/`
-- `custommodules/`
 - `tests/`
 - `requirements.txt`
 - `setup.py`
 - `server_cli.py`
 - `client_cli.py`
-- `run_demo.py`
-- `run_demo.bat`
-- `run_demo.sh`
 - `allowed_users.json`
-- `client_gui.py`
-- `server_gui.py`
 - `client_launcher.py`
 - `server_launcher.py`
 

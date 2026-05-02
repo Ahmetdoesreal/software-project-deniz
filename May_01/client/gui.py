@@ -6,6 +6,11 @@ from pathlib import Path
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 from common.manager_support import install_close_guard
 from client.submission import build_file_preview, format_bytes
 
@@ -588,7 +593,7 @@ def ipc_reader(app: ExamTimerGUI):
 if __name__ == "__main__":
     setup_runtime_logging(
         "client_gui",
-        Path(__file__).resolve().parent / "data" / "logs" / "client",
+        PROJECT_DIR / "data" / "logs" / "client",
     )
     root = tk.Tk()
     app = ExamTimerGUI(root, standalone_mode=sys.stdin.isatty())

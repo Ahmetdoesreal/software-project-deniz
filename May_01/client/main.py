@@ -7,7 +7,7 @@ import aiohttp
 
 from common.discovery import discover_server_with_local_fallback
 from common.runtime_logging import install_asyncio_exception_logging, setup_runtime_logging
-from custommodules.replay_recorder import ReplayRecorder
+from .custommodules.replay_recorder import ReplayRecorder
 from .auth import check_health, perform_login
 from .exam import fetch_exam_prep
 from .ws_client import run_ws

@@ -3,7 +3,6 @@ import asyncio
 import errno
 import sys
 import os
-import subprocess
 from pathlib import Path
 from aiohttp import web
 
@@ -80,22 +79,9 @@ def main():
                 print(f"[RESET] Error: {e}")
 
     validate_args(args)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    args.gui_path = os.path.join(os.path.dirname(script_dir), "server_gui.py")
+    args.project_dir = str(Path(__file__).resolve().parent.parent)
+    args.gui_module = "server.gui"
     args.python_executable = sys.executable
-
-    if args.gui:
-        print(f"[GUI] Launching Server Monitor UI...")
-        try:
-            state.gui_process = subprocess.Popen(
-                [args.python_executable, args.gui_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-        except Exception as e:
-            print(f"[GUI] Failed to launch gui: {e}")
 
     # Check for duplicate server with same ID
     duplicate_timeout = _duplicate_check_timeout(args.announce)

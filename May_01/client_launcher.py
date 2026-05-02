@@ -7,6 +7,12 @@ import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+
+PROJECT_DIR = Path(__file__).resolve().parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+os.chdir(PROJECT_DIR)
+
 from common.manager_support import (
     ConsoleWindow,
     ManagedProcessSession,
@@ -18,7 +24,7 @@ from common.manager_support import (
 class ClientManager(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.project_dir = Path(__file__).resolve().parent
+        self.project_dir = PROJECT_DIR
         self.process_session = ManagedProcessSession(
             session_name="client_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "client" / "sessions",

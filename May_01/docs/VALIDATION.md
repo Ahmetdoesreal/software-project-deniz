@@ -20,10 +20,7 @@ Result: `PASS` (`Ran 4 tests`, `skipped=1`)
 5. `python -m unittest tests.integration.test_client_main`  
 Result: `PASS` (`Ran 2 tests`)
 
-6. `python run_demo.py --help`  
-Result: `PASS`
-
-7. `python -m py_compile` over all copied `.py` files  
+6. `python -m py_compile` over all copied `.py` files  
 Result: `PASS` (`PY_COMPILE_OK`)
 
 ## Notes
@@ -47,15 +44,15 @@ Re-validation after patch:
 ## Launcher / Manual Entry Checks
 
 Patches applied:
-- `server_gui.py`: allow normal window close when launched standalone from terminal (`stdin` is TTY), keep protected close behavior under managed mode.
-- `client_gui.py`: same standalone/manual close behavior improvement.
+- `server/gui.py`: allow normal window close when launched standalone from terminal (`stdin` is TTY), keep protected close behavior under managed mode.
+- `client/gui.py`: same standalone/manual close behavior improvement.
 - Added manual CLI wrappers: `server_cli.py`, `client_cli.py`.
 
 Smoke checks:
 - `python server_launcher.py`: starts and stays alive (manual termination after startup check).
-- `python server_gui.py`: starts and stays alive (manual termination after startup check).
+- `python -m server.gui`: starts and stays alive (manual termination after startup check).
 - `python client_launcher.py`: starts and stays alive (manual termination after startup check).
-- `python client_gui.py`: starts and stays alive (manual termination after startup check).
+- `python -m client.gui`: starts and stays alive (manual termination after startup check).
 - `python server_cli.py --help`: `PASS`
 - `python client_cli.py --help`: `PASS`
 - `python -m unittest tests.unit.test_server_main tests.integration.test_client_main`: `PASS`
@@ -100,7 +97,7 @@ Patches applied:
   - Added explicit step logs in final submission flow.
   - Added bounded replay save timeout (`45s`) with fallback to continue without replay.
   - Added bounded submission upload timeout (`900s`) with clear timeout error.
-- `custommodules/replay_recorder/core.py`:
+- `client/custommodules/replay_recorder/core.py`:
   - Added FFmpeg merge timeout handling in `save_replay()` to prevent indefinite blocking.
 
 Validation:
@@ -119,6 +116,6 @@ Implemented finish pipeline behavior:
 - Client waits for server response before success; only then it shows upload-success and closes the submission window.
 
 Validation:
-- `python -m py_compile client/transfers.py client/ws_client.py client_gui.py`: `PASS`
+- `python -m py_compile client/transfers.py client/ws_client.py client/gui.py`: `PASS`
 - `python -m unittest tests.unit.test_transfers tests.unit.test_upload_multipart_order tests.unit.test_server_tasks`: `PASS`
 - `python -m unittest discover -s tests`: `PASS` (`Ran 53 tests`)

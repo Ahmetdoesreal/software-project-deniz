@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from common import protocol
 from common.process_users import current_process_usernames, normalize_process_username

@@ -6,6 +6,12 @@ import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+
+PROJECT_DIR = Path(__file__).resolve().parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+os.chdir(PROJECT_DIR)
+
 from common.discovery import ServerAnnouncer
 from common.manager_support import (
     ConsoleWindow,
@@ -34,7 +40,7 @@ def _extract_startup_failure(output: str) -> str | None:
 class ServerManager(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.project_dir = Path(__file__).resolve().parent
+        self.project_dir = PROJECT_DIR
         self.process_session = ManagedProcessSession(
             session_name="server_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "server" / "sessions",

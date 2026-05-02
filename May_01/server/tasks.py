@@ -88,15 +88,21 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
         print("[GUI] Server monitor UI is already open.")
         return "already_open"
 
-    gui_path = app.get("gui_path")
+    gui_module = app.get("gui_module", "server.gui")
+    project_dir = app.get("project_dir")
     python_executable = app.get("python_executable", sys.executable)
-    if not gui_path:
-        print("[GUI] GUI path is not configured.")
+    if not gui_module or not project_dir:
+        print("[GUI] GUI module is not configured.")
         return "failed"
+    gui_env = os.environ.copy()
+    gui_env["PYTHONPATH"] = str(project_dir) + os.pathsep + gui_env.get("PYTHONPATH", "")
+    gui_env["PYTHONUNBUFFERED"] = "1"
 
     try:
         gui_process = subprocess.Popen(
-            [python_executable, gui_path],
+            [python_executable, "-m", str(gui_module)],
+            cwd=str(project_dir),
+            env=gui_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,

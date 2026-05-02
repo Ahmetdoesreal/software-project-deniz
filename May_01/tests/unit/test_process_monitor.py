@@ -1,6 +1,6 @@
 import unittest
 
-from custommodules.process_monitor.core import ProcessMonitor
+from client.custommodules.process_monitor.core import ProcessMonitor
 
 
 class ProcessMonitorTests(unittest.TestCase):

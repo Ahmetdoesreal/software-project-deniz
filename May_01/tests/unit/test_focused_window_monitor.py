@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from custommodules.focused_window_monitor import FocusedWindowMonitor
+from client.custommodules.focused_window_monitor import FocusedWindowMonitor
 
 
 WINDOW_A = {

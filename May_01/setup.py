@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-setup.py -- Cross-platform setup script.
+setup.py -- Windows setup script.
 
 Checks for and installs:
   1. Python packages from requirements.txt (via pip)
-  2. FFmpeg (via winget when available)
+  2. FFmpeg (via winget)
 
 Run:  python setup.py
 """
@@ -16,46 +16,10 @@ import subprocess
 import sys
 
 
-class Color:
-    """ANSI colors, disabled automatically on Windows without VT support."""
-
-    ENABLED = sys.stdout.isatty() and os.name != "nt"
-
-    @staticmethod
-    def green(s):
-        if Color.ENABLED:
-            return f"\033[92m{s}\033[0m"
-        return s
-
-    @staticmethod
-    def yellow(s):
-        if Color.ENABLED:
-            return f"\033[93m{s}\033[0m"
-        return s
-
-    @staticmethod
-    def red(s):
-        if Color.ENABLED:
-            return f"\033[91m{s}\033[0m"
-        return s
-
-    @staticmethod
-    def cyan(s):
-        if Color.ENABLED:
-            return f"\033[96m{s}\033[0m"
-        return s
-
-    @staticmethod
-    def bold(s):
-        if Color.ENABLED:
-            return f"\033[1m{s}\033[0m"
-        return s
-
-
-OK = Color.green("[OK]")
-WARN = Color.yellow("[!!]")
-FAIL = Color.red("[FAIL]")
-INFO = Color.cyan("[>>]")
+OK = "[OK]"
+WARN = "[!!]"
+FAIL = "[FAIL]"
+INFO = "[>>]"
 
 
 def run(cmd, capture=True):
@@ -78,9 +42,8 @@ def get_version(binary):
 
 
 def detect_package_manager():
-    """Return package manager install command prefix."""
-    system = platform.system()
-    if system == "Windows" and shutil.which("winget"):
+    """Return the Windows package manager install command prefix."""
+    if shutil.which("winget"):
         return "winget", [
             "winget",
             "install",
@@ -88,6 +51,16 @@ def detect_package_manager():
             "--accept-package-agreements",
         ]
     return None, None
+
+
+def check_windows():
+    """Verify this setup script is running on the supported OS."""
+    system = platform.system()
+    if system == "Windows":
+        print(f"  {OK} Windows target detected")
+        return True
+    print(f"  {FAIL} Unsupported OS: {system}. This delivery targets Windows only.")
+    return False
 
 
 def check_python():
@@ -145,7 +118,7 @@ def check_pip_packages():
 
 
 def check_ffmpeg():
-    """Check for FFmpeg and offer to install if missing."""
+    """Check for FFmpeg and install it with winget when available."""
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path:
         version = get_version("ffmpeg")
@@ -157,11 +130,11 @@ def check_ffmpeg():
     print(f"  {FAIL} FFmpeg - not found in PATH")
     mgr_name, install_cmd = detect_package_manager()
     if not install_cmd:
-        print(f"\n  {WARN} No supported package manager found.")
-        print("     Download FFmpeg manually: https://ffmpeg.org/download.html")
+        print(f"\n  {WARN} winget was not found.")
+        print("     Install FFmpeg manually or install winget and rerun setup.py.")
         return False
 
-    ffmpeg_pkg = "Gyan.FFmpeg" if mgr_name == "winget" else "ffmpeg"
+    ffmpeg_pkg = "Gyan.FFmpeg"
     print(f"\n  {INFO} Installing FFmpeg via {mgr_name}...")
     ok, _ = run([*install_cmd, ffmpeg_pkg], capture=False)
     if ok and shutil.which("ffmpeg"):
@@ -178,19 +151,26 @@ def check_ffmpeg():
 def main():
     system = platform.system()
     arch = platform.machine()
-    print(Color.bold(f"\n  Setup - {system} {arch}\n"))
-    print(Color.bold("  Python"))
+    print(f"\n  Setup - Windows target ({system} {arch})\n")
+
+    print("  Operating System")
+    windows_ok = check_windows()
+    if not windows_ok:
+        print("\n  Fix the issue above and run this script on Windows.\n")
+        return 1
+
+    print("\n  Python")
     check_python()
 
-    print(Color.bold("\n  Python Packages"))
+    print("\n  Python Packages")
     pip_ok = check_pip_packages()
     if pip_ok:
         print(f"  {INFO} Protected websocket messaging requires 'cryptography' at runtime.")
 
-    print(Color.bold("\n  FFmpeg"))
+    print("\n  FFmpeg")
     ffmpeg_ok = check_ffmpeg()
 
-    print(Color.bold("\n  Summary"))
+    print("\n  Summary")
     if pip_ok and ffmpeg_ok:
         print(f"  {OK} Everything is set up. You are ready to go.\n")
         return 0

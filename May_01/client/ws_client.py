@@ -20,10 +20,10 @@ from .transfers import (
     upload_runtime_artifact,
     upload_submission_bundle,
 )
-from custommodules.focused_window_monitor import FocusedWindowMonitor
-from custommodules.hardware_monitor import HardwareMonitor
-from custommodules.process_monitor import ProcessMonitor
-from custommodules.replay_recorder import ReplayRecorder
+from .custommodules.focused_window_monitor import FocusedWindowMonitor
+from .custommodules.hardware_monitor import HardwareMonitor
+from .custommodules.process_monitor import ProcessMonitor
+from .custommodules.replay_recorder import ReplayRecorder
 
 REPLAY_SAVE_TIMEOUT_SECONDS = 45
 SUBMISSION_UPLOAD_TIMEOUT_SECONDS = 900
@@ -36,9 +36,16 @@ def _run_in_background(loop: asyncio.AbstractEventLoop, callback, *args):
     loop.call_soon_threadsafe(callback, *args)
 
 
-def _client_gui_path() -> str:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(script_dir), "client_gui.py")
+def _project_dir() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _child_env() -> dict:
+    env = os.environ.copy()
+    project_dir = _project_dir()
+    env["PYTHONPATH"] = project_dir + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
 
 
 def _time_text(seconds: int) -> str:
@@ -117,7 +124,9 @@ class ClientGUIBridge:
             return
 
         self.process = subprocess.Popen(
-            [sys.executable, _client_gui_path()],
+            [sys.executable, "-m", "client.gui"],
+            cwd=_project_dir(),
+            env=_child_env(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,

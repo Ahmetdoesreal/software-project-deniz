@@ -8,6 +8,11 @@ from pathlib import Path
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 from common.manager_support import install_close_guard
 from common.runtime_logging import setup_runtime_logging
 
@@ -1259,7 +1264,7 @@ def ipc_reader(app: ServerGUI):
 if __name__ == "__main__":
     setup_runtime_logging(
         "server_gui",
-        Path(__file__).resolve().parent / "data" / "logs" / "server",
+        PROJECT_DIR / "data" / "logs" / "server",
     )
     app = ServerGUI(standalone_mode=sys.stdin.isatty())
     reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)

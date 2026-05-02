@@ -15,7 +15,7 @@ from .handlers import (
     exam_submission,
     websocket_handler,
 )
-from .tasks import time_broadcaster, console_reader
+from .tasks import time_broadcaster, console_reader, _launch_server_gui
 
 
 def _duplicate_guard_timeout(announce_interval: float) -> float:
@@ -72,6 +72,8 @@ async def start_background_tasks(app: web.Application):
     await announcer.start()
     app["announcer"] = announcer
     app["duplicate_guard"] = asyncio.create_task(duplicate_server_guard(app))
+    if app.get("launch_gui_on_start", False):
+        _launch_server_gui(asyncio.get_running_loop(), app)
 
 
 async def cleanup_background_tasks(app: web.Application):
@@ -107,8 +109,10 @@ def create_app(args) -> web.Application:
     app["max_submission_bytes"] = int(args.max_submission_mb) * 1024 * 1024
     app["max_artifact_bytes"] = int(args.max_artifact_mb) * 1024 * 1024
     app["shutdown_routine"] = ServerShutdownRoutine(app)
-    app["gui_path"] = getattr(args, "gui_path", None)
+    app["gui_module"] = getattr(args, "gui_module", "server.gui")
+    app["project_dir"] = getattr(args, "project_dir", None)
     app["python_executable"] = getattr(args, "python_executable", None)
+    app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
     
     app.router.add_get("/health", health)
     app.router.add_post("/login", login_handler)
