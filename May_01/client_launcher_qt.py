@@ -239,6 +239,8 @@ class ClientManager(QMainWindow):
             "-u",
             "-m",
             "client.main",
+            "--ui",
+            "qt",
             "--login-id",
             self.login_entry.text().strip(),
             "--password",

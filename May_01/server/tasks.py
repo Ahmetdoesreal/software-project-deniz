@@ -91,6 +91,9 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
     gui_module = app.get("gui_module", "server.gui")
     project_dir = app.get("project_dir")
     python_executable = app.get("python_executable", sys.executable)
+    gui_ui = str(app.get("gui_ui", "tk") or "tk")
+    if gui_ui not in {"tk", "qt"}:
+        gui_ui = "tk"
     if not gui_module or not project_dir:
         print("[GUI] GUI module is not configured.")
         return "failed"
@@ -100,7 +103,7 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
 
     try:
         gui_process = subprocess.Popen(
-            [python_executable, "-m", str(gui_module)],
+            [python_executable, "-m", str(gui_module), "--ui", gui_ui],
             cwd=str(project_dir),
             env=gui_env,
             stdin=subprocess.PIPE,

@@ -264,6 +264,8 @@ class ClientManager(tk.Tk):
             "-u",
             "-m",
             "client.main",
+            "--ui",
+            "tk",
             "--login-id",
             self.v_login.get().strip(),
             "--password",

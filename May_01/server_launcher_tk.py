@@ -302,6 +302,8 @@ class ServerManager(tk.Tk):
             "-u",
             "-m",
             "server.main",
+            "--ui",
+            "tk",
             "--id",
             self.v_id.get().strip(),
             "--host",

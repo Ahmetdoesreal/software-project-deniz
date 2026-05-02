@@ -66,6 +66,12 @@ def main():
         help="Maximum runtime artifact upload size in MB (default: 2048)",
     )
     parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
+    parser.add_argument(
+        "--ui",
+        choices=("tk", "qt"),
+        default="tk",
+        help="GUI backend used by the spawned monitor dashboard (default: tk).",
+    )
     parser.add_argument("--reset", action="store_true", help="Reset the server state (clear used IDs/timers) on startup")
     args = parser.parse_args()
 

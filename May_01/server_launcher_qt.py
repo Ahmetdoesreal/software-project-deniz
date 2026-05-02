@@ -265,6 +265,8 @@ class ServerManager(QMainWindow):
             "-u",
             "-m",
             "server.main",
+            "--ui",
+            "qt",
             "--id",
             self.id_entry.text().strip(),
             "--host",
