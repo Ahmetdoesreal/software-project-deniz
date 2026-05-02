@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from threading import Thread
 
@@ -223,6 +224,95 @@ class ClientGUIBridge:
 
 
 @dataclass
+class ReplaySaveRequest:
+    request_id: str
+    requested_at: str
+    source: str
+    future: asyncio.Future
+
+
+class ReplaySaveQueue:
+    def __init__(self, recorder: ReplayRecorder | None, loop: asyncio.AbstractEventLoop):
+        self.recorder = recorder
+        self.loop = loop
+        self._queue: asyncio.Queue[ReplaySaveRequest] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._closed = False
+
+    def enqueue(
+        self,
+        *,
+        request_id: str | None = None,
+        requested_at: str | None = None,
+        source: str = "client",
+    ) -> tuple[ReplaySaveRequest, asyncio.Future]:
+        save_request = ReplaySaveRequest(
+            request_id=str(request_id or uuid.uuid4().hex),
+            requested_at=str(requested_at or protocol.now_iso()),
+            source=str(source or "client"),
+            future=self.loop.create_future(),
+        )
+
+        if self._closed or not self.recorder:
+            save_request.future.set_result(None)
+            return save_request, save_request.future
+
+        self._queue.put_nowait(save_request)
+        self._ensure_worker()
+        return save_request, save_request.future
+
+    async def save(
+        self,
+        *,
+        request_id: str | None = None,
+        requested_at: str | None = None,
+        source: str = "client",
+    ) -> str | None:
+        _save_request, future = self.enqueue(
+            request_id=request_id,
+            requested_at=requested_at,
+            source=source,
+        )
+        return await future
+
+    def close(self):
+        self._closed = True
+        if self._worker_task:
+            self._worker_task.cancel()
+        while True:
+            try:
+                save_request = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not save_request.future.done():
+                save_request.future.cancel()
+            self._queue.task_done()
+
+    def _ensure_worker(self):
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(self._worker())
+
+    async def _worker(self):
+        while True:
+            save_request = await self._queue.get()
+            try:
+                if save_request.future.cancelled():
+                    continue
+                replay_path = await self.loop.run_in_executor(
+                    None,
+                    self.recorder.save_replay,
+                    save_request.request_id,
+                )
+                if not save_request.future.done():
+                    save_request.future.set_result(replay_path)
+            except Exception as exc:
+                if not save_request.future.done():
+                    save_request.future.set_exception(exc)
+            finally:
+                self._queue.task_done()
+
+
+@dataclass
 class SessionState:
     disconnected: asyncio.Event
     start_event: asyncio.Event
@@ -269,6 +359,7 @@ class WebSocketSession:
         self.exam_state_logger = ExamStateLogger(self.output_dir)
         self.incident_engine = ClientIncidentEngine()
         self._background_tasks: set[asyncio.Task] = set()
+        self.replay_save_queue = ReplaySaveQueue(recorder, self.loop)
         self.process_monitor = self._create_process_monitor()
         self.hardware_monitor = self._create_hardware_monitor()
         self._last_focused_window_server_send = 0.0
@@ -368,6 +459,7 @@ class WebSocketSession:
             listener_task.cancel()
             self.gui.close()
             self._stop_runtime_monitors()
+            self.replay_save_queue.close()
             for task in list(self._background_tasks):
                 task.cancel()
 
@@ -525,14 +617,7 @@ class WebSocketSession:
 
         if event == events.SAVESCREEN:
             print("[WS] [SAVESCREEN] Server requested replay save.")
-            if self.recorder:
-                replay_path = await self.loop.run_in_executor(None, self.recorder.save_replay)
-                if replay_path:
-                    await self._upload_runtime_artifact(
-                        replay_path,
-                        artifact_kind="requested_replay",
-                        metadata={"source": "server_request"},
-                    )
+            self._schedule_background_task(self._handle_savescreen_request(data))
             return
 
         if event == events.GET_PROCESSES:
@@ -793,7 +878,7 @@ class WebSocketSession:
             process_report_path = self.process_monitor.export_requested_report()
             hardware_report_path = self.hardware_monitor.export_current_snapshot()
             focused_window_report_path = self.focused_window_monitor.export_current_snapshot()
-            replay_path = await self._save_replay_with_timeout()
+            replay_path = await self._save_replay_with_timeout(source="final_submission")
 
             self._submission_step("Building local submission package folder...")
             bundle_path = build_submission_bundle(
@@ -857,6 +942,31 @@ class WebSocketSession:
             print(f"[UPLOAD] {artifact_kind} uploaded to {response.get('path', 'server storage')}")
         except Exception as exc:
             print(f"[UPLOAD] Failed to upload {artifact_kind}: {exc}")
+
+    async def _handle_savescreen_request(self, data: dict):
+        save_request, future = self.replay_save_queue.enqueue(
+            request_id=str(data.get("request_id", "") or uuid.uuid4().hex),
+            requested_at=str(data.get("requested_at", "") or protocol.now_iso()),
+            source=str(data.get("source", "") or "server_request"),
+        )
+        try:
+            replay_path = await future
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[RECORDER] Replay request {save_request.request_id} failed: {exc}")
+            return
+
+        if replay_path:
+            await self._upload_runtime_artifact(
+                replay_path,
+                artifact_kind="requested_replay",
+                metadata={
+                    "source": save_request.source,
+                    "request_id": save_request.request_id,
+                    "requested_at": save_request.requested_at,
+                },
+            )
 
     def _queue_process_snapshot(self, processes: set[tuple[int, str] | tuple[int, str, str | None]], _blacklist_version: str):
         self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_processes(processes)))
@@ -925,7 +1035,12 @@ class WebSocketSession:
         if str(incident.get("source", "")) == "hardware_monitor":
             hardware_report_path = self.hardware_monitor.export_current_snapshot()
 
-        replay_path = await self._save_replay_with_timeout()
+        incident_id = str(incident.get("incident_id", "") or "")
+        replay_path = await self._save_replay_with_timeout(
+            request_id=f"incident_{incident_id}" if incident_id else None,
+            requested_at=str(incident.get("timestamp") or incident.get("reported_at") or protocol.now_iso()),
+            source="incident_evidence",
+        )
 
         bundle_path = build_incident_bundle(
             self.session_uuid,
@@ -952,13 +1067,23 @@ class WebSocketSession:
             print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}: {exc}")
             return None
 
-    async def _save_replay_with_timeout(self) -> str | None:
+    async def _save_replay_with_timeout(
+        self,
+        *,
+        request_id: str | None = None,
+        requested_at: str | None = None,
+        source: str = "client",
+    ) -> str | None:
         if not self.recorder:
             return None
         try:
             self._submission_step("Saving current 60-second replay snapshot...")
             return await asyncio.wait_for(
-                self.loop.run_in_executor(None, self.recorder.save_replay),
+                self.replay_save_queue.save(
+                    request_id=request_id,
+                    requested_at=requested_at,
+                    source=source,
+                ),
                 timeout=REPLAY_SAVE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:

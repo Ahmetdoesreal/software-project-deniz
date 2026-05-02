@@ -51,7 +51,7 @@ class ServerShutdownRoutine:
         print(f"[SHUTDOWN] Requested process reports from {count} client(s).")
 
     async def _request_screen_saves(self):
-        count = await self._broadcast(events.savescreen())
+        count = await self._broadcast(events.savescreen(source="server_shutdown"))
         print(f"[SHUTDOWN] Requested screen saves from {count} client(s).")
 
     async def _wait_for_clients(self):

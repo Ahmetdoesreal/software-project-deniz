@@ -5,6 +5,8 @@ Event names:  events.PING, events.ECHO, etc. (for listeners)
 Constructors: events.ping(msg), events.echo(data, t), etc. (for senders)
 """
 
+import uuid
+
 from . import protocol
 
 
@@ -83,9 +85,19 @@ def policy_applied(policy_version: str, *, ok: bool = True, reason: str = "") ->
 
 SAVESCREEN = "savescreen"
 
-def savescreen() -> str:
+def savescreen(
+    request_id: str | None = None,
+    requested_at: str | None = None,
+    source: str = "server_request",
+) -> str:
     """Server requests the client to save the screen."""
-    return protocol.encode(SAVESCREEN, {})
+    payload = {
+        "request_id": (request_id or uuid.uuid4().hex),
+        "requested_at": (requested_at or protocol.now_iso()),
+    }
+    if source:
+        payload["source"] = source
+    return protocol.encode(SAVESCREEN, payload)
 
 # -- Exam Flow Events ----------------------------------------------------
 

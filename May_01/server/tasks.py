@@ -1005,11 +1005,11 @@ async def handle_admin_command(line: str, app: web.Application):
 
         target = parts[1]
         if target.lower() == "all":
-            count = await broadcast_to_all(events.savescreen())
+            count = await broadcast_to_all(events.savescreen(source="admin_cli"))
             print(f"[CMD] Sent SAVESCREEN to {count} client(s)")
             return
 
-        if await send_to_client(target, events.savescreen()):
+        if await send_to_client(target, events.savescreen(source="admin_cli")):
             print(f"[CMD] Sent SAVESCREEN to client {target}")
             return
 
@@ -1139,7 +1139,7 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "savescreen" and client_id in state.clients:
         data = state.clients[client_id]
         asyncio.run_coroutine_threadsafe(
-            data["ws"].send_str(_protect_payload(data, events.savescreen())),
+            data["ws"].send_str(_protect_payload(data, events.savescreen(source="admin_gui"))),
             loop,
         )
         print(f"\n[GUI->WS] Sent savescreen to {client_id}")
