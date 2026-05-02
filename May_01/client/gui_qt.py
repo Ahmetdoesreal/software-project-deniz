@@ -85,6 +85,7 @@ class _IPCSignals(QObject):
     upload_ok = Signal(str)
     upload_error = Signal(str)
     upload_step = Signal(str)
+    parent_closed = Signal()
 
 
 class SubmissionWindow(QMainWindow):
@@ -309,6 +310,7 @@ class ExamTimerGUI(QMainWindow):
     def __init__(self, *, standalone_mode: bool = False) -> None:
         super().__init__()
         self.standalone_mode = standalone_mode
+        self._allow_close = False
         self.remaining = 0
         self.active = True
         self.started = False
@@ -372,7 +374,7 @@ class ExamTimerGUI(QMainWindow):
 
     # ------------------------------------------------------------------ behaviour
     def closeEvent(self, event):  # noqa: N802 - Qt API
-        if self.standalone_mode:
+        if self._allow_close or self.standalone_mode:
             event.accept()
             QApplication.instance().quit()
             return
@@ -393,6 +395,14 @@ class ExamTimerGUI(QMainWindow):
             self.submission_window.showMinimized()
         self.showMinimized()
 
+    def force_close(self) -> None:
+        """Close the timer window unconditionally (parent process disappeared)."""
+        self._allow_close = True
+        self._tick_timer.stop()
+        self.close_submission_window()
+        self.close()
+        QApplication.instance().quit()
+
     def on_start_click(self) -> None:
         _emit_command({"cmd": "start_exam"})
         self.start_button.setEnabled(False)
@@ -410,9 +420,7 @@ class ExamTimerGUI(QMainWindow):
 
     def set_remaining(self, seconds: int) -> None:
         if seconds < 0:
-            self._tick_timer.stop()
-            self.close_submission_window()
-            QApplication.instance().quit()
+            self.force_close()
             return
 
         self.remaining = seconds
@@ -490,8 +498,7 @@ class ExamTimerGUI(QMainWindow):
             "Submission Uploaded",
             message or "Submission uploaded successfully.",
         )
-        self._tick_timer.stop()
-        QApplication.instance().quit()
+        self.force_close()
 
     def handle_upload_error(self, message: str) -> None:
         self.finish_in_progress = False
@@ -555,39 +562,43 @@ class ExamTimerGUI(QMainWindow):
 
 
 def _ipc_reader(signals: _IPCSignals) -> None:
-    for line in sys.stdin:
-        command, value = _parse_ipc_line(line.strip())
-        try:
-            if command == "SYNC":
-                signals.sync.emit(int(value))
-            elif command == "PAUSE":
-                payload = json.loads(value) if value else {}
-                signals.pause.emit(
-                    int(payload.get("remaining_seconds", 0) or 0),
-                    str(payload.get("reason", "") or ""),
-                )
-            elif command == "RESUME":
-                payload = json.loads(value) if value else {}
-                signals.resume.emit(
-                    int(payload.get("remaining_seconds", 0) or 0),
-                    str(payload.get("reason", "") or ""),
-                )
-            elif command == "END":
-                signals.end.emit()
-            elif command == "RESET":
-                signals.reset.emit()
-            elif command == "ERROR":
-                signals.error.emit(value)
-            elif command == "OPEN_FINISH":
-                signals.open_finish.emit(value)
-            elif command == "UPLOAD_OK":
-                signals.upload_ok.emit(value)
-            elif command == "UPLOAD_ERROR":
-                signals.upload_error.emit(value)
-            elif command == "UPLOAD_STEP":
-                signals.upload_step.emit(value)
-        except Exception:
-            pass
+    try:
+        for line in iter(sys.stdin.readline, ""):
+            command, value = _parse_ipc_line(line.strip())
+            try:
+                if command == "SYNC":
+                    signals.sync.emit(int(value))
+                elif command == "PAUSE":
+                    payload = json.loads(value) if value else {}
+                    signals.pause.emit(
+                        int(payload.get("remaining_seconds", 0) or 0),
+                        str(payload.get("reason", "") or ""),
+                    )
+                elif command == "RESUME":
+                    payload = json.loads(value) if value else {}
+                    signals.resume.emit(
+                        int(payload.get("remaining_seconds", 0) or 0),
+                        str(payload.get("reason", "") or ""),
+                    )
+                elif command == "END":
+                    signals.end.emit()
+                elif command == "RESET":
+                    signals.reset.emit()
+                elif command == "ERROR":
+                    signals.error.emit(value)
+                elif command == "OPEN_FINISH":
+                    signals.open_finish.emit(value)
+                elif command == "UPLOAD_OK":
+                    signals.upload_ok.emit(value)
+                elif command == "UPLOAD_ERROR":
+                    signals.upload_error.emit(value)
+                elif command == "UPLOAD_STEP":
+                    signals.upload_step.emit(value)
+            except Exception:
+                pass
+    except (OSError, ValueError):
+        pass
+    signals.parent_closed.emit()
 
 
 def run() -> int:
@@ -611,6 +622,8 @@ def run() -> int:
     signals.upload_ok.connect(gui.handle_upload_success)
     signals.upload_error.connect(gui.handle_upload_error)
     signals.upload_step.connect(gui.handle_upload_step)
+    if not standalone:
+        signals.parent_closed.connect(gui.force_close)
 
     reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
     reader_thread.start()

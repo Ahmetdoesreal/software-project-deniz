@@ -950,7 +950,12 @@ class ServerGUI(QMainWindow):
 
     def force_close(self) -> None:
         self._allow_close = True
+        try:
+            self._tick_timer.stop()
+        except Exception:
+            pass
         self.close()
+        QApplication.instance().quit()
 
     # ------------------------------------------------------------------ IPC inbound
     def log_message(self, client_id: str, message: str) -> None:
@@ -1136,20 +1141,23 @@ class ServerGUI(QMainWindow):
 
 
 def _ipc_reader(signals: _IPCSignals) -> None:
-    for line in iter(sys.stdin.readline, ""):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError as exc:
-            print(f"[DEBUG] GUI IPC Error: {exc}", file=sys.stderr)
-            continue
-        message_type = msg.get("type")
-        if message_type == "state_update":
-            signals.state_update.emit(msg)
-        elif message_type == "client_message":
-            signals.client_message.emit(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
+    try:
+        for line in iter(sys.stdin.readline, ""):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(f"[DEBUG] GUI IPC Error: {exc}", file=sys.stderr)
+                continue
+            message_type = msg.get("type")
+            if message_type == "state_update":
+                signals.state_update.emit(msg)
+            elif message_type == "client_message":
+                signals.client_message.emit(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
+    except (OSError, ValueError):
+        pass
     signals.parent_closed.emit()
 
 
