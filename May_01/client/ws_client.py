@@ -115,9 +115,16 @@ class UserCommand:
 
 
 class ClientGUIBridge:
-    def __init__(self, loop: asyncio.AbstractEventLoop, input_queue: asyncio.Queue):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        input_queue: asyncio.Queue,
+        *,
+        ui: str = "tk",
+    ):
         self.loop = loop
         self.input_queue = input_queue
+        self.ui = ui if ui in ("tk", "qt") else "tk"
         self.process = None
 
     def ensure_started(self):
@@ -125,7 +132,7 @@ class ClientGUIBridge:
             return
 
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "client.gui"],
+            [sys.executable, "-m", "client.gui", "--ui", self.ui],
             cwd=_project_dir(),
             env=_child_env(),
             stdin=subprocess.PIPE,
@@ -340,6 +347,8 @@ class WebSocketSession:
         password: str,
         ws,
         recorder: ReplayRecorder | None,
+        *,
+        gui_ui: str = "tk",
     ):
         self.ws_url = ws_url
         self.base_url = base_url
@@ -355,7 +364,7 @@ class WebSocketSession:
         )
         self.output_dir = os.path.join("data", "client", self.session_uuid)
         self.stdin = StdinBridge(self.loop)
-        self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
+        self.gui = ClientGUIBridge(self.loop, self.stdin.queue, ui=gui_ui)
         self.exam_state_logger = ExamStateLogger(self.output_dir)
         self.incident_engine = ClientIncidentEngine()
         self._background_tasks: set[asyncio.Task] = set()
@@ -1172,8 +1181,18 @@ async def run_ws(
     session_uuid: str,
     password: str,
     recorder: ReplayRecorder | None,
+    *,
+    gui_ui: str = "tk",
 ):
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
-            return await WebSocketSession(ws_url, base_url, session_uuid, password, ws, recorder).run()
+            return await WebSocketSession(
+                ws_url,
+                base_url,
+                session_uuid,
+                password,
+                ws,
+                recorder,
+                gui_ui=gui_ui,
+            ).run()

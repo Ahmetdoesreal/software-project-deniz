@@ -132,6 +132,7 @@ async def main_loop(args):
                     session_uuid,
                     args.password,
                     recorder_manager.recorder,
+                    gui_ui=args.ui,
                 )
                 if submission_completed:
                     print("[EXAM] Submission complete. Exiting client.")
@@ -180,6 +181,12 @@ def main():
     parser.add_argument("--reconnect", default=3, type=float, help="Seconds to wait before reconnecting (default: 3)")
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
     parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
+    parser.add_argument(
+        "--ui",
+        choices=("tk", "qt"),
+        default="tk",
+        help="GUI backend used by the spawned timer/submission window (default: tk).",
+    )
     parser.set_defaults(record=True)
     args = parser.parse_args()
 
