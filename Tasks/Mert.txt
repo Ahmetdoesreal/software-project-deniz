@@ -1,0 +1,6 @@
+1:
+Design the control logic that enables the instructor to start, stop, and manage exam duration centrally.
+2:
+Implement the database structure and backend logic that stores incoming monitoring data and exam session information. Ensure that data from server is properly stored and can be accessed by frontend modules.
+3:
+Extend the database structure for event history, violation records, and post-exam review. Create an audit-trail structure that stores sessions, raw events, interpreted violations, instructor actions, and final review decisions in separate layers. Prepare query structures that can reconstruct the chronological event flow of a student throughout the exam. The goal is not only to store data, but to build an auditable review foundation for after-exam investigation.

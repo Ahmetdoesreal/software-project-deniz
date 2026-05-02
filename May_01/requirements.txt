@@ -1,0 +1,6 @@
+# Core runtime
+aiohttp
+psutil
+
+# Protected websocket signing/encryption
+cryptography

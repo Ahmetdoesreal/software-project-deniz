@@ -1,0 +1,6 @@
+1:
+Design the architecture of the student-side client application, including exam launch control, time tracking, and activity monitoring structure.
+2:
+Develop a client-side module that detects active windows and running processes during the exam. The output should be structured and ready to be transmitted to the server. Make sure the data format is compatible with  streaming module.
+3:
+Extend the client monitoring module so that it performs event and violation detection. Instead of only collecting window and process lists, add a client-side layer that tags events such as opening prohibited applications, losing focus, rapid application switching, or starting unexpected processes. Produce structured outputs containing raw logs together with event type, timestamp, and severity level. The goal is not only to collect data, but to generate meaningful violation events that the server can interpret.

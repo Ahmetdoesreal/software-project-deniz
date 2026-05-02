@@ -1,0 +1,6 @@
+1:
+Develop a monitoring mechanism to track student activity status during the exam session.
+2:
+Implement a module that receives structured data from the client and transmits it to the server in real-time. Ensure compatibility with the security layer and define a consistent message format.
+3:
+Make the real-time transmission module resilient to disconnections, reconnections, and buffering scenarios. Add queue/buffer logic so that events are not lost during network interruption or delay, and send them in order once the connection is restored. Improve integrity by adding fields such as session ID, sequence number, and delivery status. The goal is not only to send data, but to provide reliable transfer throughout the exam session.

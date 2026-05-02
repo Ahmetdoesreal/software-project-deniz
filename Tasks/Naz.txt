@@ -1,0 +1,6 @@
+1:
+Design a monitoring dashboard for the instructor to view student status, activity duration, and open applications, and create a user workflow diagram.
+2:
+Implement authentication and encrypted communication between client and server. Ensure that data transmitted from Engin’s module is securely transferred and verified before reaching the server.
+3:
+Extend the security layer with role-based access control and session validation. Define separate access rules for the student client, instructor panel, and server-side services, and enforce authorization checks for starting exam sessions, reading data, and live monitoring. Also generate security logs for session expiration, token refresh, and unauthorized access attempts. The goal is not only encrypted communication, but system-wide auditable access security.

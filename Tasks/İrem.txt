@@ -1,0 +1,6 @@
+1:
+Design a method to detect active windows and running applications on the client machine and generate structured monitoring output.
+2:
+Develop the main dashboard interface that displays student status, activity logs, and real-time updates using data provided by backend. Ensure integration with Rana’s UI components.
+3:
+Turn the main dashboard into a live violation-management and exam-supervision interface. In addition to student lists, connection state, and logs, add real-time alert cards for suspicious events, a filterable violation list, and a per-student detail panel. Provide an interactive flow where the instructor can open a student’s details, inspect recent events, and leave notes or flags if necessary. The goal is not only monitoring, but also enabling live supervision and review.

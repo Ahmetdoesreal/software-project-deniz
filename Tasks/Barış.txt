@@ -1,0 +1,6 @@
+1:
+Design the central server application responsible for handling incoming connections, managing multiple clients, and coordinating exam control.
+2:
+Develop the central server that receives incoming data from clients, manages connections, and routes data to the appropriate backend modules. Ensure compatibility with Mert’s database logic.
+3:
+Turn the central server into a live exam session manager. Build a session-management layer that supports concurrent student connections, connection-state tracking, last-event monitoring per student, and real-time handling of violation events. Also coordinate secure delivery of instructor commands such as start, stop, and duration changes to the relevant clients. The goal is not just a routing server, but the core runtime layer that manages the exam flow.

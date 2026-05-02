@@ -1,0 +1,1625 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delivery Task Checklist</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --surface: #ffffff;
+      --surface-2: #eef3f6;
+      --ink: #1b2733;
+      --muted: #61717f;
+      --line: #d7e0e8;
+      --done: #1f8a5b;
+      --done-soft: #e4f5ed;
+      --partial: #b36b00;
+      --partial-soft: #fff0d8;
+      --missing: #ba3a3a;
+      --missing-soft: #fde8e8;
+      --focus: #2f6fed;
+      --shadow: 0 10px 28px rgba(30, 44, 62, 0.08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: #fbfcfe;
+      padding: 20px;
+    }
+
+    main {
+      min-width: 0;
+      padding: 24px;
+    }
+
+    .title {
+      margin: 0 0 6px;
+      font-size: 1.55rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.95rem;
+    }
+
+    .meta {
+      display: grid;
+      gap: 8px;
+      margin: 18px 0;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .metric {
+      padding: 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--ink);
+      font-size: 1.3rem;
+      line-height: 1.15;
+      margin-bottom: 3px;
+    }
+
+    .progress {
+      height: 10px;
+      border-radius: 999px;
+      background: #dfe7ee;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .progress span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #1f8a5b, #2f6fed);
+      transition: width 180ms ease;
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: 7px;
+      padding: 9px 10px;
+      min-height: 40px;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .button-row.single {
+      grid-template-columns: 1fr;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: 7px;
+      padding: 9px 10px;
+      min-height: 38px;
+      cursor: pointer;
+    }
+
+    button:hover,
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--focus), transparent 66%);
+      outline-offset: 1px;
+      border-color: var(--focus);
+    }
+
+    .legend {
+      display: grid;
+      gap: 7px;
+      margin-top: 18px;
+      font-size: 0.9rem;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .sample-box {
+      width: 15px;
+      height: 15px;
+      border-radius: 4px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      font-size: 11px;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+
+    .sample-box.done {
+      background: var(--done);
+      border-color: var(--done);
+    }
+
+    .sample-box.partial {
+      background: var(--partial);
+      border-color: var(--partial);
+    }
+
+    .person {
+      margin: 0 0 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: clip;
+    }
+
+    .person-header {
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--surface);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 15px 16px;
+      text-align: left;
+      min-height: auto;
+    }
+
+    .person-header h2 {
+      margin: 0;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+
+    .person-header p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.35;
+    }
+
+    .person-score {
+      min-width: 135px;
+      text-align: right;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .person-score strong {
+      color: var(--ink);
+      display: block;
+      font-size: 1rem;
+    }
+
+    .task-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .task {
+      border-bottom: 1px solid var(--line);
+      padding: 16px;
+    }
+
+    .task:last-child {
+      border-bottom: 0;
+    }
+
+    .task-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      margin-bottom: 10px;
+    }
+
+    .task-title {
+      margin: 0;
+      font-size: 0.98rem;
+      letter-spacing: 0;
+    }
+
+    .task-text {
+      margin: 5px 0 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.91rem;
+    }
+
+    .status-chip {
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 0.78rem;
+      white-space: nowrap;
+      border: 1px solid currentColor;
+      background: var(--surface-2);
+    }
+
+    .status-chip.done {
+      color: var(--done);
+      background: var(--done-soft);
+    }
+
+    .status-chip.partial {
+      color: var(--partial);
+      background: var(--partial-soft);
+    }
+
+    .status-chip.missing {
+      color: var(--missing);
+      background: var(--missing-soft);
+    }
+
+    .subtasks {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .subtask {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 10px;
+      background: #fbfcfd;
+      border: 1px solid #e4ebf0;
+      border-radius: 7px;
+    }
+
+    .subtask.hidden {
+      display: none;
+    }
+
+    .subtask input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 2px 0 0;
+      accent-color: var(--done);
+      cursor: pointer;
+    }
+
+    .subtask-body {
+      min-width: 0;
+    }
+
+    .subtask-label {
+      display: block;
+      line-height: 1.35;
+      font-size: 0.93rem;
+    }
+
+    .subtask-note {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.4;
+    }
+
+    .evidence {
+      margin-top: 5px;
+      color: #465563;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .mini-status {
+      min-width: 64px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 4px 7px;
+      font-size: 0.76rem;
+      border: 1px solid currentColor;
+      text-transform: uppercase;
+    }
+
+    .mini-status.done {
+      color: var(--done);
+      background: var(--done-soft);
+    }
+
+    .mini-status.partial {
+      color: var(--partial);
+      background: var(--partial-soft);
+    }
+
+    .mini-status.missing {
+      color: var(--missing);
+      background: var(--missing-soft);
+    }
+
+    .collapsed .task-list {
+      display: none;
+    }
+
+    .empty {
+      display: none;
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .empty.visible {
+      display: block;
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        display: block;
+      }
+
+      aside {
+        position: static;
+        height: auto;
+      }
+
+      main {
+        padding: 16px;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .person-header,
+      .task-head,
+      .subtask {
+        grid-template-columns: 1fr;
+      }
+
+      .person-score {
+        text-align: left;
+      }
+
+      .mini-status {
+        width: fit-content;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1 class="title">Delivery Task Checklist</h1>
+      <p class="subtitle">Interactive audit checklist for the full Tasks folder, checked against the near final delivery folder.</p>
+
+      <section class="metric" aria-live="polite">
+        <strong id="overallScore">0%</strong>
+        <span id="overallText">Calculating coverage</span>
+        <div class="progress" aria-hidden="true"><span id="overallBar"></span></div>
+      </section>
+
+      <div class="meta">
+        <span>Source tasks: <strong>Tasks/*.txt</strong></span>
+        <span>Implementation checked: <strong>near final delivery/</strong></span>
+        <span>Partial items count as half done in progress totals.</span>
+      </div>
+
+      <div class="controls">
+        <label class="field">
+          Search
+          <input id="searchBox" type="search" placeholder="Find task, subtask, path, or owner">
+        </label>
+
+        <label class="field">
+          Show
+          <select id="statusFilter">
+            <option value="all">All items</option>
+            <option value="open">Only partial or missing</option>
+            <option value="done">Only done</option>
+            <option value="partial">Only partial</option>
+            <option value="missing">Only missing</option>
+          </select>
+        </label>
+
+        <div class="button-row">
+          <button id="expandAll" type="button">Expand All</button>
+          <button id="collapseAll" type="button">Collapse All</button>
+        </div>
+
+        <div class="button-row">
+          <button id="resetAudit" type="button">Reset Audit</button>
+          <button id="exportJson" type="button">Export JSON</button>
+        </div>
+
+        <div class="button-row single">
+          <button id="printPage" type="button">Print</button>
+        </div>
+      </div>
+
+      <div class="legend" aria-label="Status legend">
+        <div class="legend-row"><span class="sample-box done">✓</span> Covered by implementation evidence</div>
+        <div class="legend-row"><span class="sample-box partial">-</span> Partially covered or ambiguous</div>
+        <div class="legend-row"><span class="sample-box"></span> Missing or not found</div>
+      </div>
+    </aside>
+
+    <main>
+      <div id="checklist"></div>
+      <div id="emptyState" class="empty">No checklist items match the current filters.</div>
+    </main>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "deliveryChecklistState.v1";
+
+    const auditData = [
+      {
+        person: "Baris",
+        summary: "Central server, client routing, and live exam session management.",
+        tasks: [
+          {
+            id: "baris-1",
+            number: 1,
+            title: "Design the central server application",
+            text: "Handle incoming connections, manage multiple clients, and coordinate exam control.",
+            subtasks: [
+              {
+                id: "baris-1-1",
+                label: "Create an HTTP/WebSocket server application entrypoint.",
+                state: "done",
+                evidence: "server/app.py, server/main.py"
+              },
+              {
+                id: "baris-1-2",
+                label: "Accept and validate client login/session requests.",
+                state: "done",
+                evidence: "server/handlers.py:login_handler"
+              },
+              {
+                id: "baris-1-3",
+                label: "Track multiple connected client sockets at runtime.",
+                state: "done",
+                evidence: "server/state.py users_db/clients, server/handlers.py:websocket_handler"
+              },
+              {
+                id: "baris-1-4",
+                label: "Expose exam control commands to the operator.",
+                state: "done",
+                evidence: "server/tasks.py, server_gui.py"
+              }
+            ]
+          },
+          {
+            id: "baris-2",
+            number: 2,
+            title: "Develop the central routing server",
+            text: "Receive client data, manage connections, route data to backend modules, and remain compatible with Mert's database logic.",
+            subtasks: [
+              {
+                id: "baris-2-1",
+                label: "Receive structured client events over WebSocket.",
+                state: "done",
+                evidence: "server/handlers.py:websocket_handler"
+              },
+              {
+                id: "baris-2-2",
+                label: "Route process, policy, monitor, and incident messages to dedicated handlers.",
+                state: "done",
+                evidence: "server/handlers.py:_handle_client_monitor_event, _handle_incident_report_event"
+              },
+              {
+                id: "baris-2-3",
+                label: "Persist routed session and incident data for backend access.",
+                state: "partial",
+                note: "Implemented through JSON and JSONL files, not a database module.",
+                evidence: "server/state.py:save_users, append_incident"
+              },
+              {
+                id: "baris-2-4",
+                label: "Define an explicit integration contract with a database layer.",
+                state: "missing",
+                note: "No SQLite/SQL schema or DB adapter was found."
+              }
+            ]
+          },
+          {
+            id: "baris-3",
+            number: 3,
+            title: "Turn the server into a live exam session manager",
+            text: "Support concurrent students, connection-state tracking, last-event monitoring, violation handling, and secure instructor commands.",
+            subtasks: [
+              {
+                id: "baris-3-1",
+                label: "Model exam session states such as waiting, running, paused, submitted, and banned.",
+                state: "done",
+                evidence: "server/session_state.py"
+              },
+              {
+                id: "baris-3-2",
+                label: "Track connection state and per-student latest activity fields.",
+                state: "done",
+                evidence: "server/tasks.py:_build_gui_clients"
+              },
+              {
+                id: "baris-3-3",
+                label: "Handle violation incidents in real time.",
+                state: "done",
+                evidence: "server/handlers.py:_handle_incident_report_event"
+              },
+              {
+                id: "baris-3-4",
+                label: "Pause a session automatically when configured violation rules are triggered.",
+                state: "done",
+                evidence: "server/handlers.py should_violation_pause"
+              },
+              {
+                id: "baris-3-5",
+                label: "Deliver instructor commands such as start, finish, add time, pause, resume, kick, ban, and forgive.",
+                state: "done",
+                evidence: "server/tasks.py command handlers"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Deniz",
+        summary: "Student client architecture, monitoring, and client-side violation events.",
+        tasks: [
+          {
+            id: "deniz-1",
+            number: 1,
+            title: "Design the student-side client architecture",
+            text: "Include exam launch control, time tracking, and activity monitoring structure.",
+            subtasks: [
+              {
+                id: "deniz-1-1",
+                label: "Create client entrypoint with discovery, login, and session establishment.",
+                state: "done",
+                evidence: "client/main.py"
+              },
+              {
+                id: "deniz-1-2",
+                label: "Provide exam launch control from CLI/GUI.",
+                state: "done",
+                evidence: "client/ws_client.py, client_gui.py"
+              },
+              {
+                id: "deniz-1-3",
+                label: "Track remaining time and exam state transitions.",
+                state: "done",
+                evidence: "client/exam_state.py, client/ws_client.py"
+              },
+              {
+                id: "deniz-1-4",
+                label: "Start and stop monitoring modules as part of the client runtime.",
+                state: "done",
+                evidence: "client/ws_client.py:_create_process_monitor, _create_focused_window_monitor"
+              }
+            ]
+          },
+          {
+            id: "deniz-2",
+            number: 2,
+            title: "Detect active windows and running processes",
+            text: "Produce structured output compatible with the streaming module.",
+            subtasks: [
+              {
+                id: "deniz-2-1",
+                label: "Collect running process snapshots.",
+                state: "done",
+                evidence: "custommodules/process_monitor/core.py"
+              },
+              {
+                id: "deniz-2-2",
+                label: "Collect active/focused window snapshots.",
+                state: "done",
+                evidence: "custommodules/focused_window_monitor/core.py"
+              },
+              {
+                id: "deniz-2-3",
+                label: "Serialize monitoring output as structured dictionaries/logs.",
+                state: "done",
+                evidence: "custommodules/process_monitor/core.py, focused_window_monitor/core.py"
+              },
+              {
+                id: "deniz-2-4",
+                label: "Feed monitor output into the WebSocket runtime.",
+                state: "done",
+                evidence: "client/ws_client.py:_queue_process_snapshot, _queue_focused_window_snapshot"
+              }
+            ]
+          },
+          {
+            id: "deniz-3",
+            number: 3,
+            title: "Extend monitoring into violation detection",
+            text: "Tag prohibited apps, focus issues, rapid switching, and unexpected processes with structured severity and timestamps.",
+            subtasks: [
+              {
+                id: "deniz-3-1",
+                label: "Detect prohibited or blacklisted processes.",
+                state: "done",
+                evidence: "client/incidents.py:observe_processes"
+              },
+              {
+                id: "deniz-3-2",
+                label: "Detect focused-window policy problems.",
+                state: "done",
+                evidence: "client/incidents.py:observe_focused_window"
+              },
+              {
+                id: "deniz-3-3",
+                label: "Detect rapid application switching.",
+                state: "done",
+                evidence: "client/incidents.py:_observe_rapid_application_switching"
+              },
+              {
+                id: "deniz-3-4",
+                label: "Detect unexpected processes.",
+                state: "done",
+                evidence: "client/incidents.py:_observe_unexpected_processes"
+              },
+              {
+                id: "deniz-3-5",
+                label: "Emit event type, timestamp, severity, summary, and raw details.",
+                state: "done",
+                evidence: "client/incidents.py:_new_incident and incident update blocks"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Engin",
+        summary: "Student activity status and reliable real-time transmission.",
+        tasks: [
+          {
+            id: "engin-1",
+            number: 1,
+            title: "Track student activity status during the exam",
+            text: "Develop a monitoring mechanism for activity status during an exam session.",
+            subtasks: [
+              {
+                id: "engin-1-1",
+                label: "Track connected/disconnected status.",
+                state: "done",
+                evidence: "server/tasks.py:_status_label"
+              },
+              {
+                id: "engin-1-2",
+                label: "Track timer state and remaining time.",
+                state: "done",
+                evidence: "server/tasks.py:_build_gui_clients, client/exam_state.py"
+              },
+              {
+                id: "engin-1-3",
+                label: "Track latest focus/process/incident indicators.",
+                state: "done",
+                evidence: "server/handlers.py:_handle_client_monitor_event, _update_user_incident_summary"
+              },
+              {
+                id: "engin-1-4",
+                label: "Expose activity status to instructor dashboard.",
+                state: "done",
+                evidence: "server/tasks.py:_push_gui_state, server_gui.py"
+              }
+            ]
+          },
+          {
+            id: "engin-2",
+            number: 2,
+            title: "Transmit structured client data in real time",
+            text: "Receive structured client data and send it to the server with security-layer compatibility and a consistent message format.",
+            subtasks: [
+              {
+                id: "engin-2-1",
+                label: "Use a consistent JSON event envelope.",
+                state: "done",
+                evidence: "common/protocol.py"
+              },
+              {
+                id: "engin-2-2",
+                label: "Send live monitor and incident messages over WebSocket.",
+                state: "done",
+                evidence: "client/ws_client.py:_send_payload, _report_incident"
+              },
+              {
+                id: "engin-2-3",
+                label: "Verify message integrity with checksums.",
+                state: "done",
+                evidence: "common/protocol.py:checksum"
+              },
+              {
+                id: "engin-2-4",
+                label: "Wrap sensitive events through the security layer.",
+                state: "done",
+                evidence: "common/security.py, client/ws_client.py:_send_payload"
+              }
+            ]
+          },
+          {
+            id: "engin-3",
+            number: 3,
+            title: "Make real-time transmission resilient",
+            text: "Handle disconnections, reconnections, buffering, ordered delivery, session IDs, sequence numbers, and delivery status.",
+            subtasks: [
+              {
+                id: "engin-3-1",
+                label: "Reconnect the client after connection loss.",
+                state: "done",
+                evidence: "client/main.py reconnect loop"
+              },
+              {
+                id: "engin-3-2",
+                label: "Resume or pause server-side session state on reconnect.",
+                state: "done",
+                evidence: "server/handlers.py websocket reconnect handling"
+              },
+              {
+                id: "engin-3-3",
+                label: "Keep an outgoing event buffer while disconnected.",
+                state: "missing",
+                note: "Client incident processing returns when disconnected; no durable outgoing buffer was found.",
+                evidence: "client/ws_client.py:_process_local_incidents"
+              },
+              {
+                id: "engin-3-4",
+                label: "Replay buffered events in order after reconnect.",
+                state: "missing",
+                note: "No resend queue or ordered replay mechanism was found."
+              },
+              {
+                id: "engin-3-5",
+                label: "Attach session ID and sequence metadata to messages.",
+                state: "partial",
+                note: "Protocol knows seq/session_id fields, but senders do not consistently populate them.",
+                evidence: "common/protocol.py:INTEGRITY_FIELDS"
+              },
+              {
+                id: "engin-3-6",
+                label: "Track delivery status or acknowledgements.",
+                state: "partial",
+                note: "Incident acknowledgement exists, but no general delivery-status mechanism was found.",
+                evidence: "common/events.py:incident_received"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Mert",
+        summary: "Central exam controls, persistence, audit, and post-exam review foundation.",
+        tasks: [
+          {
+            id: "mert-1",
+            number: 1,
+            title: "Design central exam control logic",
+            text: "Allow the instructor to start, stop, and manage exam duration centrally.",
+            subtasks: [
+              {
+                id: "mert-1-1",
+                label: "Start the exam globally or per client.",
+                state: "done",
+                evidence: "server/tasks.py:_handle_start_exam_global, server/handlers.py:_handle_start_exam"
+              },
+              {
+                id: "mert-1-2",
+                label: "Finish the exam and move students to submission mode.",
+                state: "done",
+                evidence: "server/tasks.py:_handle_finish_exam_global"
+              },
+              {
+                id: "mert-1-3",
+                label: "Add extra time or manage duration.",
+                state: "done",
+                evidence: "server/tasks.py:_handle_add_time"
+              },
+              {
+                id: "mert-1-4",
+                label: "Pause and resume sessions centrally.",
+                state: "done",
+                evidence: "server/tasks.py:_handle_pause_exam, _handle_resume_exam"
+              }
+            ]
+          },
+          {
+            id: "mert-2",
+            number: 2,
+            title: "Implement database/backend storage",
+            text: "Store monitoring data and exam session information so frontend modules can access it.",
+            subtasks: [
+              {
+                id: "mert-2-1",
+                label: "Persist users and session state.",
+                state: "done",
+                evidence: "server/state.py:USERS_FILE, save_users"
+              },
+              {
+                id: "mert-2-2",
+                label: "Persist incident/violation history.",
+                state: "done",
+                evidence: "server/state.py:INCIDENTS_FILE, append_incident"
+              },
+              {
+                id: "mert-2-3",
+                label: "Store uploaded submissions and artifacts.",
+                state: "done",
+                evidence: "server/submissions.py, server/handlers.py:exam_submission"
+              },
+              {
+                id: "mert-2-4",
+                label: "Use a database schema or DB backend.",
+                state: "missing",
+                note: "Implementation uses JSON/JSONL files rather than SQLite or another DB."
+              },
+              {
+                id: "mert-2-5",
+                label: "Expose backend state to frontend modules.",
+                state: "done",
+                evidence: "server/tasks.py:_build_gui_clients, _build_gui_incidents"
+              }
+            ]
+          },
+          {
+            id: "mert-3",
+            number: 3,
+            title: "Extend storage for audit and review",
+            text: "Separate sessions, raw events, interpreted violations, instructor actions, final decisions, and chronological queries.",
+            subtasks: [
+              {
+                id: "mert-3-1",
+                label: "Record event and violation history.",
+                state: "done",
+                evidence: "server/state.py:append_incident"
+              },
+              {
+                id: "mert-3-2",
+                label: "Record instructor actions in an audit trail.",
+                state: "partial",
+                note: "Audit append exists, but only limited actions appear to use it.",
+                evidence: "server/state.py:append_audit, server/tasks.py:_handle_forgive_violation"
+              },
+              {
+                id: "mert-3-3",
+                label: "Keep separate layers for sessions, raw events, interpreted violations, actions, and decisions.",
+                state: "partial",
+                note: "Some separation exists through users/incidents/audit files, but not all requested layers."
+              },
+              {
+                id: "mert-3-4",
+                label: "Store final post-exam review decisions.",
+                state: "missing",
+                note: "No final review decision model was found."
+              },
+              {
+                id: "mert-3-5",
+                label: "Provide query structures for chronological student reconstruction.",
+                state: "missing",
+                note: "No query API or timeline reconstruction helper was found."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Naz",
+        summary: "Instructor dashboard, secure communication, RBAC, session validation, and security logs.",
+        tasks: [
+          {
+            id: "naz-1",
+            number: 1,
+            title: "Design instructor monitoring dashboard",
+            text: "Show student status, activity duration, open applications, and create a workflow diagram.",
+            subtasks: [
+              {
+                id: "naz-1-1",
+                label: "Show student status in a dashboard.",
+                state: "done",
+                evidence: "server_gui.py overview tree"
+              },
+              {
+                id: "naz-1-2",
+                label: "Show remaining time and activity duration/status fields.",
+                state: "done",
+                evidence: "server/tasks.py:_build_gui_clients, server_gui.py"
+              },
+              {
+                id: "naz-1-3",
+                label: "Show open application/process information.",
+                state: "partial",
+                note: "Blacklist matches and requested process reports exist, but not a full live open-app table.",
+                evidence: "server_gui.py Request Process Report, latest blacklist fields"
+              },
+              {
+                id: "naz-1-4",
+                label: "Include a user workflow diagram.",
+                state: "missing",
+                note: "No workflow diagram was found in the delivery folder."
+              }
+            ]
+          },
+          {
+            id: "naz-2",
+            number: 2,
+            title: "Implement authentication and encrypted communication",
+            text: "Securely transfer Engin's module data and verify it before server handling.",
+            subtasks: [
+              {
+                id: "naz-2-1",
+                label: "Authenticate users against an allowed-user list.",
+                state: "done",
+                evidence: "allowed_users.json, server/handlers.py:login_handler"
+              },
+              {
+                id: "naz-2-2",
+                label: "Issue and validate session UUIDs.",
+                state: "done",
+                evidence: "server/state.py, server/handlers.py:is_valid_session_uuid"
+              },
+              {
+                id: "naz-2-3",
+                label: "Sign messages and reject invalid signatures.",
+                state: "done",
+                evidence: "common/security.py:SessionSecurityContext"
+              },
+              {
+                id: "naz-2-4",
+                label: "Encrypt configured sensitive wire events.",
+                state: "done",
+                evidence: "common/security.py:DEFAULT_ENCRYPTED_EVENTS"
+              }
+            ]
+          },
+          {
+            id: "naz-3",
+            number: 3,
+            title: "Add RBAC, validation, and auditable security logs",
+            text: "Separate student, instructor, and service access rules; authorize sensitive operations; log expiration, refresh, and unauthorized access.",
+            subtasks: [
+              {
+                id: "naz-3-1",
+                label: "Validate sessions on HTTP and WebSocket routes.",
+                state: "done",
+                evidence: "server/handlers.py:exam_submission, websocket_handler"
+              },
+              {
+                id: "naz-3-2",
+                label: "Define roles for student, instructor, and server-side services.",
+                state: "missing",
+                note: "No role model or RBAC module was found."
+              },
+              {
+                id: "naz-3-3",
+                label: "Enforce authorization checks for start/read/live-monitoring actions.",
+                state: "partial",
+                note: "Operator commands are local GUI/console actions, but there is no role-aware authorization layer."
+              },
+              {
+                id: "naz-3-4",
+                label: "Implement token expiration and refresh logging.",
+                state: "missing",
+                note: "No token refresh or expiration-log system was found."
+              },
+              {
+                id: "naz-3-5",
+                label: "Log unauthorized access attempts to a security log.",
+                state: "partial",
+                note: "Unauthorized responses exist, but no dedicated security audit log was found.",
+                evidence: "server/handlers.py 401 responses"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Rana",
+        summary: "Security mechanism analysis and reusable dashboard UI components.",
+        tasks: [
+          {
+            id: "rana-1",
+            number: 1,
+            title: "Design secure communication and risk analysis",
+            text: "Design client-server authentication/communication and analyze security risks.",
+            subtasks: [
+              {
+                id: "rana-1-1",
+                label: "Implement secure authentication mechanism.",
+                state: "done",
+                evidence: "server/handlers.py:login_handler, client/auth.py"
+              },
+              {
+                id: "rana-1-2",
+                label: "Implement encrypted/signed communication mechanism.",
+                state: "done",
+                evidence: "common/security.py"
+              },
+              {
+                id: "rana-1-3",
+                label: "Document potential security risks and mitigations.",
+                state: "missing",
+                note: "No security risk analysis document was found."
+              }
+            ]
+          },
+          {
+            id: "rana-2",
+            number: 2,
+            title: "Develop reusable dashboard UI components",
+            text: "Create tables, alerts, status indicators, and integrate with Irem's dashboard using processed backend data.",
+            subtasks: [
+              {
+                id: "rana-2-1",
+                label: "Build tables for students and incidents.",
+                state: "done",
+                evidence: "server_gui.py Treeview widgets"
+              },
+              {
+                id: "rana-2-2",
+                label: "Build status indicators for connection, exam, security, and violations.",
+                state: "partial",
+                note: "Status text and columns exist; reusable badge components were not separated."
+              },
+              {
+                id: "rana-2-3",
+                label: "Build alert UI for severity levels.",
+                state: "partial",
+                note: "Incident severity appears in lists, but no reusable alert-card component was found."
+              },
+              {
+                id: "rana-2-4",
+                label: "Use processed backend data in the dashboard.",
+                state: "done",
+                evidence: "server/tasks.py:_push_gui_state, server_gui.py:process_state_update"
+              },
+              {
+                id: "rana-2-5",
+                label: "Keep UI components reusable outside the main dashboard file.",
+                state: "missing",
+                note: "UI logic is embedded in server_gui.py rather than a shared component library."
+              }
+            ]
+          },
+          {
+            id: "rana-3",
+            number: 3,
+            title: "Extend UI components for alarms and reports",
+            text: "Add alarms, status summaries, post-exam reports, severity cards, badges, timeline rows, and reusable live/review components.",
+            subtasks: [
+              {
+                id: "rana-3-1",
+                label: "Show incident/alarm lists with severity and status.",
+                state: "done",
+                evidence: "server_gui.py Rule Breakings tab"
+              },
+              {
+                id: "rana-3-2",
+                label: "Show status summaries.",
+                state: "done",
+                evidence: "server_gui.py server info panel and stats"
+              },
+              {
+                id: "rana-3-3",
+                label: "Provide post-exam report screens.",
+                state: "missing",
+                note: "No post-exam report screen was found."
+              },
+              {
+                id: "rana-3-4",
+                label: "Build severity cards and status badges.",
+                state: "partial",
+                note: "Severity/status columns exist, but no dedicated cards/badges component set was found."
+              },
+              {
+                id: "rana-3-5",
+                label: "Build timeline rows for review.",
+                state: "missing",
+                note: "No timeline row/review screen implementation was found."
+              },
+              {
+                id: "rana-3-6",
+                label: "Make components reusable in both live and post-exam review views.",
+                state: "missing",
+                note: "No separate shared UI library was found."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        person: "Irem",
+        summary: "Monitoring output design and live instructor supervision dashboard.",
+        tasks: [
+          {
+            id: "irem-1",
+            number: 1,
+            title: "Detect active windows and running applications",
+            text: "Generate structured monitoring output from the client machine.",
+            subtasks: [
+              {
+                id: "irem-1-1",
+                label: "Detect running applications/processes.",
+                state: "done",
+                evidence: "custommodules/process_monitor/core.py"
+              },
+              {
+                id: "irem-1-2",
+                label: "Detect active/focused window.",
+                state: "done",
+                evidence: "custommodules/focused_window_monitor/core.py"
+              },
+              {
+                id: "irem-1-3",
+                label: "Generate structured monitoring snapshots/logs.",
+                state: "done",
+                evidence: "client/ws_client.py monitor queue callbacks"
+              }
+            ]
+          },
+          {
+            id: "irem-2",
+            number: 2,
+            title: "Develop the main dashboard interface",
+            text: "Display student status, activity logs, and real-time updates from backend data; integrate with Rana's UI components.",
+            subtasks: [
+              {
+                id: "irem-2-1",
+                label: "Display student status.",
+                state: "done",
+                evidence: "server_gui.py overview tab"
+              },
+              {
+                id: "irem-2-2",
+                label: "Display activity logs.",
+                state: "done",
+                evidence: "server_gui.py log_text, _relay_text_to_gui"
+              },
+              {
+                id: "irem-2-3",
+                label: "Update dashboard in real time from backend state.",
+                state: "done",
+                evidence: "server/tasks.py:_push_gui_state, server_gui.py:process_state_update"
+              },
+              {
+                id: "irem-2-4",
+                label: "Integrate with Rana's reusable component set.",
+                state: "partial",
+                note: "Dashboard and components appear merged into server_gui.py rather than separated."
+              }
+            ]
+          },
+          {
+            id: "irem-3",
+            number: 3,
+            title: "Build live violation management and supervision",
+            text: "Add alerts, filterable violation list, per-student detail panel, notes/flags, and live review flow.",
+            subtasks: [
+              {
+                id: "irem-3-1",
+                label: "Show real-time violation/incident list.",
+                state: "done",
+                evidence: "server_gui.py Rule Breakings tab"
+              },
+              {
+                id: "irem-3-2",
+                label: "Show per-incident and per-student detail panels.",
+                state: "done",
+                evidence: "server_gui.py Incident Details, Detailed Info"
+              },
+              {
+                id: "irem-3-3",
+                label: "Provide live supervision actions from selected incidents.",
+                state: "done",
+                evidence: "server_gui.py kill/kick/ban/pause/resume/forgive buttons"
+              },
+              {
+                id: "irem-3-4",
+                label: "Provide filterable violation list controls.",
+                state: "missing",
+                note: "No filter controls for incident list were found."
+              },
+              {
+                id: "irem-3-5",
+                label: "Show real-time alert cards for suspicious events.",
+                state: "partial",
+                note: "Incident count/list exists, but not alert-card UI."
+              },
+              {
+                id: "irem-3-6",
+                label: "Allow instructor notes or flags on student details.",
+                state: "missing",
+                note: "No note/flag field or persistence was found."
+              }
+            ]
+          }
+        ]
+      }
+    ];
+
+    const states = ["missing", "partial", "done"];
+    const nextState = {
+      missing: "partial",
+      partial: "done",
+      done: "missing"
+    };
+
+    let savedState = loadState();
+
+    const checklist = document.getElementById("checklist");
+    const emptyState = document.getElementById("emptyState");
+    const overallScore = document.getElementById("overallScore");
+    const overallText = document.getElementById("overallText");
+    const overallBar = document.getElementById("overallBar");
+    const searchBox = document.getElementById("searchBox");
+    const statusFilter = document.getElementById("statusFilter");
+
+    function loadState() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      } catch (_error) {
+        return {};
+      }
+    }
+
+    function saveState() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedState));
+    }
+
+    function defaultStateFor(id) {
+      for (const person of auditData) {
+        for (const task of person.tasks) {
+          for (const subtask of task.subtasks) {
+            if (subtask.id === id) {
+              return subtask.state;
+            }
+          }
+        }
+      }
+      return "missing";
+    }
+
+    function currentState(subtask) {
+      return savedState[subtask.id] || subtask.state;
+    }
+
+    function stateValue(state) {
+      if (state === "done") return 1;
+      if (state === "partial") return 0.5;
+      return 0;
+    }
+
+    function statusLabel(state) {
+      if (state === "done") return "Done";
+      if (state === "partial") return "Partial";
+      return "Missing";
+    }
+
+    function aggregate(subtasks) {
+      const total = subtasks.length;
+      const score = subtasks.reduce((sum, item) => sum + stateValue(currentState(item)), 0);
+      const done = subtasks.filter((item) => currentState(item) === "done").length;
+      const partial = subtasks.filter((item) => currentState(item) === "partial").length;
+      const missing = subtasks.filter((item) => currentState(item) === "missing").length;
+      const ratio = total ? score / total : 0;
+      return { total, score, done, partial, missing, ratio };
+    }
+
+    function aggregateTask(task) {
+      return aggregate(task.subtasks);
+    }
+
+    function aggregatePerson(person) {
+      return aggregate(person.tasks.flatMap((task) => task.subtasks));
+    }
+
+    function aggregateAll() {
+      return aggregate(auditData.flatMap((person) => person.tasks.flatMap((task) => task.subtasks)));
+    }
+
+    function statusFromAggregate(stats) {
+      if (stats.total === 0) return "missing";
+      if (stats.done === stats.total) return "done";
+      if (stats.missing === stats.total) return "missing";
+      return "partial";
+    }
+
+    function createStatusChip(state, text) {
+      const chip = document.createElement("span");
+      chip.className = `status-chip ${state}`;
+      chip.textContent = text || statusLabel(state);
+      return chip;
+    }
+
+    function render() {
+      checklist.replaceChildren();
+      auditData.forEach((person) => {
+        const personEl = document.createElement("section");
+        personEl.className = "person";
+        personEl.dataset.person = person.person;
+
+        const personStats = aggregatePerson(person);
+        const header = document.createElement("button");
+        header.className = "person-header";
+        header.type = "button";
+        header.setAttribute("aria-expanded", "true");
+        header.addEventListener("click", () => {
+          const collapsed = personEl.classList.toggle("collapsed");
+          header.setAttribute("aria-expanded", String(!collapsed));
+        });
+
+        const headText = document.createElement("div");
+        const title = document.createElement("h2");
+        title.textContent = person.person;
+        const summary = document.createElement("p");
+        summary.textContent = person.summary;
+        headText.append(title, summary);
+
+        const score = document.createElement("div");
+        score.className = "person-score";
+        score.innerHTML = `<strong>${Math.round(personStats.ratio * 100)}%</strong>${personStats.done} done, ${personStats.partial} partial, ${personStats.missing} open`;
+        header.append(headText, score);
+
+        const taskList = document.createElement("div");
+        taskList.className = "task-list";
+
+        person.tasks.forEach((task) => {
+          const taskEl = document.createElement("article");
+          taskEl.className = "task";
+          taskEl.dataset.taskId = task.id;
+
+          const taskStats = aggregateTask(task);
+          const taskStatus = statusFromAggregate(taskStats);
+
+          const taskHead = document.createElement("div");
+          taskHead.className = "task-head";
+
+          const taskText = document.createElement("div");
+          const taskTitle = document.createElement("h3");
+          taskTitle.className = "task-title";
+          taskTitle.textContent = `Task ${task.number}: ${task.title}`;
+          const description = document.createElement("p");
+          description.className = "task-text";
+          description.textContent = task.text;
+          taskText.append(taskTitle, description);
+
+          taskHead.append(taskText, createStatusChip(taskStatus, `${Math.round(taskStats.ratio * 100)}%`));
+
+          const subtasks = document.createElement("ul");
+          subtasks.className = "subtasks";
+
+          task.subtasks.forEach((subtask) => {
+            subtasks.append(createSubtask(subtask, person.person, task));
+          });
+
+          taskEl.append(taskHead, subtasks);
+          taskList.append(taskEl);
+        });
+
+        personEl.append(header, taskList);
+        checklist.append(personEl);
+      });
+
+      updateTotals();
+      applyFilters();
+    }
+
+    function createSubtask(subtask, personName, task) {
+      const state = currentState(subtask);
+      const item = document.createElement("li");
+      item.className = "subtask";
+      item.dataset.state = state;
+      item.dataset.search = [
+        personName,
+        task.title,
+        task.text,
+        subtask.label,
+        subtask.note || "",
+        subtask.evidence || ""
+      ].join(" ").toLowerCase();
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = subtask.id;
+      checkbox.checked = state === "done";
+      checkbox.indeterminate = state === "partial";
+      checkbox.setAttribute("aria-label", `${subtask.label}: ${statusLabel(state)}`);
+      checkbox.addEventListener("click", (event) => {
+        event.preventDefault();
+        const updated = nextState[currentState(subtask)];
+        savedState[subtask.id] = updated;
+        if (updated === defaultStateFor(subtask.id)) {
+          delete savedState[subtask.id];
+        }
+        saveState();
+        render();
+      });
+
+      const body = document.createElement("div");
+      body.className = "subtask-body";
+      const label = document.createElement("label");
+      label.className = "subtask-label";
+      label.htmlFor = subtask.id;
+      label.textContent = subtask.label;
+      body.append(label);
+
+      if (subtask.note) {
+        const note = document.createElement("p");
+        note.className = "subtask-note";
+        note.textContent = subtask.note;
+        body.append(note);
+      }
+
+      if (subtask.evidence) {
+        const evidence = document.createElement("div");
+        evidence.className = "evidence";
+        evidence.textContent = subtask.evidence;
+        body.append(evidence);
+      }
+
+      const badge = document.createElement("span");
+      badge.className = `mini-status ${state}`;
+      badge.textContent = statusLabel(state);
+
+      item.append(checkbox, body, badge);
+      return item;
+    }
+
+    function updateTotals() {
+      const stats = aggregateAll();
+      const percent = Math.round(stats.ratio * 100);
+      overallScore.textContent = `${percent}%`;
+      overallText.textContent = `${stats.done} done, ${stats.partial} partial, ${stats.missing} missing across ${stats.total} subtasks`;
+      overallBar.style.width = `${percent}%`;
+    }
+
+    function applyFilters() {
+      const query = searchBox.value.trim().toLowerCase();
+      const filter = statusFilter.value;
+      let visibleCount = 0;
+
+      document.querySelectorAll(".subtask").forEach((item) => {
+        const state = item.dataset.state;
+        const matchesText = !query || item.dataset.search.includes(query);
+        let matchesStatus = true;
+        if (filter === "open") matchesStatus = state !== "done";
+        if (filter === "done") matchesStatus = state === "done";
+        if (filter === "partial") matchesStatus = state === "partial";
+        if (filter === "missing") matchesStatus = state === "missing";
+
+        const visible = matchesText && matchesStatus;
+        item.classList.toggle("hidden", !visible);
+        if (visible) visibleCount += 1;
+      });
+
+      document.querySelectorAll(".task").forEach((task) => {
+        const hasVisible = Boolean(task.querySelector(".subtask:not(.hidden)"));
+        task.style.display = hasVisible ? "" : "none";
+      });
+
+      document.querySelectorAll(".person").forEach((person) => {
+        const hasVisible = Boolean(person.querySelector(".task[style=''], .task:not([style])"));
+        person.style.display = hasVisible ? "" : "none";
+      });
+
+      emptyState.classList.toggle("visible", visibleCount === 0);
+    }
+
+    function exportState() {
+      const rows = [];
+      auditData.forEach((person) => {
+        person.tasks.forEach((task) => {
+          task.subtasks.forEach((subtask) => {
+            rows.push({
+              owner: person.person,
+              task: task.number,
+              task_title: task.title,
+              subtask_id: subtask.id,
+              subtask: subtask.label,
+              status: currentState(subtask),
+              audit_default: subtask.state,
+              note: subtask.note || "",
+              evidence: subtask.evidence || ""
+            });
+          });
+        });
+      });
+
+      const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "delivery_checklist_status.json";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    searchBox.addEventListener("input", applyFilters);
+    statusFilter.addEventListener("change", applyFilters);
+
+    document.getElementById("expandAll").addEventListener("click", () => {
+      document.querySelectorAll(".person").forEach((person) => person.classList.remove("collapsed"));
+      document.querySelectorAll(".person-header").forEach((header) => header.setAttribute("aria-expanded", "true"));
+    });
+
+    document.getElementById("collapseAll").addEventListener("click", () => {
+      document.querySelectorAll(".person").forEach((person) => person.classList.add("collapsed"));
+      document.querySelectorAll(".person-header").forEach((header) => header.setAttribute("aria-expanded", "false"));
+    });
+
+    document.getElementById("resetAudit").addEventListener("click", () => {
+      if (!confirm("Reset checklist states to the original audit defaults?")) return;
+      savedState = {};
+      saveState();
+      render();
+    });
+
+    document.getElementById("exportJson").addEventListener("click", exportState);
+    document.getElementById("printPage").addEventListener("click", () => window.print());
+
+    render();
+  </script>
+</body>
+</html>

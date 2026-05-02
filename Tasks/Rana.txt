@@ -1,0 +1,6 @@
+1:
+Design a secure communication and authentication mechanism between client and server and analyze potential security risks.
+2:
+Develop reusable UI components (tables, alerts, status indicators) for the monitoring dashboard. Integrate with İrem’s dashboard and display processed data from the backend.
+3:
+Extend the UI component set for alarms, status summaries, and post-exam report screens. Build alert cards with different severity levels, status badges for connection/security/violation states, timeline rows, and summary table components. Ensure that these components can be reused both in the live dashboard and in post-exam review screens. The goal is not only to provide basic tables, but to create a shared UI library that supports the system’s decision and supervision views.
