@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -171,7 +171,7 @@ class ConsoleWindow(QWidget):
             text = self.empty_message
 
         self.output_text.setPlainText(text)
-        self.output_text.moveCursor(self.output_text.textCursor().End)
+        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
         try:
             self._read_offset = Path(log_path).stat().st_size
         except OSError:
@@ -207,6 +207,6 @@ class ConsoleWindow(QWidget):
         if not chunk:
             return
 
-        self.output_text.moveCursor(self.output_text.textCursor().End)
+        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
         self.output_text.insertPlainText(chunk)
-        self.output_text.moveCursor(self.output_text.textCursor().End)
+        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
