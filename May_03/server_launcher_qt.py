@@ -250,6 +250,7 @@ class ServerManager(QMainWindow):
         if filename:
             self.file_entry.setText(filename)
 
+
     def _server_running(self) -> bool:
         return self.process_session.is_running()
 

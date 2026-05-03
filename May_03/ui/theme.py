@@ -22,8 +22,8 @@ M: dict[str, str] = {
     "surface_container_high":       "#232a37",
     "surface_container_highest":    "#2d3543",
     # On-Surface (text)
-    "on_surface":                   "#dce2f4",
-    "on_surface_variant":           "#c4c6d2",
+    "on_surface":                   "#ffffff",
+    "on_surface_variant":           "#e0e0e0",
     "outline":                      "#8e909b",
     "outline_variant":              "#444650",
     # Primary — Command Blue

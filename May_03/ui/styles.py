@@ -6,7 +6,12 @@ All functions return stylesheet strings that can be passed to
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ui.theme import M, SHAPE, STATE_COLORS
+
+# Path to checkmark SVG for checkbox indicators (QSS needs forward slashes)
+_CHECKMARK_SVG = str(Path(__file__).resolve().parent / "checkmark.svg").replace("\\", "/")
 
 # ── Global stylesheet ─────────────────────────────────────────────────────────
 GLOBAL_QSS = f"""
@@ -153,8 +158,9 @@ QCheckBox::indicator {{
     background: {M['surface_container_low']};
 }}
 QCheckBox::indicator:checked {{
-    background: {M['primary']};
+    background: transparent;
     border-color: {M['primary']};
+    image: url({_CHECKMARK_SVG});
 }}
 /* ─ Splitter ─ */
 QSplitter::handle {{ background: {M['surface_container']}; }}
@@ -224,16 +230,19 @@ QDialogButtonBox QPushButton {{ min-width: 80px; }}
 """
 
 
-# ── Button variants ───────────────────────────────────────────────────────────
+# ── Unified button style ──────────────────────────────────────────────────────
+# All buttons share the same light-blue, bordered, white-gradient look.
 
-def btn_filled() -> str:
-    """Primary action — forged metallic gradient."""
+def _unified_btn() -> str:
+    """Light blue button with border and white gradient — used for ALL buttons."""
     return f"""
 QPushButton {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 {M['primary_container']}, stop:1 {M['on_primary_fixed_variant']});
-    color: {M['on_surface']};
-    border: none;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 0.18),
+        stop:0.45 rgba(173, 206, 255, 0.30),
+        stop:1 rgba(120, 170, 240, 0.40));
+    color: #ffffff;
+    border: 1px solid rgba(177, 197, 255, 0.50);
     border-radius: {SHAPE['small']}px;
     padding: 8px 24px;
     font-size: 13px;
@@ -241,78 +250,45 @@ QPushButton {{
     letter-spacing: 0.1px;
 }}
 QPushButton:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 {M['on_primary_fixed_variant']}, stop:1 {M['primary_container']});
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 0.28),
+        stop:0.45 rgba(173, 206, 255, 0.42),
+        stop:1 rgba(120, 170, 240, 0.55));
+    border: 1px solid rgba(177, 197, 255, 0.70);
 }}
-QPushButton:pressed {{ background: {M['primary']}88; }}
+QPushButton:pressed {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 0.10),
+        stop:0.45 rgba(140, 180, 240, 0.35),
+        stop:1 rgba(100, 150, 220, 0.50));
+    border: 1px solid rgba(177, 197, 255, 0.60);
+}}
 QPushButton:disabled {{
-    background: {M['surface_container']};
-    color: {M['on_surface_variant']}66;
+    background: rgba(120, 170, 240, 0.12);
+    color: rgba(177, 197, 255, 0.40);
+    border: 1px solid rgba(177, 197, 255, 0.18);
 }}
 """
+
+
+def btn_filled() -> str:
+    """Primary action — unified light-blue style."""
+    return _unified_btn()
 
 
 def btn_tonal() -> str:
-    """Secondary action — command chip feel."""
-    return f"""
-QPushButton {{
-    background-color: {M['secondary_container']};
-    color: {M['on_secondary_container']};
-    border: none;
-    border-radius: {SHAPE['small']}px;
-    padding: 8px 24px;
-    font-size: 13px;
-    font-weight: 500;
-}}
-QPushButton:hover {{ background-color: {M['surface_container_highest']}; }}
-QPushButton:pressed {{ background-color: {M['secondary_container']}99; }}
-QPushButton:disabled {{
-    background: {M['surface_container']};
-    color: {M['on_surface_variant']}66;
-}}
-"""
+    """Secondary action — unified light-blue style."""
+    return _unified_btn()
 
 
 def btn_outlined() -> str:
-    """Low-emphasis action — ghost button."""
-    return f"""
-QPushButton {{
-    background-color: transparent;
-    color: {M['primary']};
-    border: 1px solid {M['outline_variant']};
-    border-radius: {SHAPE['small']}px;
-    padding: 8px 24px;
-    font-size: 13px;
-    font-weight: 500;
-}}
-QPushButton:hover {{
-    background-color: {M['surface_container']};
-    border-color: {M['outline']};
-}}
-QPushButton:pressed {{ background-color: {M['surface_container_high']}; }}
-QPushButton:disabled {{
-    color: {M['on_surface_variant']}66;
-    border-color: {M['outline_variant']}66;
-}}
-"""
+    """Low-emphasis action — unified light-blue style."""
+    return _unified_btn()
 
 
 def btn_text() -> str:
-    """Tertiary action — pure text, no background."""
-    return f"""
-QPushButton {{
-    background-color: transparent;
-    color: {M['primary']};
-    border: none;
-    border-radius: {SHAPE['small']}px;
-    padding: 8px 12px;
-    font-size: 13px;
-    font-weight: 500;
-}}
-QPushButton:hover {{ background-color: {M['surface_container']}; }}
-QPushButton:pressed {{ background-color: {M['surface_container_high']}; }}
-QPushButton:disabled {{ color: {M['on_surface_variant']}66; }}
-"""
+    """Tertiary action — unified light-blue style."""
+    return _unified_btn()
 
 
 # ── Card variants ─────────────────────────────────────────────────────────────
@@ -501,8 +477,9 @@ QCheckBox::indicator {
     background: rgba(2,6,23,0.60);
 }
 QCheckBox::indicator:checked {
-    background: #3b82f6;
+    background: transparent;
     border-color: #3b82f6;
+    image: url(__CHECKMARK__);
 }
 /* ─ Splitter ─ */
 QSplitter::handle { background: rgba(255,255,255,0.05); }
@@ -569,7 +546,7 @@ QToolTip {
     padding: 6px 10px;
     font-size: 11px;
 }
-"""
+""".replace("__CHECKMARK__", _CHECKMARK_SVG)
 
 # ── State badge inline style ──────────────────────────────────────────────────
 
