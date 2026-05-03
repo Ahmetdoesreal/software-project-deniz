@@ -31,7 +31,8 @@ def _server_identity_hosts(bind_host: str) -> set[str]:
 
 
 def _is_same_server_instance(app: web.Application, host: str, port: int) -> bool:
-    return port == app["port"] and host in _server_identity_hosts(app["host"])
+    hosts = app.get("server_identity_hosts") or _server_identity_hosts(app["host"])
+    return port == app["port"] and host in hosts
 
 
 def _shutdown_grace_seconds(args) -> float:
@@ -47,6 +48,8 @@ async def duplicate_server_guard(app: web.Application):
             app["server_id"],
             timeout=timeout,
             local_port=None,
+            known_self_ipv4s=app.get("server_identity_hosts"),
+            self_port=app["port"],
         )
         if found is None:
             continue
@@ -102,6 +105,7 @@ def create_app(args) -> web.Application:
     app["server_id"] = args.id
     app["host"] = args.host
     app["port"] = args.port
+    app["server_identity_hosts"] = _server_identity_hosts(args.host)
     app["broadcast_interval"] = args.interval
     app["announce_interval"] = args.announce
     app["exam_duration"] = args.exam_duration

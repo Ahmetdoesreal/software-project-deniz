@@ -11,7 +11,9 @@ from common.discovery import (
     ServerAnnouncer,
     _candidate_ipv4_hosts,
     _iter_ipv4_interfaces,
+    _local_ipv4_hosts,
     _parse_server_beacon,
+    _server_beacon_matches_known_ipv4,
     check_duplicate_server,
 )
 
@@ -92,6 +94,18 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hosts[0], "192.168.1.50")
         self.assertEqual(hosts[:3], ["192.168.1.50", "10.7.0.9", "127.0.0.1"])
 
+    def test_local_ipv4_hosts_collects_all_known_local_addresses(self):
+        with patch(
+            "common.discovery._candidate_ipv4_hosts",
+            return_value=["192.168.1.50", "192.168.56.1", "127.0.0.1"],
+        ):
+            hosts = _local_ipv4_hosts(["10.0.0.8", "0.0.0.0", "bad-host"])
+
+        self.assertEqual(
+            hosts,
+            {"192.168.1.50", "192.168.56.1", "127.0.0.1", "10.0.0.8"},
+        )
+
     def test_broadcast_targets_only_use_real_interface_broadcasts(self):
         announcer = ServerAnnouncer(server_host="0.0.0.0", server_port=8080)
 
@@ -150,8 +164,71 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual((host, port), ("127.0.0.1", 8080))
 
+    def test_self_beacon_match_checks_all_beacon_ipv4s_and_port(self):
+        beacon = {
+            "host": "192.168.56.1",
+            "advertised_host": "192.168.1.50",
+            "source_host": "192.168.56.1",
+            "port": 8080,
+        }
+        known_ipv4s = {"192.168.1.50", "192.168.56.1", "127.0.0.1"}
+
+        self.assertTrue(_server_beacon_matches_known_ipv4(beacon, known_ipv4s, 8080))
+        self.assertFalse(_server_beacon_matches_known_ipv4(beacon, known_ipv4s, 8081))
+        remote_beacon = {
+            **beacon,
+            "host": "192.168.1.77",
+            "advertised_host": "192.168.1.77",
+            "source_host": "192.168.1.77",
+        }
+        self.assertFalse(
+            _server_beacon_matches_known_ipv4(
+                remote_beacon,
+                known_ipv4s,
+                8080,
+            )
+        )
+
 
 class DiscoveryAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_check_builds_filter_for_known_self_ipv4s(self):
+        captured = {}
+
+        async def fake_listen_for_server(*args, **kwargs):
+            captured["ignore_beacon"] = kwargs["ignore_beacon"]
+            return None
+
+        with patch("common.discovery._listen_for_server", new=fake_listen_for_server):
+            result = await check_duplicate_server(
+                "default",
+                timeout=0,
+                known_self_ipv4s={"192.168.1.50", "192.168.56.1"},
+                self_port=8080,
+            )
+
+        self.assertIsNone(result)
+        self.assertIsNotNone(captured["ignore_beacon"])
+        self.assertTrue(
+            captured["ignore_beacon"](
+                {
+                    "host": "192.168.56.1",
+                    "advertised_host": "192.168.1.50",
+                    "source_host": "192.168.56.1",
+                    "port": 8080,
+                }
+            )
+        )
+        self.assertFalse(
+            captured["ignore_beacon"](
+                {
+                    "host": "192.168.1.77",
+                    "advertised_host": "192.168.1.77",
+                    "source_host": "192.168.1.77",
+                    "port": 8080,
+                }
+            )
+        )
+
     async def test_duplicate_check_waits_full_guard_interval_before_returning(self):
         with (
             patch("common.discovery._listen_for_server", new=AsyncMock(return_value=None)),
