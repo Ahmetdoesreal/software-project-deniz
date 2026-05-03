@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fix Plan - May_01 Audit</title>
+  <link rel="stylesheet" href="assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="index.html">Overview</a>
+<a class="" href="coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="risk_register.html">Risk Register</a>
+<a class="active" href="fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="sequences/01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="sequences/02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="sequences/03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="sequences/04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="sequences/05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="sequences/06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Fix Plan</h1>
+<p>This page describes what changed in plain language. It is useful when you want to understand the safety fixes without reading the code first.</p>
+<h2>What Was Fixed</h2>
+<p><strong>Replay saves now know what is urgent.</strong></p>
+<p>Before, every replay save waited in the same first-in-first-out line. That was safe for FFmpeg, but bad under load: a final submission could wait behind a pile of optional <code>/savescreen</code> requests. Now the queue still runs one FFmpeg save at a time, but it chooses work in this order:</p>
+<ol>
+<li>Final submission replay.</li>
+<li>Incident evidence replay.</li>
+<li>Optional requested replay, such as admin savescreen or shutdown savescreen.</li>
+</ol>
+<p><strong>Optional replay requests are bounded.</strong></p>
+<p>If an operator repeatedly asks for savescreens while FFmpeg is slow, the client no longer keeps accepting unlimited work. Extra optional requests return <code>None</code> and are logged as dropped. This protects memory and keeps urgent work from getting buried.</p>
+<p><strong>Queued replay requests can expire.</strong></p>
+<p>If a queued replay is already too old before FFmpeg starts, the client skips it. This is better than saving stale evidence that no longer represents the requested moment.</p>
+<p><strong>Incidents are reported before evidence finishes.</strong></p>
+<p>Before, the client waited for process reports, replay save, bundle creation, and upload before sending the incident. That meant an FFmpeg or upload delay could delay server-side auto-pause or process actions. Now the client sends the incident immediately with:</p>
+<pre><code>evidence_status = &quot;pending&quot;</code></pre>
+<p>Then it uploads evidence in the background and sends a second incident update:</p>
+<pre><code>status = &quot;evidence_uploaded&quot;
+evidence_status = &quot;uploaded&quot;
+artifact_path = &quot;...&quot;</code></pre>
+<p>If evidence fails, it sends:</p>
+<pre><code>status = &quot;evidence_failed&quot;
+evidence_status = &quot;failed&quot;</code></pre>
+<p><strong>Evidence updates no longer overwrite the active incident.</strong></p>
+<p>The server keeps the original opened incident active and only merges evidence fields into it. This avoids accidentally changing an active violation into an evidence-only status.</p>
+<p><strong>Server shutdown waits long enough to matter.</strong></p>
+<p>The shutdown routine used to wait only 2 seconds after requesting process reports and screen saves. FFmpeg alone can take up to 30 seconds. The default is now 60 seconds, with a CLI option:</p>
+<pre><code>--shutdown-grace-seconds</code></pre>
+<p><strong>Bundle names no longer collide within the same second.</strong></p>
+<p>Submission and incident bundle names now include a <code>time_ns()</code> token. Repeated retries, double clicks, or incident bursts will not reuse the same filename.</p>
+<h2>Tests Added</h2>
+<ul>
+<li>Replay queue keeps FIFO order inside the same priority.</li>
+<li>Replay queue never calls the recorder in parallel.</li>
+<li>Final submission jumps ahead of queued optional saves.</li>
+<li>Optional replay requests are dropped when the queue is full.</li>
+<li>Expired queued saves do not call FFmpeg.</li>
+<li>Closing the replay queue does not leave pending futures stuck.</li>
+<li>Initial incident report is sent before evidence upload completes.</li>
+<li>Evidence-upload updates do not rerun server auto actions.</li>
+<li>Server app honors configured shutdown grace.</li>
+<li>Shutdown routine waits for configured shutdown grace.</li>
+<li>Bundle names are unique even when created in the same second.</li>
+</ul>
+<h2>Still Worth Doing Later</h2>
+<ul>
+<li>Consider securing <code>savescreen</code>, <code>get_processes</code>, <code>finish_exam</code>, and <code>process_blacklist</code> with the same session security envelope used by policy, incidents, pause/resume, and kill-process events.</li>
+<li>Add operator-visible replay queue telemetry so admins can see when optional saves are dropped.</li>
+<li>Add cleanup rules for old replay files and incident bundles.</li>
+<li>Add a live multi-client smoke test for <code>/savescreen all</code> while one client submits under artificial FFmpeg delay.</li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

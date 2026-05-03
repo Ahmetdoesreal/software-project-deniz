@@ -1,4 +1,4 @@
-import platform
+import os
 import socket
 
 import psutil
@@ -6,7 +6,7 @@ import psutil
 
 def collect_hardware_snapshot() -> dict:
     snapshot = {
-        "platform": platform.system().lower(),
+        "platform": "windows",
         "computer_name": _computer_name(),
         "system": _collect_system_summary(),
         "disks": _collect_disk_entries(),
@@ -23,12 +23,27 @@ def _computer_name() -> str:
         return "unknown"
 
 
+def _windows_machine() -> str:
+    return (
+        os.environ.get("PROCESSOR_ARCHITEW6432")
+        or os.environ.get("PROCESSOR_ARCHITECTURE")
+        or ""
+    )
+
+
+def _windows_architecture() -> str:
+    machine = _windows_machine().lower()
+    if not machine:
+        return ""
+    return "64bit" if "64" in machine else "32bit"
+
+
 def _collect_system_summary() -> dict:
     virtual_memory = _safe_virtual_memory()
     return {
-        "machine": platform.machine() or "",
-        "processor": platform.processor() or "",
-        "architecture": platform.architecture()[0],
+        "machine": _windows_machine(),
+        "processor": os.environ.get("PROCESSOR_IDENTIFIER", ""),
+        "architecture": _windows_architecture(),
         "cpu_logical": int(psutil.cpu_count() or 0),
         "cpu_physical": int(psutil.cpu_count(logical=False) or 0),
         "memory_total_bytes": int(getattr(virtual_memory, "total", 0)),
@@ -116,9 +131,9 @@ def _safe_net_if_addrs():
 
 
 def _mac_address(addresses) -> str:
+    link_family = getattr(psutil, "AF_LINK", None)
     for address in addresses:
-        family_name = str(address.family)
-        if family_name in {"AF_LINK", "AddressFamily.AF_LINK", "AF_PACKET", "AddressFamily.AF_PACKET"}:
+        if address.family == link_family or str(address.family) == "AddressFamily.AF_LINK":
             return address.address or ""
     return ""
 

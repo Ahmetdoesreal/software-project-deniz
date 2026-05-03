@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replay, Savescreen, And Artifacts - May_01 Audit</title>
+  <link rel="stylesheet" href="../assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="../index.html">Overview</a>
+<a class="" href="../coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="../risk_register.html">Risk Register</a>
+<a class="" href="../fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="03_exam_timer_session.html">Exam Timer</a>
+<a class="active" href="04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Replay, Savescreen, And Artifacts</h1>
+<p>This page explains what happens when the server asks a client to save recent screen evidence or upload a process report.</p>
+<h2>In One Sentence</h2>
+<p>Savescreen asks the client to turn its rolling FFmpeg cache into a replay artifact and upload it to the server.</p>
+<h2>Who Is Involved</h2>
+<ul>
+<li>Operator CLI, server GUI, or shutdown routine.</li>
+<li><code>common.events.savescreen</code>.</li>
+<li><code>client.ws_client.ReplaySaveQueue</code>.</li>
+<li><code>client.custommodules.replay_recorder.ReplayRecorder</code>.</li>
+<li><code>client.transfers.upload_runtime_artifact</code>.</li>
+<li><code>server.handlers.client_artifact_upload</code>.</li>
+</ul>
+<h2>Savescreen: What Happens</h2>
+<ol>
+<li>The operator runs <code>/savescreen</code>, clicks savescreen in the GUI, or the server starts shutdown.</li>
+<li>The server sends <code>savescreen</code> with a request id, request time, and source.</li>
+<li>The client puts the request into the replay save queue.</li>
+<li>The queue decides when the request should run.</li>
+<li>The recorder copies the current FFmpeg segment files into a request-specific folder.</li>
+<li>FFmpeg merges those copied segments into an MP4.</li>
+<li>If MP4 merge fails, times out, or produces an incomplete file, the recorder writes a TS fallback.</li>
+<li>The client uploads the replay as a <code>requested_replay</code> artifact.</li>
+<li>The server stores the artifact and a metadata sidecar.</li>
+</ol>
+<h2>Why The Queue Exists</h2>
+<p>FFmpeg replay saves should not run in parallel for the same recorder. The queue preserves that safety.</p>
+<p>The queue is now priority-aware:</p>
+<ol>
+<li>Final submission replay.</li>
+<li>Incident evidence replay.</li>
+<li>Optional requested replay, such as admin savescreen.</li>
+</ol>
+<p>That means an optional savescreen burst cannot bury final submission evidence.</p>
+<h2>Requested Process Report</h2>
+<p>The server can also send <code>get_processes</code>.</p>
+<p>When that happens:</p>
+<ol>
+<li>The client exports a full process snapshot.</li>
+<li>The client uploads it as <code>requested_process_report</code>.</li>
+<li>The server stores it under client artifacts.</li>
+</ol>
+<h2>Files You May See</h2>
+<ul>
+<li><code>data/client/&lt;session_uuid&gt;/recordings/cache/replay.m3u8</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/recordings/cache/cache_*.ts</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/recordings/replays/replay_&lt;request_id&gt;.mp4</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/recordings/replays/replay_&lt;request_id&gt;.ts</code></li>
+<li><code>data/server/artifacts/&lt;client_id&gt;/requested_replay/...</code></li>
+<li><code>data/server/artifacts/&lt;client_id&gt;/requested_process_report/...</code></li>
+</ul>
+<h2>Common Failure Clues</h2>
+<ul>
+<li>No replay yet: FFmpeg may not have produced enough segments.</li>
+<li>Replay returns <code>None</code>: recorder may not be running, playlist may be empty, or optional queue may be full.</li>
+<li>MP4 missing but TS exists: FFmpeg merge failed, and fallback protected the evidence.</li>
+<li>Shutdown replay missing: the client may not have finished before shutdown grace expired.</li>
+</ul>
+<h2>Tests</h2>
+<ul>
+<li><code>tests/unit/test_replay_save_queue.py</code></li>
+<li><code>tests/unit/test_replay_recorder.py</code></li>
+<li><code>tests/unit/test_savescreen_event.py</code></li>
+<li><code>tests/unit/test_process_monitor.py</code></li>
+<li><code>tests/unit/test_upload_multipart_order.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

@@ -28,6 +28,12 @@ from .custommodules.replay_recorder import ReplayRecorder
 
 REPLAY_SAVE_TIMEOUT_SECONDS = 45
 SUBMISSION_UPLOAD_TIMEOUT_SECONDS = 900
+REPLAY_PRIORITY_FINAL_SUBMISSION = 0
+REPLAY_PRIORITY_INCIDENT_EVIDENCE = 1
+REPLAY_PRIORITY_OPTIONAL_REQUEST = 2
+REPLAY_OPTIONAL_SAVE_QUEUE_LIMIT = 5
+REPLAY_OPTIONAL_SAVE_DEADLINE_SECONDS = 90.0
+REPLAY_QUEUE_CLOSE_TIMEOUT_SECONDS = REPLAY_SAVE_TIMEOUT_SECONDS + 5.0
 FOCUSED_WINDOW_CHECK_INTERVAL_SECONDS = 1.0
 FOCUSED_WINDOW_FULL_INFO_INTERVAL_CHECKS = 60
 FOCUSED_WINDOW_SERVER_SEND_INTERVAL_SECONDS = 5.0
@@ -229,15 +235,28 @@ class ReplaySaveRequest:
     requested_at: str
     source: str
     future: asyncio.Future
+    priority: int
+    deadline_at: float | None
+    optional: bool
 
 
 class ReplaySaveQueue:
-    def __init__(self, recorder: ReplayRecorder | None, loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self,
+        recorder: ReplayRecorder | None,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        optional_queue_limit: int = REPLAY_OPTIONAL_SAVE_QUEUE_LIMIT,
+    ):
         self.recorder = recorder
         self.loop = loop
-        self._queue: asyncio.Queue[ReplaySaveRequest] = asyncio.Queue()
+        self.optional_queue_limit = max(0, int(optional_queue_limit))
+        self._queue: asyncio.PriorityQueue[tuple[int, int, ReplaySaveRequest]] = asyncio.PriorityQueue()
         self._worker_task: asyncio.Task | None = None
         self._closed = False
+        self._sequence = 0
+        self._queued_optional = 0
+        self._active_request: ReplaySaveRequest | None = None
 
     def enqueue(
         self,
@@ -245,19 +264,48 @@ class ReplaySaveQueue:
         request_id: str | None = None,
         requested_at: str | None = None,
         source: str = "client",
+        priority: int | None = None,
+        deadline_seconds: float | None = None,
     ) -> tuple[ReplaySaveRequest, asyncio.Future]:
+        normalized_source = str(source or "client")
+        request_priority = self._priority_for_source(normalized_source) if priority is None else int(priority)
+        optional = request_priority >= REPLAY_PRIORITY_OPTIONAL_REQUEST
+        if deadline_seconds is None:
+            deadline_seconds = (
+                REPLAY_OPTIONAL_SAVE_DEADLINE_SECONDS
+                if optional
+                else float(REPLAY_SAVE_TIMEOUT_SECONDS)
+            )
+        deadline_at = None
+        if deadline_seconds is not None:
+            deadline_at = self.loop.time() + float(deadline_seconds)
+
         save_request = ReplaySaveRequest(
             request_id=str(request_id or uuid.uuid4().hex),
             requested_at=str(requested_at or protocol.now_iso()),
-            source=str(source or "client"),
+            source=normalized_source,
             future=self.loop.create_future(),
+            priority=request_priority,
+            deadline_at=deadline_at,
+            optional=optional,
         )
 
         if self._closed or not self.recorder:
             save_request.future.set_result(None)
             return save_request, save_request.future
 
-        self._queue.put_nowait(save_request)
+        if optional and self._queued_optional >= self.optional_queue_limit:
+            print(
+                f"[RECORDER] Dropping replay request {save_request.request_id}: "
+                "optional replay queue is full."
+            )
+            save_request.future.set_result(None)
+            return save_request, save_request.future
+
+        self._sequence += 1
+        if optional:
+            self._queued_optional += 1
+        self._queue.put_nowait((save_request.priority, self._sequence, save_request))
         self._ensure_worker()
         return save_request, save_request.future
 
@@ -267,26 +315,72 @@ class ReplaySaveQueue:
         request_id: str | None = None,
         requested_at: str | None = None,
         source: str = "client",
+        priority: int | None = None,
+        deadline_seconds: float | None = None,
     ) -> str | None:
         _save_request, future = self.enqueue(
             request_id=request_id,
             requested_at=requested_at,
             source=source,
+            priority=priority,
+            deadline_seconds=deadline_seconds,
         )
         return await future
 
     def close(self):
         self._closed = True
-        if self._worker_task:
+        self._drain_pending(cancel=True)
+        if self._worker_task and self._active_request is None:
             self._worker_task.cancel()
+
+    async def aclose(self):
+        self.close()
+        task = self._worker_task
+        if not task:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=REPLAY_QUEUE_CLOSE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                return
+            raise
+        except asyncio.TimeoutError:
+            if not task.done():
+                task.cancel()
+
+    def _drain_pending(self, *, cancel: bool):
         while True:
             try:
-                save_request = self._queue.get_nowait()
+                _priority, _sequence, save_request = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            self._mark_dequeued(save_request)
             if not save_request.future.done():
-                save_request.future.cancel()
+                if cancel:
+                    save_request.future.cancel()
+                else:
+                    save_request.future.set_result(None)
             self._queue.task_done()
+
+    @staticmethod
+    def _priority_for_source(source: str) -> int:
+        if source == "final_submission":
+            return REPLAY_PRIORITY_FINAL_SUBMISSION
+        if source == "incident_evidence":
+            return REPLAY_PRIORITY_INCIDENT_EVIDENCE
+        return REPLAY_PRIORITY_OPTIONAL_REQUEST
+
+    def _request_expired(self, save_request: ReplaySaveRequest) -> bool:
+        return save_request.deadline_at is not None and self.loop.time() > save_request.deadline_at
+
+    def _finish_without_replay(self, save_request: ReplaySaveRequest, reason: str):
+        if not save_request.future.done():
+            print(f"[RECORDER] Skipping replay request {save_request.request_id}: {reason}.")
+            save_request.future.set_result(None)
+
+    def _mark_dequeued(self, save_request: ReplaySaveRequest):
+        if save_request.optional:
+            self._queued_optional = max(0, self._queued_optional - 1)
 
     def _ensure_worker(self):
         if self._worker_task is None or self._worker_task.done():
@@ -294,10 +388,17 @@ class ReplaySaveQueue:
 
     async def _worker(self):
         while True:
-            save_request = await self._queue.get()
+            if self._closed and self._queue.empty():
+                return
+            _priority, _sequence, save_request = await self._queue.get()
+            self._mark_dequeued(save_request)
             try:
                 if save_request.future.cancelled():
                     continue
+                if self._request_expired(save_request):
+                    self._finish_without_replay(save_request, "request deadline expired")
+                    continue
+                self._active_request = save_request
                 replay_path = await self.loop.run_in_executor(
                     None,
                     self.recorder.save_replay,
@@ -309,6 +410,7 @@ class ReplaySaveQueue:
                 if not save_request.future.done():
                     save_request.future.set_exception(exc)
             finally:
+                self._active_request = None
                 self._queue.task_done()
 
 
@@ -459,7 +561,7 @@ class WebSocketSession:
             listener_task.cancel()
             self.gui.close()
             self._stop_runtime_monitors()
-            self.replay_save_queue.close()
+            await self.replay_save_queue.aclose()
             for task in list(self._background_tasks):
                 task.cancel()
 
@@ -757,6 +859,7 @@ class WebSocketSession:
         if ok:
             self.state.applied_policy_version = policy_version
             self._apply_blacklist_from_policy(data)
+            self.process_monitor.emit_current_snapshot()
             print(f"[POLICY] Applied {update_kind} policy version {policy_version}.")
             await self._send_payload(events.policy_applied(policy_version, ok=True))
             return
@@ -1006,15 +1109,9 @@ class WebSocketSession:
         incident_payload["computer_name"] = _computer_name()
         incident_payload["reported_at"] = protocol.now_iso()
 
-        upload_failed = False
-        if incident_payload.get("needs_evidence"):
-            artifact_path = await self._upload_incident_evidence(incident_payload)
-            if artifact_path:
-                incident_payload["artifact_path"] = artifact_path
-            else:
-                upload_failed = True
-                incident_payload["evidence_upload_failed"] = True
-                self._schedule_background_task(self._retry_incident_evidence_upload(dict(incident_payload)))
+        needs_evidence = bool(incident_payload.get("needs_evidence"))
+        if needs_evidence:
+            incident_payload["evidence_status"] = "pending"
 
         try:
             await self._send_payload(events.incident_report(incident_payload))
@@ -1025,8 +1122,12 @@ class WebSocketSession:
         status = incident_payload.get("status", "")
         rule_name = incident_payload.get("rule_name") or incident_payload.get("rule_id")
         summary = incident_payload.get("summary", "")
-        suffix = " (evidence upload pending)" if upload_failed else ""
+        suffix = " (evidence upload pending)" if needs_evidence else ""
         print(f"[INCIDENT] {status} {rule_name}: {summary}{suffix}")
+        if needs_evidence:
+            self._schedule_background_task(
+                self._upload_and_report_incident_evidence(dict(incident_payload))
+            )
 
     async def _upload_incident_evidence(self, incident: dict) -> str | None:
         process_report_path = self.process_monitor.export_requested_report()
@@ -1067,6 +1168,39 @@ class WebSocketSession:
             print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}: {exc}")
             return None
 
+    async def _upload_and_report_incident_evidence(self, incident: dict, *, retry: bool = False):
+        if self.state.disconnected.is_set():
+            return
+
+        artifact_path = await self._upload_incident_evidence(incident)
+        update_payload = dict(incident)
+        update_payload["reported_at"] = protocol.now_iso()
+        update_payload["needs_evidence"] = False
+        if artifact_path:
+            update_payload["status"] = "evidence_uploaded"
+            update_payload["evidence_status"] = "uploaded"
+            update_payload["artifact_path"] = artifact_path
+            update_payload["evidence_upload_failed"] = False
+            if retry:
+                update_payload["evidence_retry"] = True
+        else:
+            update_payload["status"] = "evidence_failed"
+            update_payload["evidence_status"] = "failed"
+            update_payload["evidence_upload_failed"] = True
+            if not retry:
+                self._schedule_background_task(self._retry_incident_evidence_upload(dict(incident)))
+
+        try:
+            await self._send_payload(events.incident_report(update_payload))
+            if artifact_path:
+                print(f"[INCIDENT] Evidence uploaded for {incident.get('incident_id')}.")
+            elif retry:
+                print(f"[INCIDENT] Evidence retry failed for {incident.get('incident_id')}.")
+            else:
+                print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}; retry scheduled.")
+        except Exception as exc:
+            print(f"[INCIDENT] Failed to report evidence status: {exc}")
+
     async def _save_replay_with_timeout(
         self,
         *,
@@ -1083,6 +1217,7 @@ class WebSocketSession:
                     request_id=request_id,
                     requested_at=requested_at,
                     source=source,
+                    deadline_seconds=REPLAY_SAVE_TIMEOUT_SECONDS,
                 ),
                 timeout=REPLAY_SAVE_TIMEOUT_SECONDS,
             )
@@ -1102,20 +1237,7 @@ class WebSocketSession:
         if self.state.disconnected.is_set():
             return
         await asyncio.sleep(1.0)
-        artifact_path = await self._upload_incident_evidence(incident)
-        if not artifact_path:
-            return
-
-        retry_payload = dict(incident)
-        retry_payload["artifact_path"] = artifact_path
-        retry_payload["evidence_retry"] = True
-        retry_payload["evidence_upload_failed"] = False
-        retry_payload["reported_at"] = protocol.now_iso()
-        try:
-            await self._send_payload(events.incident_report(retry_payload))
-            print(f"[INCIDENT] Evidence retry succeeded for {incident.get('incident_id')}.")
-        except Exception as exc:
-            print(f"[INCIDENT] Failed to report retried evidence upload: {exc}")
+        await self._upload_and_report_incident_evidence(incident, retry=True)
 
     async def handle_kill_process(self, data: dict):
         pid = int(data.get("pid", 0) or 0)

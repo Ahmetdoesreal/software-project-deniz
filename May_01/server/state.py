@@ -3,6 +3,8 @@ import json
 import os
 from typing import Iterable
 
+from common.process_definitions import normalize_definitions
+
 from . import session_state
 
 USERS_FILE = "data/server/server_users.json"
@@ -241,6 +243,10 @@ class ServerState:
     def rule_config(self, rule_id: str) -> dict:
         if rule_id == "process_blacklist":
             return dict(self.exam_policy_config.get("rules", {}).get("process_blacklist", {}))
+        if rule_id == "process_definitions":
+            return dict(self.exam_policy_config.get("rules", {}).get("process_definitions", {}))
+        if rule_id == "process_path_clarification":
+            return dict(self.exam_policy_config.get("rules", {}).get("process_path_clarification", {}))
         if rule_id == "focused_window_policy":
             return dict(self.exam_policy_config.get("rules", {}).get("focused_window", {}))
         if rule_id == "rapid_application_switching":
@@ -255,6 +261,8 @@ class ServerState:
         focused_window = rules_config.get("focused_window", {})
         rapid_switching = rules_config.get("rapid_application_switching", {})
         unexpected_process = rules_config.get("unexpected_process", {})
+        process_definitions = rules_config.get("process_definitions", {})
+        process_path_clarification = rules_config.get("process_path_clarification", {})
         payload = {
             "policy_version": "",
             "session": dict(self.exam_policy_config.get("session", {})),
@@ -307,7 +315,30 @@ class ServerState:
                     "known_process_names": list(unexpected_process.get("known_process_names", [])),
                     "known_directory_paths": list(unexpected_process.get("known_directory_paths", [])),
                     "allowed_process_names": list(unexpected_process.get("allowed_process_names", [])),
+                    "baseline_existing_processes": bool(unexpected_process.get("baseline_existing_processes", False)),
                     "auto_violation_pause": bool(unexpected_process.get("auto_violation_pause", False)),
+                },
+                {
+                    "rule_id": "process_definitions",
+                    "source": "process_monitor",
+                    "type": "process_definitions",
+                    "enabled": bool(process_definitions.get("enabled", True)),
+                    "severity": str(process_definitions.get("severity", "violation")),
+                    "definitions": normalize_definitions(process_definitions.get("definitions", [])),
+                    "detect_unknown_processes": bool(process_definitions.get("detect_unknown_processes", True)),
+                    "unknown_severity": str(process_definitions.get("unknown_severity", "warning")),
+                    "baseline_existing_processes": bool(process_definitions.get("baseline_existing_processes", True)),
+                    "auto_violation_pause": bool(process_definitions.get("auto_violation_pause", False)),
+                    "allow_remote_kill": bool(process_definitions.get("allow_remote_kill", True)),
+                },
+                {
+                    "rule_id": "process_path_clarification",
+                    "source": "process_monitor",
+                    "type": "process_path_clarification",
+                    "enabled": bool(process_path_clarification.get("enabled", True)),
+                    "severity": str(process_path_clarification.get("severity", "warning")),
+                    "auto_violation_pause": bool(process_path_clarification.get("auto_violation_pause", False)),
+                    "allow_remote_kill": bool(process_path_clarification.get("allow_remote_kill", True)),
                 },
             ],
         }
@@ -318,8 +349,22 @@ class ServerState:
         os.makedirs(os.path.dirname(INCIDENTS_FILE), exist_ok=True)
         incident_id = str(incident.get("incident_id", "")).strip()
         if incident_id:
-            if incident.get("status") == "resolved":
+            status = str(incident.get("status", "") or "")
+            if status == "resolved":
                 self.active_incidents.pop(incident_id, None)
+            elif status in {"evidence_uploaded", "evidence_failed"} and incident_id in self.active_incidents:
+                self.active_incidents[incident_id].update(
+                    {
+                        key: incident[key]
+                        for key in (
+                            "artifact_path",
+                            "evidence_status",
+                            "evidence_upload_failed",
+                            "evidence_retry",
+                        )
+                        if key in incident
+                    }
+                )
             else:
                 self.active_incidents[incident_id] = incident
         self.incidents.append(incident)
@@ -329,6 +374,15 @@ class ServerState:
                 incident_file.write(json.dumps(incident, ensure_ascii=True) + "\n")
         except Exception as e:
             print(f"[!] Failed to append {INCIDENTS_FILE}: {e}")
+
+    def save_incidents(self):
+        os.makedirs(os.path.dirname(INCIDENTS_FILE), exist_ok=True)
+        try:
+            with open(INCIDENTS_FILE, "w", encoding="utf-8") as incident_file:
+                for incident in self.incidents:
+                    incident_file.write(json.dumps(incident, ensure_ascii=True) + "\n")
+        except Exception as e:
+            print(f"[!] Failed to save {INCIDENTS_FILE}: {e}")
 
     def append_audit(self, entry: dict):
         os.makedirs(os.path.dirname(AUDIT_FILE), exist_ok=True)
@@ -455,7 +509,24 @@ class ServerState:
                     "known_process_names": [],
                     "known_directory_paths": [],
                     "allowed_process_names": [],
+                    "baseline_existing_processes": False,
                     "auto_violation_pause": False,
+                },
+                "process_definitions": {
+                    "enabled": True,
+                    "severity": "violation",
+                    "definitions": [],
+                    "detect_unknown_processes": True,
+                    "unknown_severity": "warning",
+                    "baseline_existing_processes": True,
+                    "auto_violation_pause": False,
+                    "allow_remote_kill": True,
+                },
+                "process_path_clarification": {
+                    "enabled": True,
+                    "severity": "warning",
+                    "auto_violation_pause": False,
+                    "allow_remote_kill": True,
                 },
             },
             "operator_defaults": {
@@ -523,10 +594,14 @@ class ServerState:
             focused_window = rules.get("focused_window", {})
             rapid_switching = rules.get("rapid_application_switching", {})
             unexpected_process = rules.get("unexpected_process", {})
+            process_definitions = rules.get("process_definitions", {})
+            process_path_clarification = rules.get("process_path_clarification", {})
         else:
             focused_window = {}
             rapid_switching = {}
             unexpected_process = {}
+            process_definitions = {}
+            process_path_clarification = {}
 
         legacy_focused_window = config.get("focused_window", {})
         if not focused_window and isinstance(legacy_focused_window, dict):
@@ -601,8 +676,55 @@ class ServerState:
             normalized["rules"]["unexpected_process"]["allowed_process_names"] = self._string_list(
                 unexpected_process.get("allowed_process_names", [])
             )
+            normalized["rules"]["unexpected_process"]["baseline_existing_processes"] = bool(
+                unexpected_process.get("baseline_existing_processes", False)
+            )
             normalized["rules"]["unexpected_process"]["auto_violation_pause"] = bool(
                 unexpected_process.get("auto_violation_pause", False)
+            )
+        if isinstance(process_definitions, dict):
+            normalized["rules"]["process_definitions"]["enabled"] = bool(
+                process_definitions.get("enabled", True)
+            )
+            normalized["rules"]["process_definitions"]["severity"] = str(
+                process_definitions.get(
+                    "severity",
+                    normalized["rules"]["process_definitions"]["severity"],
+                )
+            )
+            normalized["rules"]["process_definitions"]["definitions"] = normalize_definitions(
+                process_definitions.get("definitions", [])
+            )
+            normalized["rules"]["process_definitions"]["detect_unknown_processes"] = bool(
+                process_definitions.get("detect_unknown_processes", True)
+            )
+            normalized["rules"]["process_definitions"]["unknown_severity"] = str(
+                process_definitions.get("unknown_severity", "warning")
+            )
+            normalized["rules"]["process_definitions"]["baseline_existing_processes"] = bool(
+                process_definitions.get("baseline_existing_processes", True)
+            )
+            normalized["rules"]["process_definitions"]["auto_violation_pause"] = bool(
+                process_definitions.get("auto_violation_pause", False)
+            )
+            normalized["rules"]["process_definitions"]["allow_remote_kill"] = bool(
+                process_definitions.get("allow_remote_kill", True)
+            )
+        if isinstance(process_path_clarification, dict):
+            normalized["rules"]["process_path_clarification"]["enabled"] = bool(
+                process_path_clarification.get("enabled", True)
+            )
+            normalized["rules"]["process_path_clarification"]["severity"] = str(
+                process_path_clarification.get(
+                    "severity",
+                    normalized["rules"]["process_path_clarification"]["severity"],
+                )
+            )
+            normalized["rules"]["process_path_clarification"]["auto_violation_pause"] = bool(
+                process_path_clarification.get("auto_violation_pause", False)
+            )
+            normalized["rules"]["process_path_clarification"]["allow_remote_kill"] = bool(
+                process_path_clarification.get("allow_remote_kill", True)
             )
         return normalized
 

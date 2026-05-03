@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server Startup And Shutdown - May_01 Audit</title>
+  <link rel="stylesheet" href="../assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="../index.html">Overview</a>
+<a class="" href="../coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="../risk_register.html">Risk Register</a>
+<a class="" href="../fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="active" href="01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Server Startup And Shutdown</h1>
+<p>This page explains what happens when the exam server starts and stops.</p>
+<h2>In One Sentence</h2>
+<p>The server starts an aiohttp app, announces itself on the network, watches for duplicate servers, optionally launches the GUI, and on shutdown asks connected clients for one last set of reports and replays.</p>
+<h2>Who Is Involved</h2>
+<ul>
+<li>The operator who starts or stops the server.</li>
+<li><code>server.main</code>, which parses CLI options and starts the app.</li>
+<li><code>server.app</code>, which creates routes and background tasks.</li>
+<li><code>server.tasks</code>, which handles operator commands and periodic timer sync.</li>
+<li><code>server.shutdown</code>, which runs the final evidence flush.</li>
+<li>Connected clients, if any exist during shutdown.</li>
+</ul>
+<h2>Startup: What Happens</h2>
+<ol>
+<li>The operator starts <code>python -m server.main</code>, <code>server_cli.py</code>, or a launcher.</li>
+<li>The server reads its settings: server id, host, port, timer interval, exam duration, upload limits, GUI flag, and shutdown grace.</li>
+<li>If <code>--reset</code> is used, the server clears persisted user/session state.</li>
+<li>Before binding the port, the server listens for another server with the same id.</li>
+<li>If no duplicate is found, the aiohttp app is created.</li>
+<li>The app registers all HTTP and WebSocket routes.</li>
+<li>Background tasks start:</li>
+</ol>
+<ul>
+<li>time broadcaster.</li>
+<li>console reader.</li>
+<li>UDP discovery announcer.</li>
+<li>duplicate-server guard.</li>
+<li>optional server GUI.</li>
+</ul>
+<h2>Duplicate Server Guard</h2>
+<p>This protects classrooms from accidentally running two servers with the same id.</p>
+<p>If the guard hears another server with the same id and it is not this same host/port, the server exits. If it hears itself, it ignores the beacon.</p>
+<h2>Shutdown: What Happens</h2>
+<ol>
+<li>Server cleanup begins.</li>
+<li>If no clients are connected, shutdown skips the client flush.</li>
+<li>If clients are connected, the server broadcasts <code>get_processes</code>.</li>
+<li>Then it broadcasts <code>savescreen</code> with <code>source=&quot;server_shutdown&quot;</code>.</li>
+<li>The server waits for <code>shutdown_grace_seconds</code>.</li>
+<li>Background tasks are cancelled.</li>
+<li>The discovery announcer stops.</li>
+<li>The GUI process is killed if it is still running.</li>
+</ol>
+<h2>Why The Shutdown Wait Matters</h2>
+<p>A replay save is not instant. The client may need to copy FFmpeg segments, merge them, fall back to TS if MP4 fails, and upload the result. A 2-second wait was too short for real evidence. The default is now 60 seconds.</p>
+<h2>Files You May See</h2>
+<ul>
+<li><code>data/server/server_users.json</code></li>
+<li><code>data/server/incidents.jsonl</code></li>
+<li><code>data/server/session_audit.jsonl</code></li>
+<li><code>data/server/artifacts/&lt;client_id&gt;/...</code></li>
+<li><code>data/logs/server/...</code></li>
+</ul>
+<h2>Common Failure Clues</h2>
+<ul>
+<li>Duplicate server found: startup exits before the app is served.</li>
+<li>Port already in use: the server prints a port conflict message.</li>
+<li>Shutdown replay missing: check whether the server waited long enough and whether the client was still connected.</li>
+<li>No shutdown artifacts: there may have been no connected clients.</li>
+</ul>
+<h2>Tests</h2>
+<ul>
+<li><code>tests/unit/test_server_main.py</code></li>
+<li><code>tests/unit/test_server_app.py</code></li>
+<li><code>tests/unit/test_server_shutdown.py</code></li>
+<li><code>tests/integration/test_discovery.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

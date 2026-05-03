@@ -7,7 +7,7 @@ from common import events
 from .state import state
 
 
-SHUTDOWN_GRACE_SECONDS = 2.0
+SHUTDOWN_GRACE_SECONDS = 60.0
 
 
 @dataclass

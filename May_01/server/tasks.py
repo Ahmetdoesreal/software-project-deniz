@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import platform
 import shlex
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from common.discovery import ServerAnnouncer
 from common import events, protocol, security
 from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, state
 from . import session_state
+from .settings_service import apply_process_decision, build_process_database
 
 
 def _user_has_submission(user: dict) -> bool:
@@ -79,6 +79,7 @@ def _push_gui_state(app: web.Application):
             "server": _build_server_info(app),
             "clients": _build_gui_clients(exam_duration_sec),
             "incidents": _build_gui_incidents(),
+            "process_database": build_process_database(state),
         }
     )
 
@@ -236,6 +237,7 @@ def _build_server_info(app: web.Application) -> dict:
         "has_exam_files": app["exam_files"] is not None,
         "exam_files_path": app["exam_files"],
         "process_blacklist_count": len(state.process_blacklist),
+        "process_definition_count": len(state.rule_config("process_definitions").get("definitions", [])),
         "process_blacklist_file": PROCESS_BLACKLIST_FILE,
         "process_blacklist_version": state.process_blacklist_version,
         "policy_file": EXAM_POLICY_FILE,
@@ -309,13 +311,9 @@ def _build_gui_incidents() -> list[dict]:
 
 def _open_text_file(path: str) -> bool:
     target_path = os.path.abspath(path)
-    system_name = platform.system()
 
     try:
-        if system_name == "Windows":
-            subprocess.Popen(["notepad.exe", target_path])
-            return True
-        subprocess.Popen(["xdg-open", target_path])
+        subprocess.Popen(["notepad.exe", target_path])
         return True
     except Exception as exc:
         print(f"[CMD] Failed to open text file: {exc}")
@@ -974,6 +972,103 @@ async def _handle_unban(parts: list[str]):
     print(f"[CMD] Unbanned {login_id} ({user['uuid']}).")
 
 
+async def _handle_apply_process_decision(request: dict, app: web.Application):
+    result = apply_process_decision(state, request, actor="admin_gui")
+    if not result.get("ok"):
+        print(f"[PROCESS] Decision failed: {result.get('message')}")
+        _push_gui_state(app)
+        return
+
+    definition = result.get("definition", {})
+    actions = definition.get("actions", {})
+    history_by_login = {
+        str(entry.get("login_id", "") or ""): entry
+        for entry in result.get("matching_history", [])
+        if str(entry.get("login_id", "") or "")
+    }
+    live_results = []
+
+    if actions.get("kill_pid"):
+        for student_state in result.get("action_states", []):
+            kill_state = student_state.get("actions", {}).get("kill_pid", {})
+            if kill_state.get("state") != "possible":
+                continue
+            client_id = str(student_state.get("client_id", "") or "")
+            pid = int(student_state.get("pid", 0) or 0)
+            if not client_id or pid <= 0:
+                continue
+            sent = await send_to_client(
+                client_id,
+                events.kill_process(
+                    pid,
+                    incident_id=str(student_state.get("incident_id", "") or ""),
+                    process_name=str(student_state.get("process_name", "") or definition.get("process_name", "")),
+                    reason="Requested by process policy decision.",
+                ),
+            )
+            live_results.append(
+                {
+                    "login_id": student_state.get("login_id", ""),
+                    "action": "kill_pid",
+                    "state": "applied" if sent else "not_possible",
+                    "reason": "requested" if sent else "disconnected",
+                }
+            )
+
+    if actions.get("pause_exam"):
+        for student_state in result.get("action_states", []):
+            pause_state = student_state.get("actions", {}).get("pause_exam", {})
+            if pause_state.get("state") != "possible":
+                continue
+            login_id = str(student_state.get("login_id", "") or "")
+            user = state.users_db.get(login_id)
+            if not user:
+                continue
+            remaining = _session_remaining_seconds(app["exam_duration"] * 60, user)
+            session_state.set_state(
+                user,
+                session_state.ADMIN_PAUSED,
+                reason="Paused by process policy decision.",
+                remaining_seconds=remaining,
+            )
+            user["last_action"] = "Process decision pause"
+            state.save_users()
+            await _sync_client_timer_state(user["uuid"], app, reason="Paused by process policy decision.")
+            live_results.append({"login_id": login_id, "action": "pause_exam", "state": "applied", "reason": "paused"})
+
+    for login_id in result.get("banned_login_ids", []):
+        user = state.users_db.get(login_id)
+        if not user:
+            continue
+        await _disconnect_client(user["uuid"], "banned by process decision")
+        live_results.append({"login_id": login_id, "action": "ban", "state": "applied", "reason": "disconnected"})
+
+    if actions.get("kick") and not actions.get("ban"):
+        for student_state in result.get("action_states", []):
+            kick_state = student_state.get("actions", {}).get("kick", {})
+            if kick_state.get("state") != "possible":
+                continue
+            login_id = str(student_state.get("login_id", "") or "")
+            user = state.users_db.get(login_id)
+            if not user:
+                continue
+            user["kick_count"] = int(user.get("kick_count", 0)) + 1
+            user["last_action"] = "Process decision kick"
+            state.save_users()
+            await _disconnect_client(user["uuid"], "kicked by process decision")
+            live_results.append({"login_id": login_id, "action": "kick", "state": "applied", "reason": "disconnected"})
+
+    if result.get("saved_to_policy"):
+        sent_count = await _broadcast_exam_policy(update=True)
+        print(f"[PROCESS] Saved process decision policy and updated {sent_count} client(s).")
+
+    print(
+        f"[PROCESS] Applied decision for {definition.get('process_name') or definition.get('normalized_process_name')} "
+        f"to {len(history_by_login)} historical user(s). Live actions: {live_results}"
+    )
+    _push_gui_state(app)
+
+
 async def handle_admin_command(line: str, app: web.Application):
     """Common handler for administrative commands from CLI or GUI."""
     command_line = line.strip()
@@ -1185,6 +1280,13 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "apply_policy":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command("/applypolicy", app),
+            loop,
+        )
+        return
+
+    if command == "apply_process_decision":
+        asyncio.run_coroutine_threadsafe(
+            _handle_apply_process_decision(request, app),
             loop,
         )
         return

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import platform
 from collections.abc import Callable
 
 from common import protocol
@@ -102,14 +101,7 @@ class FocusedWindowMonitor:
         self._write_log(payload)
 
     def _current_snapshot(self) -> dict:
-        if platform.system() == "Windows":
-            return get_focused_window_for_windows()
-        return {
-            "platform": platform.system().lower(),
-            "available": False,
-            "reason": "unsupported_platform",
-            "source": "focused_window_monitor",
-        }
+        return get_focused_window_for_windows()
 
     def _snapshot_entry(self, entry_type: str, snapshot: dict, timestamp: str, *, severity: str = "info") -> dict:
         return {

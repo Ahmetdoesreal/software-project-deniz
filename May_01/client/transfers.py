@@ -15,6 +15,16 @@ UPLOAD_ATTEMPTS = 3
 CLIENT_LOGS_DIR = Path("data") / "logs" / "client"
 
 
+def _unique_bundle_token() -> str:
+    return f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+
+
+def _safe_name_token(value: str, fallback: str) -> str:
+    raw = str(value or fallback).strip() or fallback
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw)
+    return safe.strip("._") or fallback
+
+
 def build_submission_bundle(
     session_uuid: str,
     student_file_path: str,
@@ -29,10 +39,10 @@ def build_submission_bundle(
     bundle_dir = Path("data") / "client" / session_uuid / "submission_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    package_dir = bundle_dir / f"submission_package_{timestamp}"
+    token = _unique_bundle_token()
+    package_dir = bundle_dir / f"submission_package_{token}"
     package_dir.mkdir(parents=True, exist_ok=True)
-    bundle_path = bundle_dir / f"submission_bundle_{timestamp}.zip"
+    bundle_path = bundle_dir / f"submission_bundle_{token}.zip"
     _notify_step(step_callback, "1/6 Preparing local submission package folder...")
 
     staged_student_file = _stage_student_submission(
@@ -77,9 +87,9 @@ def build_incident_bundle(
     bundle_dir = Path("data") / "client" / session_uuid / "incident_bundles"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    incident_id = str(incident.get("incident_id", "incident")).strip() or "incident"
-    bundle_path = bundle_dir / f"incident_bundle_{incident_id}_{timestamp}.zip"
+    token = _unique_bundle_token()
+    incident_id = _safe_name_token(str(incident.get("incident_id", "incident")), "incident")
+    bundle_path = bundle_dir / f"incident_bundle_{incident_id}_{token}.zip"
     runtime_files = _collect_runtime_bundle_files(
         session_uuid,
         process_report_path,

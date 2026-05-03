@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Final Submission And Uploads - May_01 Audit</title>
+  <link rel="stylesheet" href="../assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="../index.html">Overview</a>
+<a class="" href="../coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="../risk_register.html">Risk Register</a>
+<a class="" href="../fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="active" href="06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Final Submission And Uploads</h1>
+<p>This page explains how the student&#x27;s final file becomes a checked, archived, uploaded submission bundle.</p>
+<h2>In One Sentence</h2>
+<p>When the exam ends, the client packages the student&#x27;s file with runtime evidence, uploads the bundle, waits for server confirmation, and then exits.</p>
+<h2>Who Is Involved</h2>
+<ul>
+<li>Student CLI or client GUI.</li>
+<li><code>client.ws_client</code>, which runs the final submission sequence.</li>
+<li><code>client.submission</code>, which validates the chosen file.</li>
+<li><code>client.transfers</code>, which builds bundles and uploads files.</li>
+<li><code>server.handlers.exam_submission</code>, which validates and stores the upload.</li>
+</ul>
+<h2>Final Submission: What Happens</h2>
+<ol>
+<li>The server sends <code>finish_exam</code>, or the client reconnects in <code>awaiting_submission</code>.</li>
+<li>The student chooses a file in the GUI or types <code>finish &lt;path&gt;</code>.</li>
+<li>The client validates that file.</li>
+<li>The client marks submission as in progress.</li>
+<li>Live monitors stop.</li>
+<li>The client exports final process, hardware, and focused-window snapshots.</li>
+<li>The client requests a final replay save with highest replay priority.</li>
+<li>The client creates a local package folder.</li>
+<li>The student&#x27;s file is copied into <code>student_submission/</code>.</li>
+<li>Runtime evidence is copied into <code>runtime/</code>.</li>
+<li>A <code>manifest.json</code> is written with checksums.</li>
+<li>The package is zipped.</li>
+<li>The zip is uploaded to <code>POST /exam/submission</code>.</li>
+<li>The server validates the upload and stores it.</li>
+<li>The client shows success, closes the WebSocket, and exits intentionally.</li>
+</ol>
+<h2>Upload Validation</h2>
+<p>The server checks:</p>
+<ul>
+<li>Session id is valid.</li>
+<li>User exists and is not banned.</li>
+<li>User has not already submitted.</li>
+<li>Exam state allows submission.</li>
+<li>Multipart field includes an archive.</li>
+<li>Archive is not empty.</li>
+<li>Archive is a supported zip/tar type.</li>
+<li>SHA-256 checksum matches.</li>
+</ul>
+<h2>Files You May See</h2>
+<ul>
+<li><code>data/client/&lt;session_uuid&gt;/submission_bundle/submission_package_&lt;token&gt;/...</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/submission_bundle/submission_bundle_&lt;token&gt;.zip</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/incident_bundles/incident_bundle_&lt;id&gt;_&lt;token&gt;.zip</code></li>
+<li><code>data/server/submissions/&lt;client_id&gt;/...</code></li>
+<li><code>data/server/artifacts/&lt;client_id&gt;/&lt;kind&gt;/...</code></li>
+</ul>
+<h2>Common Failure Clues</h2>
+<ul>
+<li>Final replay missing: replay save timed out or recorder was not running; submission still continues.</li>
+<li>Optional runtime log missing from zip: copy failed and the optional file was skipped.</li>
+<li>Upload rejected as duplicate: server already has a submission for that user.</li>
+<li>Upload checksum mismatch: file changed during upload or request body was corrupted.</li>
+<li>Student cannot submit before exam starts: expected, unless global exam phase is finished.</li>
+</ul>
+<h2>Tests</h2>
+<ul>
+<li><code>tests/unit/test_transfers.py</code></li>
+<li><code>tests/unit/test_upload_multipart_order.py</code></li>
+<li><code>tests/unit/test_server_handlers.py</code></li>
+<li><code>tests/unit/test_server_tasks.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

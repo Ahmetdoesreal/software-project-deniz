@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Client Startup, WebSocket, And Policy Sync - May_01 Audit</title>
+  <link rel="stylesheet" href="../assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="../index.html">Overview</a>
+<a class="" href="../coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="../risk_register.html">Risk Register</a>
+<a class="" href="../fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="01_server_startup_shutdown.html">Server Startup</a>
+<a class="active" href="02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Client Startup, WebSocket, And Policy Sync</h1>
+<p>This page explains how a student client finds the server, logs in, starts local recording/monitoring, and receives the first policy state.</p>
+<h2>In One Sentence</h2>
+<p>The client discovers the server, logs in for a session UUID, prepares exam files, starts the replay recorder, opens a WebSocket, and applies the server&#x27;s current exam policy.</p>
+<h2>Who Is Involved</h2>
+<ul>
+<li>Student client CLI or launcher.</li>
+<li><code>client.main</code>, the main startup loop.</li>
+<li><code>client.auth</code>, for login and health checks.</li>
+<li><code>client.exam</code>, for exam config and file download.</li>
+<li><code>client.ws_client</code>, for live WebSocket behavior.</li>
+<li><code>server.handlers</code>, for HTTP and WebSocket responses.</li>
+</ul>
+<h2>Startup: What Happens</h2>
+<ol>
+<li>The client reads login id, password, server id, host/port, timeout, reconnect delay, and recording flag.</li>
+<li>If the host was not provided, the client searches for the server on the local network.</li>
+<li>The client calls <code>POST /login</code>.</li>
+<li>The server checks:</li>
+</ol>
+<ul>
+<li>Is this user allowed?</li>
+<li>Is the password correct?</li>
+<li>Is the user banned?</li>
+<li>Has this user already submitted?</li>
+<li>Is the same login already connected?</li>
+</ul>
+<ol>
+<li>If login succeeds, the server returns the student&#x27;s session UUID.</li>
+<li>The client creates a replay recorder for that session.</li>
+<li>If recording is enabled, FFmpeg starts writing rolling replay segments.</li>
+<li>The client fetches exam config, downloads exam files when available, and checks server health.</li>
+<li>The client opens <code>GET /ws?id=&lt;session_uuid&gt;</code>.</li>
+</ol>
+<h2>WebSocket: What Happens First</h2>
+<p>After the WebSocket opens, the server sends the initial state:</p>
+<ol>
+<li><code>welcome</code>: confirms the connection.</li>
+<li><code>exam_policy</code>: sends monitoring and rule settings.</li>
+<li><code>process_blacklist</code>: sends direct blacklist data.</li>
+<li><code>session_state</code>: tells the client whether it is waiting, running, paused, submitted, or awaiting submission.</li>
+<li>Depending on state, the server may also send <code>sync_time</code>, <code>pause_exam</code>, or <code>finish_exam</code>.</li>
+</ol>
+<p>The client replies to <code>welcome</code> with <code>client_info</code>, applies policy, updates its local monitors, and sends <code>policy_applied</code>.</p>
+<h2>Security Note</h2>
+<p>Sensitive messages such as policy, session state, incidents, pause/resume, and kill-process requests are protected by the session security layer when available.</p>
+<p>Some operational events, like savescreen and get-processes, are not currently wrapped by that layer. That is listed as a low-severity follow-up in the risk register.</p>
+<h2>Files You May See</h2>
+<ul>
+<li><code>data/client/&lt;session_uuid&gt;/exam_files/</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/recordings/cache/</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/processes.jsonl</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/focused_window.jsonl</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/hardware_changes.jsonl</code></li>
+<li><code>data/client/&lt;session_uuid&gt;/exam_state.jsonl</code></li>
+</ul>
+<h2>Common Failure Clues</h2>
+<ul>
+<li>Client cannot find server: discovery failed or server id/port differs.</li>
+<li>Login rejected: check allowed users, password, ban state, or duplicate connection.</li>
+<li>Recorder inactive: FFmpeg may be missing, unsupported, or exited immediately.</li>
+<li>Policy apply failed: the client sends <code>policy_applied</code> with failure details.</li>
+</ul>
+<h2>Tests</h2>
+<ul>
+<li><code>tests/integration/test_client_main.py</code></li>
+<li><code>tests/system/test_auth.py</code></li>
+<li><code>tests/system/test_comm.py</code></li>
+<li><code>tests/unit/test_security.py</code></li>
+<li><code>tests/unit/test_savescreen_event.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

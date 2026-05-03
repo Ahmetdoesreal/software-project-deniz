@@ -148,6 +148,49 @@ class TransferBundleTests(unittest.TestCase):
             self.assertIn("incident.json", names)
             self.assertEqual(incident_payload["incident_id"], "incident-1")
 
+    def test_bundle_names_are_unique_within_same_second(self):
+        with _local_session_workspace("bundle-collision") as (session_uuid, client_dir, workspace_dir):
+            submission_file = workspace_dir / "answer.txt"
+            submission_file.write_text("hello", encoding="utf-8")
+            process_report = client_dir / "process_report.json"
+            process_report.write_text('{"processes": []}', encoding="utf-8")
+            incident = {
+                "incident_id": "incident/with/slashes",
+                "rule_id": "process_blacklist",
+                "summary": "Blacklisted process detected.",
+            }
+
+            submission_paths = {
+                Path(
+                    build_submission_bundle(
+                        session_uuid,
+                        str(submission_file),
+                        str(process_report),
+                        None,
+                        None,
+                        None,
+                    )
+                ).name
+                for _ in range(2)
+            }
+            incident_paths = {
+                Path(
+                    build_incident_bundle(
+                        session_uuid,
+                        incident,
+                        str(process_report),
+                        None,
+                        None,
+                        None,
+                    )
+                ).name
+                for _ in range(2)
+            }
+
+            self.assertEqual(len(submission_paths), 2)
+            self.assertEqual(len(incident_paths), 2)
+            self.assertTrue(all("/" not in name and "\\" not in name for name in incident_paths))
+
 
 if __name__ == "__main__":
     unittest.main()

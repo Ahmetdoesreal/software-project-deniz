@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coverage Matrix - May_01 Audit</title>
+  <link rel="stylesheet" href="assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="index.html">Overview</a>
+<a class="active" href="coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="risk_register.html">Risk Register</a>
+<a class="" href="fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="sequences/01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="sequences/02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="sequences/03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="sequences/04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="sequences/05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="sequences/06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Coverage Matrix</h1>
+<p>Use this as a lookup page. If you see a route, event, command, or GUI action in the code or logs, this tells you which sequence guide explains it.</p>
+<h2>HTTP Routes</h2>
+<table>
+<thead><tr>
+<th>If you see this</th>
+<th>What it does</th>
+<th>Read this</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>GET /health</code></td>
+<td>Client checks that the server is alive.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a></td>
+</tr>
+<tr>
+<td><code>POST /login</code></td>
+<td>Client exchanges login id and password for a session UUID.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a></td>
+</tr>
+<tr>
+<td><code>GET /exam/config</code></td>
+<td>Client asks for exam duration and whether exam files exist.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a></td>
+</tr>
+<tr>
+<td><code>GET /exam/files</code></td>
+<td>Client downloads the configured exam zip.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a></td>
+</tr>
+<tr>
+<td><code>GET /ws?id=&lt;uuid&gt;</code></td>
+<td>Client opens the live WebSocket connection.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a>, <a href="sequences/03_exam_timer_session.html">Exam timer and session state</a></td>
+</tr>
+<tr>
+<td><code>POST /client/artifact</code></td>
+<td>Client uploads runtime evidence: replay, process report, incident bundle.</td>
+<td><a href="sequences/04_replay_savescreen_artifacts.html">Replay, savescreen, and artifacts</a>, <a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring, incidents, and process actions</a></td>
+</tr>
+<tr>
+<td><code>POST /exam/submission</code></td>
+<td>Client uploads the final submission bundle.</td>
+<td><a href="sequences/06_submission_uploads.html">Final submission and uploads</a></td>
+</tr>
+</tbody></table>
+<h2>WebSocket Events</h2>
+<table>
+<thead><tr>
+<th>Event</th>
+<th>Direction</th>
+<th>Plain-English meaning</th>
+<th>Read this</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>welcome</code></td>
+<td>server to client</td>
+<td>Connection accepted; client can introduce itself.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>client_info</code></td>
+<td>client to server</td>
+<td>Client sends computer name.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>exam_policy</code></td>
+<td>server to client</td>
+<td>Initial monitoring and exam policy.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>policy_update</code></td>
+<td>server to client</td>
+<td>Policy changed while clients are connected.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>policy_applied</code></td>
+<td>client to server</td>
+<td>Client confirms policy apply success or failure.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>process_blacklist</code></td>
+<td>server to client</td>
+<td>Legacy/direct blacklist update.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>start_exam</code></td>
+<td>client to server</td>
+<td>Student is ready to begin.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>sync_time</code></td>
+<td>server to client</td>
+<td>Authoritative remaining time and timer state.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>session_state</code></td>
+<td>server to client</td>
+<td>Full state such as waiting, running, paused, awaiting submission.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>pause_exam</code></td>
+<td>server to client</td>
+<td>Pause this student.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>resume_exam</code></td>
+<td>server to client</td>
+<td>Resume this student.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>finish_exam</code></td>
+<td>server to client</td>
+<td>Open final submission flow.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a>, <a href="sequences/06_submission_uploads.html">Final submission</a></td>
+</tr>
+<tr>
+<td><code>exam_end</code></td>
+<td>server to client</td>
+<td>Legacy/direct exam-end signal.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>savescreen</code></td>
+<td>server to client</td>
+<td>Save recent replay evidence.</td>
+<td><a href="sequences/04_replay_savescreen_artifacts.html">Replay and savescreen</a></td>
+</tr>
+<tr>
+<td><code>get_processes</code></td>
+<td>server to client</td>
+<td>Export and upload current process list.</td>
+<td><a href="sequences/04_replay_savescreen_artifacts.html">Replay and artifacts</a></td>
+</tr>
+<tr>
+<td><code>incident_report</code></td>
+<td>client to server</td>
+<td>Client reports an incident or evidence status update.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>incident_received</code></td>
+<td>server to client</td>
+<td>Server acknowledges the incident update.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>client_monitor_event</code></td>
+<td>client to server</td>
+<td>Live monitor telemetry, mainly focused-window status.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>process_catch</code></td>
+<td>client to server</td>
+<td>Blacklisted process was detected.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>kill_process</code></td>
+<td>server to client</td>
+<td>Server asks client to terminate a PID.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>kill_process_result</code></td>
+<td>client to server</td>
+<td>Client reports whether PID termination worked.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td><code>ping</code> / <code>echo</code></td>
+<td>client to server / server to client</td>
+<td>Manual connectivity check.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>time</code></td>
+<td>server to client</td>
+<td>Heartbeat-style time broadcast.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>both</td>
+<td>Something was rejected or could not be decoded.</td>
+<td>Relevant sequence based on context.</td>
+</tr>
+</tbody></table>
+<h2>Commands And GUI Actions</h2>
+<table>
+<thead><tr>
+<th>Entry point</th>
+<th>What it means</th>
+<th>Read this</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>python -m server.main</code>, <code>server_cli.py</code></td>
+<td>Start the server.</td>
+<td><a href="sequences/01_server_startup_shutdown.html">Server startup and shutdown</a></td>
+</tr>
+<tr>
+<td><code>python -m client.main</code>, <code>client_cli.py</code></td>
+<td>Start a student client.</td>
+<td><a href="sequences/02_client_startup_ws_policy.html">Client startup</a></td>
+</tr>
+<tr>
+<td><code>/startexam</code>, GUI start all</td>
+<td>Let students start.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>/finishexam</code>, GUI finish all</td>
+<td>Move students to final submission.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a>, <a href="sequences/06_submission_uploads.html">Final submission</a></td>
+</tr>
+<tr>
+<td><code>/pauseexam</code>, <code>/resumeexam</code>, add time, forgive</td>
+<td>Change a student&#x27;s timer/session state.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td><code>/savescreen</code>, GUI savescreen</td>
+<td>Ask one or more clients to save replay evidence.</td>
+<td><a href="sequences/04_replay_savescreen_artifacts.html">Replay and savescreen</a></td>
+</tr>
+<tr>
+<td>Process decision buttons</td>
+<td>Mark known, blacklist, kill, pause, kick, ban.</td>
+<td><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring and incidents</a></td>
+</tr>
+<tr>
+<td>Client start button</td>
+<td>Student asks to begin the exam.</td>
+<td><a href="sequences/03_exam_timer_session.html">Exam timer</a></td>
+</tr>
+<tr>
+<td>Client finish button</td>
+<td>Student uploads final work.</td>
+<td><a href="sequences/06_submission_uploads.html">Final submission</a></td>
+</tr>
+</tbody></table>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

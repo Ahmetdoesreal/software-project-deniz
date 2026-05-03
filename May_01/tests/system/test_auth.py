@@ -1,8 +1,7 @@
-import os
-import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 HOST = "127.0.0.1"
@@ -75,11 +74,13 @@ def main():
     _print_result("invalid login", invalid_result)
 
     print("--- Stopping server ---")
-    server.send_signal(signal.SIGINT)
+    server.terminate()
     server.wait()
 
     print("--- Verifying data ---")
-    os.system("find data -type f")
+    for path in sorted(Path("data").rglob("*")):
+        if path.is_file():
+            print(path)
 
 
 if __name__ == "__main__":

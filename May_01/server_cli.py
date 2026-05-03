@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Manual server CLI wrapper."""
 
 import os

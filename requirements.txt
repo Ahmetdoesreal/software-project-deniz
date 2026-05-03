@@ -4,3 +4,5 @@ psutil
 
 # Protected websocket signing/encryption
 cryptography
+
+pyside6

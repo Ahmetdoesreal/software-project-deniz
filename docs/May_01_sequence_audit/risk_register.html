@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Risk Register - May_01 Audit</title>
+  <link rel="stylesheet" href="assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="index.html">Overview</a>
+<a class="" href="coverage_matrix.html">Coverage Matrix</a>
+<a class="active" href="risk_register.html">Risk Register</a>
+<a class="" href="fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="sequences/01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="sequences/02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="sequences/03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="sequences/04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="sequences/05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="sequences/06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Risk Register</h1>
+<p>This page describes the main ways the system can fail under pressure. Each item is written as a practical story: what you would see, why it happens, and what protects the system now.</p>
+<h2>R01: Final Submission Waits Behind Savescreens</h2>
+<p><strong>Severity:</strong> High</p>
+<p><strong>What you would see:</strong> A student clicks finish, but the client appears slow while saving the final replay.</p>
+<p><strong>Why it happens:</strong> Replay saving uses FFmpeg. FFmpeg should not be called in parallel for the same recorder, so saves are queued. Before the fix, optional admin savescreens and final submission replay saves used the same queue priority.</p>
+<p><strong>Overload trigger:</strong> Repeated <code>/savescreen all</code>, repeated GUI savescreen clicks, or shutdown savescreen requests while FFmpeg is slow.</p>
+<p><strong>Protection now:</strong> Replay saves are prioritized. Final submission goes before incident evidence, and both go before optional requested saves.</p>
+<h2>R02: Too Many Optional Savescreens Build A Backlog</h2>
+<p><strong>Severity:</strong> High</p>
+<p><strong>What you would see:</strong> Many savescreen requests are accepted, but the client spends a long time catching up.</p>
+<p><strong>Why it happens:</strong> Optional saves used to have no queue limit.</p>
+<p><strong>Overload trigger:</strong> Large class plus repeated admin savescreen requests.</p>
+<p><strong>Protection now:</strong> Optional saves are bounded. If the optional queue is full, the client drops the extra optional save and returns <code>None</code>.</p>
+<h2>R03: Incident Response Waits For Evidence Upload</h2>
+<p><strong>Severity:</strong> High</p>
+<p><strong>What you would see:</strong> A violation happens, but server-side pause or process action arrives late.</p>
+<p><strong>Why it happens:</strong> The client used to wait for evidence creation and upload before sending the incident report.</p>
+<p><strong>Overload trigger:</strong> FFmpeg timeout, replay queue backlog, slow LAN upload, or large evidence bundle.</p>
+<p><strong>Protection now:</strong> The client reports the incident immediately with <code>evidence_status=&quot;pending&quot;</code>. Evidence uploads in the background and sends a later update.</p>
+<h2>R04: Evidence Update Replaces Active Incident</h2>
+<p><strong>Severity:</strong> Medium</p>
+<p><strong>What you would see:</strong> The server has evidence for an incident, but the active incident status may no longer look like the original opened violation.</p>
+<p><strong>Why it happens:</strong> The server treated every non-resolved incident status as the active incident state.</p>
+<p><strong>Protection now:</strong> Evidence-only updates merge artifact fields into the active opened incident instead of replacing it.</p>
+<h2>R05: Shutdown Does Not Wait Long Enough</h2>
+<p><strong>Severity:</strong> High</p>
+<p><strong>What you would see:</strong> Shutdown asks clients for process reports and screen saves, but replay artifacts are missing.</p>
+<p><strong>Why it happens:</strong> The server only waited 2 seconds, while FFmpeg merge can take much longer.</p>
+<p><strong>Protection now:</strong> Shutdown waits 60 seconds by default and can be configured with <code>--shutdown-grace-seconds</code>.</p>
+<h2>R06: Bundle Names Collide</h2>
+<p><strong>Severity:</strong> Medium</p>
+<p><strong>What you would see:</strong> A repeated submission or incident bundle overwrites or reuses a filename.</p>
+<p><strong>Why it happens:</strong> Bundle names used second-level timestamps.</p>
+<p><strong>Overload trigger:</strong> Double click, retry, incident burst, or fast automated test.</p>
+<p><strong>Protection now:</strong> Bundle names include a <code>time_ns()</code> uniqueness token.</p>
+<h2>R07: Incident ID Creates Awkward Filename</h2>
+<p><strong>Severity:</strong> Medium</p>
+<p><strong>What you would see:</strong> An incident bundle path contains strange separators or unsafe filename characters.</p>
+<p><strong>Why it happens:</strong> Incident IDs were used directly in filenames.</p>
+<p><strong>Protection now:</strong> Incident IDs are sanitized before entering bundle filenames.</p>
+<h2>R08: Large Uploads Still Depend On Network Quality</h2>
+<p><strong>Severity:</strong> Medium</p>
+<p><strong>What you would see:</strong> Upload retries happen, then final failure on very slow or unstable Wi-Fi.</p>
+<p><strong>Why it happens:</strong> Uploads have a timeout and retry limit, even though the timeout scales with file size.</p>
+<p><strong>Protection now:</strong> Uploads retry 3 times and use an adaptive timeout up to 3600 seconds. This is still an operational risk for very large packages.</p>
+<h2>R09: Some WebSocket Events Are Not Session-Secured</h2>
+<p><strong>Severity:</strong> Low</p>
+<p><strong>What you would see:</strong> No normal user-visible symptom. This is a hardening concern.</p>
+<p><strong>Why it happens:</strong> The security envelope covers policy, session state, incident, pause/resume, and kill events, but not every event.</p>
+<p><strong>Recommended follow-up:</strong> Consider securing <code>savescreen</code>, <code>get_processes</code>, <code>finish_exam</code>, and <code>process_blacklist</code>.</p>
+<h2>R10: Monitor Logs Can Grow During Long Sessions</h2>
+<p><strong>Severity:</strong> Low</p>
+<p><strong>What you would see:</strong> Client data folders get large after long sessions.</p>
+<p><strong>Why it happens:</strong> Process, focus, hardware, and exam-state logs append JSONL records without rotation.</p>
+<p><strong>Current guardrails:</strong> Full snapshots are periodic, and focus status sent to the server is throttled.</p>
+<p><strong>Recommended follow-up:</strong> Add max-size cleanup if practice sessions or long exams become common.</p>
+<h2>Test Anchors</h2>
+<ul>
+<li>Replay queue behavior: <code>May_01/tests/unit/test_replay_save_queue.py</code></li>
+<li>Replay recorder and FFmpeg fallback: <code>May_01/tests/unit/test_replay_recorder.py</code></li>
+<li>Immediate incident report and background evidence: <code>May_01/tests/unit/test_client_incident_reporting.py</code></li>
+<li>Server evidence update behavior: <code>May_01/tests/unit/test_server_handlers.py</code></li>
+<li>Unique bundle names: <code>May_01/tests/unit/test_transfers.py</code></li>
+<li>Shutdown grace: <code>May_01/tests/unit/test_server_app.py</code>, <code>May_01/tests/unit/test_server_shutdown.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

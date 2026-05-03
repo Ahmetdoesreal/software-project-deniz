@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import platform
 
 from common import protocol
 
@@ -72,10 +71,7 @@ class HardwareMonitor:
 
     def _current_snapshot(self) -> dict:
         snapshot = collect_hardware_snapshot()
-        system_name = platform.system()
-        if system_name == "Windows":
-            return enrich_snapshot_for_windows(snapshot)
-        return snapshot
+        return enrich_snapshot_for_windows(snapshot)
 
     def _full_snapshot_entry(self, snapshot: dict, *, entry_type: str) -> dict:
         return {

@@ -1,10 +1,8 @@
 """
 replay_recorder.py -- Screen recording module (runs on the client).
 
-Continuously records the screen into rolling segments using FFmpeg.
+Continuously records the Windows desktop into rolling segments using FFmpeg.
 When save_replay() is called, it stitches the last 60 seconds into a file.
-
-Supports Windows (gdigrab) and Linux (x11grab).
 
 Usage:
     recorder = ReplayRecorder()
@@ -16,12 +14,13 @@ Usage:
 import os
 import shutil
 import stat
+import struct
 import subprocess
-import sys
 import time
 import uuid
 
 
+FFMPEG_MERGE_TIMEOUT_SECONDS = 30
 FFMPEG_QUIT_TIMEOUT_SECONDS = 1.5
 FFMPEG_TERMINATE_TIMEOUT_SECONDS = 2.0
 FFMPEG_KILL_TIMEOUT_SECONDS = 2.0
@@ -53,57 +52,8 @@ class ReplayRecorder:
         safe = safe.strip("._")
         return safe[:120] or uuid.uuid4().hex
 
-    @staticmethod
-    def _get_linux_screen_size() -> str:
-        """Query X11 display resolution, fallback to 1920x1080."""
-        try:
-            output = subprocess.check_output(
-                ["xdpyinfo"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            for line in output.splitlines():
-                if "dimensions:" in line:
-                    return line.split()[1]
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass
-        return "1920x1080"
-
     def _build_capture_args(self) -> list[str]:
-        platform_name = sys.platform
-
-        if platform_name == "win32":
-            return ["-f", "gdigrab", "-framerate", "24", "-i", "desktop"]
-
-        if platform_name == "darwin":
-            return [
-                "-f",
-                "avfoundation",
-                "-framerate",
-                "30",
-                "-capture_cursor",
-                "1",
-                "-pix_fmt",
-                "yuv420p",
-                "-i",
-                "Capture screen 0:none",
-            ]
-
-        if platform_name.startswith("linux"):
-            screen_size = self._get_linux_screen_size()
-            display = os.environ.get("DISPLAY", ":0.0")
-            return [
-                "-f",
-                "x11grab",
-                "-framerate",
-                "24",
-                "-video_size",
-                screen_size,
-                "-i",
-                display,
-            ]
-
-        raise RuntimeError(f"Unsupported platform for screen capture: {platform_name}")
+        return ["-f", "gdigrab", "-framerate", "24", "-i", "desktop"]
 
     def start(self):
         """Start FFmpeg screen recording in the background."""
@@ -211,6 +161,10 @@ class ReplayRecorder:
                 return None
 
             output_file = os.path.join(self.output_dir, f"replay_{safe_request_id}.mp4")
+            temp_output_file = os.path.join(request_dir, f"replay_{safe_request_id}.partial.mp4")
+            fallback_output_file = os.path.join(self.output_dir, f"replay_{safe_request_id}.ts")
+            fallback_temp_file = os.path.join(request_dir, f"replay_{safe_request_id}.partial.ts")
+            merge_log_path = os.path.join(self.output_dir, f"replay_{safe_request_id}.ffmpeg.log")
             concat_list_path = os.path.join(request_dir, "concat_list.txt")
 
             with open(concat_list_path, "w") as f:
@@ -228,25 +182,87 @@ class ReplayRecorder:
                 concat_list_path,
                 "-c",
                 "copy",
-                output_file,
+                temp_output_file,
             ]
 
-            result = subprocess.run(
-                merge_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=60,
-            )
+            try:
+                with open(merge_log_path, "w", encoding="utf-8", errors="replace") as merge_log:
+                    result = subprocess.run(
+                        merge_cmd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=merge_log,
+                        timeout=FFMPEG_MERGE_TIMEOUT_SECONDS,
+                    )
+            except subprocess.TimeoutExpired:
+                self._remove_file(temp_output_file)
+                print("[RECORDER] ERROR: FFmpeg timed out while stitching replay.")
+                return self._save_ts_fallback(copied_segments, fallback_temp_file, fallback_output_file)
+
+            if result.returncode != 0:
+                self._remove_file(temp_output_file)
+                print("[RECORDER] ERROR: FFmpeg failed while stitching replay.")
+                return self._save_ts_fallback(copied_segments, fallback_temp_file, fallback_output_file)
+
+            if not self._mp4_has_moov(temp_output_file):
+                self._remove_file(temp_output_file)
+                print("[RECORDER] ERROR: FFmpeg wrote an incomplete MP4 without a moov atom.")
+                return self._save_ts_fallback(copied_segments, fallback_temp_file, fallback_output_file)
+
+            os.replace(temp_output_file, output_file)
+            self._remove_file(merge_log_path)
         except subprocess.TimeoutExpired:
             print("[RECORDER] ERROR: FFmpeg timed out while stitching replay.")
             return None
         finally:
             self._remove_request_dir(request_dir)
-        if result.returncode != 0:
-            print("[RECORDER] ERROR: FFmpeg failed while stitching replay.")
-            return None
         print(f"[RECORDER] Replay saved to: {output_file}")
         return output_file
+
+    def _save_ts_fallback(self, copied_segments: list[str], temp_output_file: str, output_file: str) -> str | None:
+        try:
+            with open(temp_output_file, "wb") as output:
+                for segment in copied_segments:
+                    with open(segment, "rb") as source:
+                        shutil.copyfileobj(source, output)
+            os.replace(temp_output_file, output_file)
+        except OSError as e:
+            self._remove_file(temp_output_file)
+            print(f"[RECORDER] ERROR: Could not write fallback TS replay: {e}")
+            return None
+
+        print(f"[RECORDER] Replay saved as MPEG-TS fallback to: {output_file}")
+        return output_file
+
+    @staticmethod
+    def _mp4_has_moov(path: str) -> bool:
+        try:
+            file_size = os.path.getsize(path)
+            with open(path, "rb") as mp4_file:
+                position = 0
+                while position + 8 <= file_size:
+                    header = mp4_file.read(8)
+                    if len(header) < 8:
+                        return False
+                    atom_size, atom_type = struct.unpack(">I4s", header)
+                    header_size = 8
+                    if atom_size == 1:
+                        extended = mp4_file.read(8)
+                        if len(extended) < 8:
+                            return False
+                        atom_size = struct.unpack(">Q", extended)[0]
+                        header_size = 16
+                    elif atom_size == 0:
+                        atom_size = file_size - position
+                    if atom_type == b"moov":
+                        return True
+                    if atom_size < header_size:
+                        return False
+                    position += atom_size
+                    mp4_file.seek(position)
+        except OSError:
+            return False
+        return False
 
     def _copy_segments_to_request_dir(self, segments: list[str], request_dir: str) -> list[str]:
         copied_segments = []
@@ -350,6 +366,15 @@ class ReplayRecorder:
     def _remove_request_dir(self, request_dir: str):
         if os.path.isdir(request_dir):
             shutil.rmtree(request_dir, onerror=self._handle_rmtree_error)
+
+    @staticmethod
+    def _remove_file(path: str):
+        try:
+            if path and os.path.isfile(path):
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                os.remove(path)
+        except OSError as e:
+            print(f"[RECORDER] Error deleting partial replay {path}: {e}")
 
     @property
     def is_running(self):

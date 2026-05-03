@@ -27,6 +27,8 @@ def validate_args(args):
         errors.append(f"--max-submission-mb must be > 0, got {args.max_submission_mb}")
     if args.max_artifact_mb <= 0:
         errors.append(f"--max-artifact-mb must be > 0, got {args.max_artifact_mb}")
+    if args.shutdown_grace_seconds <= 0:
+        errors.append(f"--shutdown-grace-seconds must be > 0, got {args.shutdown_grace_seconds}")
     if errors:
         for e in errors:
             print(f"[ERROR] {e}")
@@ -64,6 +66,12 @@ def main():
         default=2048,
         type=int,
         help="Maximum runtime artifact upload size in MB (default: 2048)",
+    )
+    parser.add_argument(
+        "--shutdown-grace-seconds",
+        default=60.0,
+        type=float,
+        help="Seconds to keep the server alive for client shutdown reports/replays (default: 60)",
     )
     parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
     parser.add_argument("--reset", action="store_true", help="Reset the server state (clear used IDs/timers) on startup")

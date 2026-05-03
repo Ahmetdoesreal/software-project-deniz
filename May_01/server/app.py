@@ -5,7 +5,7 @@ from aiohttp.web_runner import GracefulExit
 from common.discovery import ServerAnnouncer, _candidate_ipv4_hosts, _normalize_ipv4, check_duplicate_server
 from common.runtime_logging import install_asyncio_exception_logging
 from .state import state
-from .shutdown import ServerShutdownRoutine
+from .shutdown import SHUTDOWN_GRACE_SECONDS, ServerShutdownRoutine
 from .handlers import (
     client_artifact_upload,
     health,
@@ -32,6 +32,10 @@ def _server_identity_hosts(bind_host: str) -> set[str]:
 
 def _is_same_server_instance(app: web.Application, host: str, port: int) -> bool:
     return port == app["port"] and host in _server_identity_hosts(app["host"])
+
+
+def _shutdown_grace_seconds(args) -> float:
+    return float(getattr(args, "shutdown_grace_seconds", SHUTDOWN_GRACE_SECONDS))
 
 
 async def duplicate_server_guard(app: web.Application):
@@ -105,7 +109,7 @@ def create_app(args) -> web.Application:
     app["settings_state"] = state
     app["exam_phase"] = "waiting"
     app["exam_start_enabled"] = False
-    app["shutdown_grace_seconds"] = 2.0
+    app["shutdown_grace_seconds"] = _shutdown_grace_seconds(args)
     app["max_submission_bytes"] = int(args.max_submission_mb) * 1024 * 1024
     app["max_artifact_bytes"] = int(args.max_artifact_mb) * 1024 * 1024
     app["shutdown_routine"] = ServerShutdownRoutine(app)

@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from client.custommodules.process_monitor.core import ProcessMonitor
+from client.custommodules.process_monitor.core import DIFF_INTERVAL_SECONDS, ProcessMonitor
 
 
 class ProcessMonitorTests(unittest.TestCase):
@@ -47,6 +48,22 @@ class ProcessMonitorTests(unittest.TestCase):
 
         self.assertEqual(len(matches), 1)
         self.assertIsNone(matches[0]["username"])
+
+    def test_emit_current_snapshot_runs_detection_without_waiting_for_loop_tick(self):
+        observed = []
+        monitor = ProcessMonitor(
+            ".",
+            poll_callback=lambda processes, version: observed.append((processes, version)),
+        )
+        monitor.blacklist_version = "policy-v1"
+        with patch.object(monitor, "_get_current_processes", return_value={(2222, "unknown.exe")}):
+            processes = monitor.emit_current_snapshot()
+
+        self.assertEqual(processes, {(2222, "unknown.exe")})
+        self.assertEqual(observed, [({(2222, "unknown.exe")}, "policy-v1")])
+
+    def test_process_poll_interval_is_fast_enough_for_unknown_processes(self):
+        self.assertLessEqual(DIFF_INTERVAL_SECONDS, 5)
 
 
 if __name__ == "__main__":

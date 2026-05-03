@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web, WSMsgType
 
 from common import protocol, events, security
+from common.process_definitions import PROCESS_DEFINITIONS_RULE_ID, normalize_actions
 from .state import state
 from .submissions import build_artifact_path, build_submission_path, safe_relative_path
 from . import session_state
@@ -111,6 +112,98 @@ def _sync_time_payload(request: web.Request, user: dict, *, reason: str = "") ->
         pause_source=pause_source,
         reason=reason or _session_reason(user),
     )
+
+
+def _configured_process_actions(incident: dict) -> dict:
+    if str(incident.get("rule_id", "") or "") != PROCESS_DEFINITIONS_RULE_ID:
+        return normalize_actions({})
+    actions = incident.get("configured_actions")
+    if not isinstance(actions, dict):
+        matched = incident.get("matched_definition", {})
+        actions = matched.get("actions", {}) if isinstance(matched, dict) else {}
+    return normalize_actions(actions)
+
+
+async def _apply_configured_process_actions(
+    ws: web.WebSocketResponse,
+    request: web.Request,
+    client_id: str,
+    login_id: str,
+    user: dict,
+    incident: dict,
+) -> list[dict]:
+    actions = _configured_process_actions(incident)
+    if not any(actions.values()):
+        return []
+
+    results: list[dict] = []
+    reason = f"Process policy decision: {incident.get('process_name') or incident.get('rule_id')}"
+    pid = int(incident.get("pid", 0) or 0)
+    process_name = str(incident.get("process_name", "") or "")
+
+    if actions.get("kill_pid"):
+        if pid > 0:
+            await ws.send_str(
+                _protect_payload(
+                    client_id,
+                    events.kill_process(
+                        pid,
+                        incident_id=str(incident.get("incident_id", "") or ""),
+                        process_name=process_name,
+                        reason=reason,
+                    ),
+                )
+            )
+            results.append({"action": "kill_pid", "state": "applied", "reason": "requested"})
+        else:
+            results.append({"action": "kill_pid", "state": "not_possible", "reason": "no live PID"})
+
+    if actions.get("pause_exam"):
+        if session_state.derive_state(user) == session_state.RUNNING:
+            remaining = _session_remaining_seconds(request, user)
+            session_state.set_state(
+                user,
+                session_state.ADMIN_PAUSED,
+                reason=reason,
+                remaining_seconds=remaining,
+            )
+            await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user, reason=reason)))
+            await ws.send_str(
+                _protect_payload(
+                    client_id,
+                    events.pause_exam(remaining, source="admin", reason=reason),
+                )
+            )
+            results.append({"action": "pause_exam", "state": "applied", "reason": "paused"})
+        else:
+            results.append({"action": "pause_exam", "state": "not_possible", "reason": "exam not running"})
+
+    if actions.get("ban"):
+        if session_state.derive_state(user) == session_state.BANNED or user.get("banned"):
+            results.append({"action": "ban", "state": "applied", "reason": "already banned"})
+        else:
+            session_state.set_state(user, session_state.BANNED, reason=reason)
+            user["kick_count"] = int(user.get("kick_count", 0)) + 1
+            user["last_action"] = "Process policy ban"
+            results.append({"action": "ban", "state": "applied", "reason": "banned"})
+
+    if actions.get("kick") and not actions.get("ban"):
+        user["kick_count"] = int(user.get("kick_count", 0)) + 1
+        user["last_action"] = "Process policy kick"
+        results.append({"action": "kick", "state": "applied", "reason": "disconnecting"})
+
+    if results:
+        state.save_users()
+
+    if actions.get("ban") or actions.get("kick"):
+        try:
+            await ws.close(message=(reason if actions.get("ban") else "kicked by process policy").encode("utf-8"))
+        except Exception:
+            pass
+        state.clients.pop(client_id, None)
+
+    print(f"[PROCESS] Applied configured process action(s) for {login_id}: {results}")
+    return results
 
 
 def _client_ip(request: web.Request) -> str:
@@ -436,10 +529,16 @@ async def _handle_incident_report_event(
     _update_user_incident_summary(user, incident)
     state.save_users()
 
+    if status == "opened":
+        action_results = await _apply_configured_process_actions(ws, request, client_id, login_id, user, incident)
+        if action_results:
+            incident["process_auto_action_results"] = action_results
+            state.save_incidents()
+
     summary = str(incident.get("summary", "") or rule_id)
     print(f"[INCIDENT] {login_id} ({client_id}) {status} {rule_id}: {summary}")
     _relay_text_to_gui(client_id, f"[INCIDENT] {status} {rule_id}: {summary}")
-    if should_violation_pause:
+    if should_violation_pause and not getattr(ws, "closed", False):
         remaining = _session_remaining_seconds(request, user)
         await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))
         await ws.send_str(
@@ -449,12 +548,13 @@ async def _handle_incident_report_event(
                 reason=str(incident.get("summary", "") or rule_id),
             ))
         )
-    await ws.send_str(
-        _protect_payload(client_id, events.incident_received(
-            incident_id,
-            artifact_path=str(incident.get("artifact_path", "") or ""),
-        ))
-    )
+    if not getattr(ws, "closed", False):
+        await ws.send_str(
+            _protect_payload(client_id, events.incident_received(
+                incident_id,
+                artifact_path=str(incident.get("artifact_path", "") or ""),
+            ))
+        )
 
 
 async def _handle_kill_process_result_event(

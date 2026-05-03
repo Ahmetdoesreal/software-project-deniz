@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 setup.py -- Windows setup script.
 
@@ -10,7 +9,6 @@ Run:  python setup.py
 """
 
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -55,11 +53,13 @@ def detect_package_manager():
 
 def check_windows():
     """Verify this setup script is running on the supported OS."""
-    system = platform.system()
-    if system == "Windows":
+    try:
+        sys.getwindowsversion()
         print(f"  {OK} Windows target detected")
         return True
-    print(f"  {FAIL} Unsupported OS: {system}. This delivery targets Windows only.")
+    except AttributeError:
+        pass
+    print(f"  {FAIL} This setup script must be run on Windows.")
     return False
 
 
@@ -149,9 +149,12 @@ def check_ffmpeg():
 
 
 def main():
-    system = platform.system()
-    arch = platform.machine()
-    print(f"\n  Setup - Windows target ({system} {arch})\n")
+    arch = (
+        os.environ.get("PROCESSOR_ARCHITEW6432")
+        or os.environ.get("PROCESSOR_ARCHITECTURE")
+        or "unknown-architecture"
+    )
+    print(f"\n  Setup - Windows target ({arch})\n")
 
     print("  Operating System")
     windows_ok = check_windows()

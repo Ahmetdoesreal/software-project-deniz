@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>May_01 Sequence Audit - May_01 Audit</title>
+  <link rel="stylesheet" href="assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="active" href="index.html">Overview</a>
+<a class="" href="coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="risk_register.html">Risk Register</a>
+<a class="" href="fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="sequences/01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="sequences/02_client_startup_ws_policy.html">Client Startup</a>
+<a class="" href="sequences/03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="sequences/04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="sequences/05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="sequences/06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>May_01 Sequence Audit</h1>
+<p>This folder explains how the <code>May_01</code> version of the project behaves while an exam is running.</p>
+<p>The goal is simple: if something breaks during a live exam, you should be able to open these docs and quickly answer:</p>
+<ul>
+<li>What was supposed to happen?</li>
+<li>Which client/server files are involved?</li>
+<li>What files or uploads should have been produced?</li>
+<li>What overload or edge case might explain the failure?</li>
+<li>Which tests cover the behavior?</li>
+</ul>
+<h2>Start Here</h2>
+<ul>
+<li><a href="coverage_matrix.html">Coverage Matrix</a>: a lookup table for routes, events, commands, and their sequence docs.</li>
+<li><a href="risk_register.html">Risk Register</a>: the bugs and overload risks found during the audit, written as practical failure stories.</li>
+<li><a href="fix_plan.html">Fix Plan</a>: what was fixed, what was tested, and what remains worth improving later.</li>
+</ul>
+<h2>Sequence Guides</h2>
+<p>Read these like short walkthroughs of the system:</p>
+<ul>
+<li><a href="sequences/01_server_startup_shutdown.html">Server startup and shutdown</a></li>
+</ul>
+<p>Explains server boot, duplicate-server checks, GUI launch, and the shutdown flush that asks clients for final evidence.</p>
+<ul>
+<li><a href="sequences/02_client_startup_ws_policy.html">Client startup, WebSocket, and policy sync</a></li>
+</ul>
+<p>Explains discovery, login, exam-file download, recorder startup, WebSocket connection, and first policy sync.</p>
+<ul>
+<li><a href="sequences/03_exam_timer_session.html">Exam timer and session state</a></li>
+</ul>
+<p>Explains start, pause, resume, add-time, finish, disconnect, and reconnect.</p>
+<ul>
+<li><a href="sequences/04_replay_savescreen_artifacts.html">Replay, savescreen, and artifacts</a></li>
+</ul>
+<p>Explains <code>/savescreen</code>, FFmpeg replay saving, fallback files, process reports, and artifact upload.</p>
+<ul>
+<li><a href="sequences/05_monitoring_incidents_process_actions.html">Monitoring, incidents, and process actions</a></li>
+</ul>
+<p>Explains process/focus/hardware monitoring, incident evidence, auto-pause, kill PID, kick, ban, and policy decisions.</p>
+<ul>
+<li><a href="sequences/06_submission_uploads.html">Final submission and uploads</a></li>
+</ul>
+<p>Explains final packaging, checksums, multipart upload, server validation, and client exit.</p>
+<h2>What Changed During This Audit</h2>
+<p>Four overload-sensitive areas were hardened:</p>
+<ul>
+<li>Replay saves now have priorities. Final submission gets first chance, then incident evidence, then optional admin-requested saves.</li>
+<li>Repeated <code>/savescreen</code> requests no longer create an unlimited backlog.</li>
+<li>Incidents are reported immediately. Evidence uploads happen in the background and send a follow-up status.</li>
+<li>Server shutdown now waits long enough for realistic replay saves and uploads by default.</li>
+<li>Submission and incident bundles now use unique names even when created in the same second.</li>
+</ul>
+<h2>Verification</h2>
+<p>After the changes:</p>
+<ul>
+<li>Focused compile check: passed.</li>
+<li>Focused touched-path tests: <code>30 tests OK</code>.</li>
+<li>Full <code>May_01</code> test discovery: <code>101 tests OK</code>.</li>
+</ul>
+<p>Before these changes, the baseline full suite was also passing with <code>93 tests OK</code>; the extra tests are regression coverage for the new hardening.</p>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

@@ -2,7 +2,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 
 TEXT_EXTENSIONS = {
@@ -204,7 +204,7 @@ def _build_tree(members: list[ArchiveMember]) -> list[PreviewEntry]:
     node_map: dict[str, PreviewEntry] = {}
 
     for member in members:
-        normalized_parts = [part for part in PurePosixPath(member.path).parts if part not in {"", "."}]
+        normalized_parts = _archive_path_parts(member.path)
         if not normalized_parts:
             continue
 
@@ -239,6 +239,11 @@ def _sort_entries(entries: list[PreviewEntry]):
     entries.sort(key=lambda entry: (not entry.is_dir, entry.name.lower()))
     for entry in entries:
         _sort_entries(entry.children)
+
+
+def _archive_path_parts(path: str) -> list[str]:
+    normalized = str(path or "").replace("\\", "/")
+    return [part for part in normalized.split("/") if part not in {"", "."}]
 
 
 def _format_timestamp(timestamp: float | int | None) -> str:

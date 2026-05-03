@@ -1,0 +1,101 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #f0f4f7;
+  --text: #1e2933;
+  --muted: #5e6b76;
+  --line: #d9e1e8;
+  --accent: #116466;
+  --accent-strong: #0b4f51;
+  --warn: #9a5b00;
+  --danger: #a23535;
+  --code-bg: #17212b;
+  --code-text: #f3f7fa;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  line-height: 1.6;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { color: var(--accent-strong); }
+.layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
+.sidebar {
+  background: #17212b;
+  color: #e9f0f4;
+  padding: 28px 22px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: auto;
+}
+.sidebar h2 { font-size: 16px; margin: 0 0 18px; letter-spacing: 0; }
+.sidebar a {
+  color: #d7e7ea;
+  display: block;
+  padding: 7px 9px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 14px;
+}
+.sidebar a:hover, .sidebar a.active { background: rgba(255,255,255,0.12); color: #fff; }
+.sidebar .group { margin: 18px 0 7px; color: #9fb1bf; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.content-wrap { padding: 36px; }
+.content {
+  max-width: 1040px;
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 38px 44px;
+  box-shadow: 0 10px 30px rgba(20, 36, 50, 0.06);
+}
+h1 { margin: 0 0 18px; font-size: 34px; line-height: 1.15; letter-spacing: 0; }
+h2 { margin: 34px 0 12px; font-size: 24px; border-top: 1px solid var(--line); padding-top: 24px; letter-spacing: 0; }
+h3 { margin: 24px 0 8px; font-size: 18px; letter-spacing: 0; }
+p { margin: 12px 0; }
+ul, ol { padding-left: 24px; }
+li { margin: 5px 0; }
+code {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 8px;
+  padding: 16px;
+  overflow: auto;
+}
+pre code { background: transparent; border: 0; color: inherit; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14px; }
+th, td { border: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
+th { background: var(--surface-muted); text-align: left; }
+blockquote { border-left: 4px solid var(--accent); margin: 16px 0; padding: 8px 16px; background: #edf7f5; color: var(--muted); }
+.doc-note {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.footer {
+  max-width: 1040px;
+  margin: 16px auto 0;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 4px;
+}
+@media (max-width: 860px) {
+  .layout { display: block; }
+  .sidebar { position: static; height: auto; }
+  .content-wrap { padding: 18px; }
+  .content { padding: 26px 22px; }
+  h1 { font-size: 28px; }
+  table { display: block; overflow-x: auto; }
+}

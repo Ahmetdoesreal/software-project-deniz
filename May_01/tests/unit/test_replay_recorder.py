@@ -1,5 +1,6 @@
 import shutil
 import stat
+import struct
 import subprocess
 import unittest
 from pathlib import Path
@@ -69,12 +70,20 @@ class ReplayRecorderSaveTests(unittest.TestCase):
         playlist = ["#EXTM3U", *playlist_entries]
         (cache_dir / "replay.m3u8").write_text("\n".join(playlist), encoding="utf-8")
 
+    def _write_minimal_mp4(self, path: Path):
+        path.write_bytes(
+            struct.pack(">I4s", 16, b"ftyp")
+            + b"isom0000"
+            + struct.pack(">I4s", 8, b"moov")
+        )
+
     def test_save_replay_merges_from_copied_request_folder(self):
         self._write_cache(["cache_000.ts", "cache_001.ts"])
         observed = {}
 
         def fake_run(cmd, **_kwargs):
             concat_path = Path(cmd[cmd.index("-i") + 1])
+            self._write_minimal_mp4(Path(cmd[-1]))
             copied_segments = sorted(concat_path.parent.glob("*.ts"))
             observed["concat_path"] = concat_path
             observed["concat_text"] = concat_path.read_text(encoding="utf-8")
@@ -104,7 +113,9 @@ class ReplayRecorderSaveTests(unittest.TestCase):
         ):
             replay_path = self.recorder.save_replay("request-fail")
 
-        self.assertIsNone(replay_path)
+        self.assertEqual(Path(replay_path).name, "replay_request-fail.ts")
+        self.assertTrue(Path(replay_path).exists())
+        self.assertFalse((Path(self.recorder.output_dir) / "replay_request-fail.mp4").exists())
         self.assertFalse((Path(self.recorder.cache_dir) / "concat_list.txt").exists())
         self.assertFalse((Path(self.recorder.requests_dir) / "request-fail").exists())
 
@@ -117,6 +128,7 @@ class ReplayRecorderSaveTests(unittest.TestCase):
 
         def fake_run(cmd, **_kwargs):
             concat_path = Path(cmd[cmd.index("-i") + 1])
+            self._write_minimal_mp4(Path(cmd[-1]))
             observed["concat_text"] = concat_path.read_text(encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0)
 
@@ -127,6 +139,35 @@ class ReplayRecorderSaveTests(unittest.TestCase):
         self.assertIn("000_cache_000.ts", observed["concat_text"])
         self.assertNotIn("cache_missing.ts", observed["concat_text"])
         self.assertFalse((Path(self.recorder.requests_dir) / "request-skip").exists())
+
+    def test_save_replay_timeout_removes_partial_mp4_and_returns_ts_fallback(self):
+        self._write_cache(["cache_000.ts", "cache_001.ts"])
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"partial mp4 without moov")
+            raise subprocess.TimeoutExpired(cmd, timeout=30)
+
+        with patch("client.custommodules.replay_recorder.core.subprocess.run", side_effect=fake_run):
+            replay_path = self.recorder.save_replay("request-timeout")
+
+        replay_path = Path(replay_path)
+        self.assertEqual(replay_path.name, "replay_request-timeout.ts")
+        self.assertEqual(replay_path.read_bytes(), b"segment:cache_000.tssegment:cache_001.ts")
+        self.assertFalse((Path(self.recorder.output_dir) / "replay_request-timeout.mp4").exists())
+        self.assertFalse((Path(self.recorder.requests_dir) / "request-timeout").exists())
+
+    def test_save_replay_incomplete_mp4_returns_ts_fallback(self):
+        self._write_cache(["cache_000.ts"])
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"ftyp and mdat only")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch("client.custommodules.replay_recorder.core.subprocess.run", side_effect=fake_run):
+            replay_path = self.recorder.save_replay("request-no-moov")
+
+        self.assertEqual(Path(replay_path).name, "replay_request-no-moov.ts")
+        self.assertFalse((Path(self.recorder.output_dir) / "replay_request-no-moov.mp4").exists())
 
     def test_stop_requests_ffmpeg_quit_before_terminating(self):
         fake_process = _FakeFfmpegProcess()

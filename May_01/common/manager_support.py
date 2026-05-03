@@ -1,5 +1,4 @@
 import os
-import signal
 import subprocess
 import threading
 import tkinter as tk
@@ -33,17 +32,7 @@ def install_close_guard(
     window.protocol("WM_DELETE_WINDOW", handler)
 
     bind = window.bind_all if bind_all else window.bind
-    for sequence in ("<Alt-F4>", "<Command-w>", "<Command-W>"):
-        bind(sequence, lambda event, _handler=handler: _break_and_handle(event, _handler), add="+")
-
-    if include_quit_shortcuts:
-        for sequence in ("<Command-q>", "<Command-Q>"):
-            bind(sequence, lambda event, _handler=handler: _break_and_handle(event, _handler), add="+")
-
-        try:
-            window.createcommand("tk::mac::Quit", handler)
-        except Exception:
-            pass
+    bind("<Alt-F4>", lambda event, _handler=handler: _break_and_handle(event, _handler), add="+")
 
 
 def build_session_log_path(log_dir: Path, prefix: str) -> Path:
@@ -82,7 +71,7 @@ class ManagedProcessSession:
             launch_env.update(env)
         launch_env["PYTHONUNBUFFERED"] = "1"
 
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.process = subprocess.Popen(
             cmd,
             cwd=cwd,
@@ -180,10 +169,7 @@ class ManagedProcessSession:
 
         self._write_log_text(f"[MANAGER] Stop requested for {self.session_name}.\n")
         try:
-            if os.name == "nt":
-                self.process.terminate()
-            else:
-                self.process.send_signal(signal.SIGINT)
+            self.process.terminate()
             self.process.wait(timeout=timeout)
             return True
         except subprocess.TimeoutExpired:

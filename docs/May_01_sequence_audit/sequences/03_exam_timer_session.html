@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exam Timer And Session State - May_01 Audit</title>
+  <link rel="stylesheet" href="../assets/audit.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Audit navigation">
+<h2>May_01 Audit</h2>
+<div class="group">Main Docs</div>
+<a class="" href="../index.html">Overview</a>
+<a class="" href="../coverage_matrix.html">Coverage Matrix</a>
+<a class="" href="../risk_register.html">Risk Register</a>
+<a class="" href="../fix_plan.html">Fix Plan</a>
+<div class="group">Sequences</div>
+<a class="" href="01_server_startup_shutdown.html">Server Startup</a>
+<a class="" href="02_client_startup_ws_policy.html">Client Startup</a>
+<a class="active" href="03_exam_timer_session.html">Exam Timer</a>
+<a class="" href="04_replay_savescreen_artifacts.html">Replay Savescreen</a>
+<a class="" href="05_monitoring_incidents_process_actions.html">Monitoring Incidents</a>
+<a class="" href="06_submission_uploads.html">Final Submission</a>
+    </nav>
+    <main class="content-wrap">
+      <article class="content">
+        <p class="doc-note">Generated from the Markdown audit notes for browser-friendly review.</p>
+<h1>Exam Timer And Session State</h1>
+<p>This page explains how students move through waiting, running, paused, awaiting submission, and submitted states.</p>
+<h2>In One Sentence</h2>
+<p>The server owns the timer and session state; the client follows server updates and records state changes in its local evidence logs.</p>
+<h2>Who Is Involved</h2>
+<ul>
+<li>Operator CLI or server GUI.</li>
+<li>Student CLI or client GUI.</li>
+<li><code>server.tasks</code>, which handles start, finish, pause, resume, add-time, and timer broadcasts.</li>
+<li><code>server.session_state</code>, which normalizes state names.</li>
+<li><code>client.ws_client</code>, which updates client state and GUI.</li>
+</ul>
+<h2>Starting The Exam</h2>
+<ol>
+<li>The operator enables the exam with <code>/startexam</code> or the GUI.</li>
+<li>A student clicks start or types <code>start</code>.</li>
+<li>The client sends <code>start_exam</code>.</li>
+<li>The server checks that global exam start is enabled.</li>
+<li>The server marks that user as running.</li>
+<li>The server sends <code>session_state</code> and <code>sync_time</code>.</li>
+<li>The client starts showing the countdown and records a timer-state marker in monitor logs.</li>
+</ol>
+<h2>Timer Updates</h2>
+<p>The server broadcasts time on a regular interval. For every running student, it increments time spent and sends <code>sync_time</code> with the remaining seconds.</p>
+<p>If a student is paused, time does not advance for that student.</p>
+<p>When time reaches zero:</p>
+<ol>
+<li>The server moves the student to <code>awaiting_submission</code>.</li>
+<li>The server sends <code>session_state</code>.</li>
+<li>The server sends <code>finish_exam</code>.</li>
+<li>The client opens the final submission window.</li>
+</ol>
+<h2>Pause And Resume</h2>
+<p>An operator can pause or resume a student from the CLI or GUI.</p>
+<p>When this happens:</p>
+<ol>
+<li>The server updates the persisted user state.</li>
+<li>The server sends <code>session_state</code>.</li>
+<li>The server sends either <code>pause_exam</code> or <code>resume_exam</code>.</li>
+<li>The client updates its GUI and writes monitor state markers.</li>
+</ol>
+<p>Pauses can come from administrators, disconnect handling, or violation policy.</p>
+<h2>Global Finish</h2>
+<p>When the operator finishes the exam globally, the server moves every non-submitted user to <code>awaiting_submission</code>.</p>
+<p>This includes users who never started, which matters because they still need a way to submit if the exam was ended by the server.</p>
+<p>Connected clients receive <code>session_state</code> and <code>finish_exam</code>. Disconnected clients get the awaiting-submission state on reconnect.</p>
+<h2>Disconnect And Reconnect</h2>
+<p>If a running client disconnects, the server saves remaining time and moves the user to <code>disconnected_paused</code>.</p>
+<p>On reconnect, the server sends the current state. If policy allows automatic resume, the server moves the user back to running.</p>
+<h2>Common Failure Clues</h2>
+<ul>
+<li>Student cannot start: global start may not be enabled.</li>
+<li>Time keeps moving while paused: check <code>_sync_running_exams()</code> and paused session state.</li>
+<li>Finish window does not open: check whether <code>finish_exam</code> was sent after <code>session_state</code>.</li>
+<li>Reconnect does not resume: check session policy and whether state is <code>disconnected_paused</code>.</li>
+</ul>
+<h2>Tests</h2>
+<ul>
+<li><code>tests/unit/test_server_tasks.py</code></li>
+<li><code>tests/unit/test_server_handlers.py</code></li>
+<li><code>tests/unit/test_server_state.py</code></li>
+<li><code>tests/unit/test_settings_service.py</code></li>
+</ul>
+      </article>
+      <div class="footer">May_01 sequence audit HTML view.</div>
+    </main>
+  </div>
+</body>
+</html>

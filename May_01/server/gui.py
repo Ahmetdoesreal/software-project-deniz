@@ -2,6 +2,7 @@ import json
 import sys
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from common.manager_support import install_close_guard
+from common.process_definitions import build_google_search_url
 from common.runtime_logging import setup_runtime_logging
 
 
@@ -105,6 +107,85 @@ def _format_counter(values: list[str]) -> str:
     return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
 
 
+PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
+
+
+def process_row_matches_filter(row: dict, filter_name: str) -> bool:
+    filter_name = str(filter_name or "All").strip().lower()
+    status = str(row.get("status", "") or "").strip().lower()
+    if filter_name == "all":
+        return True
+    if filter_name == "warnings":
+        return status == "warning" or bool(row.get("warning"))
+    if filter_name == "active":
+        return bool(row.get("active"))
+    if filter_name == "resolved":
+        return bool(row.get("resolved")) and not bool(row.get("active"))
+    return status == filter_name
+
+
+def format_process_action_availability(row: dict) -> str:
+    availability = row.get("action_availability", {})
+    if not isinstance(availability, dict):
+        return "-"
+    parts = []
+    for action in ("ban", "kick", "pause_exam", "kill_pid"):
+        state = availability.get(action, {})
+        possible = int(state.get("possible", 0) or 0) if isinstance(state, dict) else 0
+        applied = int(state.get("applied", 0) or 0) if isinstance(state, dict) else 0
+        blocked = int(state.get("not_possible", 0) or 0) if isinstance(state, dict) else 0
+        if possible or applied or blocked:
+            parts.append(f"{action.replace('_', ' ')} {possible}/{applied}/{blocked}")
+    return "; ".join(parts) if parts else "-"
+
+
+def build_process_decision_payload(
+    row: dict,
+    *,
+    status: str,
+    match_scope: str,
+    actions: dict,
+    save_policy: bool,
+) -> dict:
+    return {
+        "cmd": "apply_process_decision",
+        "definition": {
+            "definition_id": row.get("definition_id", ""),
+            "process_key": row.get("process_key", ""),
+            "process_name": row.get("process_name", ""),
+            "normalized_process_name": row.get("normalized_process_name", ""),
+            "process_path": row.get("process_path", ""),
+            "normalized_process_path": row.get("normalized_process_path", ""),
+            "process_dir": row.get("process_dir", ""),
+            "normalized_process_dir": row.get("normalized_process_dir", ""),
+            "match_scope": match_scope,
+            "status": status,
+            "actions": {
+                "ban": bool(actions.get("ban", False)),
+                "kick": bool(actions.get("kick", False)),
+                "pause_exam": bool(actions.get("pause_exam", False)),
+                "kill_pid": bool(actions.get("kill_pid", False)),
+            },
+            "source_incident_id": row.get("source_incident_id", ""),
+            "matching_history": list(row.get("matching_history", [])),
+            "previous_matching_entries": list(row.get("previous_matching_entries", [])),
+        },
+        "status": status,
+        "match_scope": match_scope,
+        "actions": {
+            "ban": bool(actions.get("ban", False)),
+            "kick": bool(actions.get("kick", False)),
+            "pause_exam": bool(actions.get("pause_exam", False)),
+            "kill_pid": bool(actions.get("kill_pid", False)),
+        },
+        "save_policy": bool(save_policy),
+    }
+
+
+def process_row_google_search_url(row: dict) -> str:
+    return build_google_search_url(row.get("process_name", ""), row.get("process_path", ""))
+
+
 def _multi_incident_detail_lines(incidents: list[dict]) -> list[tuple[str, str]]:
     users = sorted({str(incident.get("login_id") or "-") for incident in incidents})
     rows: list[tuple[str, str]] = [
@@ -155,6 +236,7 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
         ("Has Exam Files", "Yes" if info.get("has_exam_files") else "No"),
         ("Exam Files Path", str(info.get("exam_files_path") or "-")),
         ("Blacklist Entries", str(info.get("process_blacklist_count", 0))),
+        ("Process Definitions", str(info.get("process_definition_count", 0))),
         ("Blacklist Version", str(info.get("process_blacklist_version", "-"))),
         ("Blacklist File", str(info.get("process_blacklist_file", "-"))),
         ("Policy Version", str(info.get("policy_version", "-"))),
@@ -173,10 +255,14 @@ class ServerGUI(tk.Tk):
         self.tree_items: dict[str, str] = {}
         self.incidents_data: list[dict] = []
         self.incident_items: dict[str, str] = {}
+        self.process_database_data: list[dict] = []
+        self.process_database_items: dict[str, str] = {}
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self.process_filter_var = tk.StringVar(value="All")
         self._incident_tree_refreshing = False
+        self._process_tree_refreshing = False
 
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
@@ -196,11 +282,14 @@ class ServerGUI(tk.Tk):
 
         self.overview_tab = ttk.Frame(self.notebook)
         self.rules_tab = ttk.Frame(self.notebook)
+        self.process_database_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.overview_tab, text="Overview")
         self.notebook.add(self.rules_tab, text="Rule Breakings")
+        self.notebook.add(self.process_database_tab, text="Process Database")
 
         self._build_overview_tab()
         self._build_rule_breakings_tab()
+        self._build_process_database_tab()
         self._build_command_bar()
         self._build_stats_bar()
 
@@ -482,6 +571,95 @@ class ServerGUI(tk.Tk):
         detail_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+    def _build_process_database_tab(self):
+        container = ttk.Frame(self.process_database_tab, padding=10)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        toolbar = ttk.Frame(container)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(toolbar, text="Filter:").pack(side=tk.LEFT)
+        filter_box = ttk.Combobox(
+            toolbar,
+            textvariable=self.process_filter_var,
+            values=PROCESS_DATABASE_FILTERS,
+            state="readonly",
+            width=14,
+        )
+        filter_box.pack(side=tk.LEFT, padx=(6, 10))
+        filter_box.bind("<<ComboboxSelected>>", lambda _event: self._rebuild_process_database_tree())
+
+        self.process_options_button = ttk.Button(
+            toolbar,
+            text="Options",
+            command=self.show_process_decision_window,
+            state=tk.DISABLED,
+        )
+        self.process_options_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.process_google_button = ttk.Button(
+            toolbar,
+            text="Google Search",
+            command=self.google_search_selected_process,
+            state=tk.DISABLED,
+        )
+        self.process_google_button.pack(side=tk.LEFT)
+
+        tree_frame = ttk.LabelFrame(container, text="Process Definitions And Evidence")
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = (
+            "process_key",
+            "executable",
+            "status",
+            "path",
+            "scope",
+            "matches",
+            "students",
+            "last_seen",
+            "actions",
+            "availability",
+        )
+        self.process_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            style="Monospace.Treeview",
+        )
+        self.process_tree.heading("process_key", text="Process Key")
+        self.process_tree.heading("executable", text="Executable")
+        self.process_tree.heading("status", text="Status")
+        self.process_tree.heading("path", text="Path / Directory")
+        self.process_tree.heading("scope", text="Scope")
+        self.process_tree.heading("matches", text="Matches")
+        self.process_tree.heading("students", text="Affected Students")
+        self.process_tree.heading("last_seen", text="Last Seen")
+        self.process_tree.heading("actions", text="Saved Actions")
+        self.process_tree.heading("availability", text="Action Availability")
+        self.process_tree.column("process_key", width=0, stretch=False)
+        self.process_tree.column("executable", width=150)
+        self.process_tree.column("status", width=90, anchor=tk.CENTER)
+        self.process_tree.column("path", width=330)
+        self.process_tree.column("scope", width=90, anchor=tk.CENTER)
+        self.process_tree.column("matches", width=80, anchor=tk.CENTER)
+        self.process_tree.column("students", width=160)
+        self.process_tree.column("last_seen", width=150)
+        self.process_tree.column("actions", width=145)
+        self.process_tree.column("availability", width=220)
+        self.process_tree.bind("<<TreeviewSelect>>", lambda _event: self._sync_process_buttons())
+        self.process_tree.bind("<Double-1>", lambda _event: self.show_process_decision_window())
+
+        process_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.process_tree.yview)
+        process_x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.process_tree.xview)
+        self.process_tree.configure(
+            yscrollcommand=process_scroll.set,
+            xscrollcommand=process_x_scroll.set,
+        )
+        self.process_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        process_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        process_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
     def _build_command_bar(self):
         cmd_frame = ttk.Frame(self, padding=5)
         cmd_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -540,6 +718,22 @@ class ServerGUI(tk.Tk):
             for incident in self.incidents_data
             if str(incident.get("incident_id", "") or "") in selected_ids
         ]
+
+    def _selected_process_key(self):
+        selected = self.process_tree.selection()
+        if not selected:
+            return None
+        values = self.process_tree.item(selected[0], "values")
+        return values[0] if values else None
+
+    def _selected_process_row(self):
+        process_key = self._selected_process_key()
+        if not process_key:
+            return None
+        for row in self.process_database_data:
+            if str(row.get("process_key", "") or "") == str(process_key):
+                return row
+        return None
 
     def _incident_connected(self, incident: dict) -> bool:
         client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
@@ -684,6 +878,198 @@ class ServerGUI(tk.Tk):
             text="Apply",
             command=lambda: self._send_add_time(top, client_id, minutes_entry.get()),
         ).pack(side=tk.LEFT)
+
+    def google_search_selected_process(self):
+        row = self._selected_process_row()
+        if not row:
+            return
+        webbrowser.open(process_row_google_search_url(row))
+        self._append_log(f"[ADMIN] Google search for {row.get('process_name') or row.get('normalized_process_name')}")
+
+    def show_process_decision_window(self):
+        row = self._selected_process_row()
+        if not row:
+            messagebox.showinfo("Process Database", "Select a process entry first.")
+            return
+
+        window_key = ("process_decision", str(row.get("process_key", "") or ""))
+        if self._focus_existing_window(window_key):
+            return
+
+        top = tk.Toplevel(self)
+        top.title(f"Process Decision: {row.get('process_name') or row.get('normalized_process_name') or 'Unknown'}")
+        top.geometry("920x720")
+        self._register_window(window_key, top)
+
+        frame = ttk.Frame(top, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
+
+        identity = ttk.LabelFrame(frame, text="Process")
+        identity.grid(row=0, column=0, sticky=tk.EW)
+        identity.columnconfigure(1, weight=1)
+        rows = [
+            ("Executable", row.get("process_name") or row.get("normalized_process_name") or "-"),
+            ("Path", row.get("process_path") or row.get("normalized_process_path") or "-"),
+            ("Directory", row.get("process_dir") or row.get("normalized_process_dir") or "-"),
+            ("Status", row.get("status") or "-"),
+            ("Students Opened", ", ".join(row.get("opened_students", [])) or "-"),
+            ("Students Closed / Resolved", ", ".join(row.get("closed_students", [])) or "-"),
+        ]
+        for index, (label, value) in enumerate(rows):
+            ttk.Label(identity, text=f"{label}:").grid(row=index, column=0, sticky=tk.W, padx=(8, 8), pady=2)
+            ttk.Label(identity, text=str(value), style="Mono.TLabel", wraplength=720).grid(row=index, column=1, sticky=tk.W, pady=2)
+
+        controls = ttk.LabelFrame(frame, text="Decision")
+        controls.grid(row=1, column=0, sticky=tk.EW, pady=(10, 10))
+
+        status_var = tk.StringVar(value=str(row.get("status") or "unknown"))
+        scope_var = tk.StringVar(value=str(row.get("match_scope") or "path"))
+        save_var = tk.BooleanVar(value=True)
+        action_vars = {
+            "ban": tk.BooleanVar(value=bool(row.get("actions", {}).get("ban", False))),
+            "kick": tk.BooleanVar(value=bool(row.get("actions", {}).get("kick", False))),
+            "pause_exam": tk.BooleanVar(value=bool(row.get("actions", {}).get("pause_exam", False))),
+            "kill_pid": tk.BooleanVar(value=bool(row.get("actions", {}).get("kill_pid", False))),
+        }
+
+        ttk.Label(controls, text="Status").grid(row=0, column=0, sticky=tk.W, padx=8, pady=6)
+        ttk.Combobox(
+            controls,
+            textvariable=status_var,
+            values=("unknown", "whitelist", "blacklist", "warning"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=1, sticky=tk.W, padx=(0, 12), pady=6)
+
+        ttk.Label(controls, text="Match Scope").grid(row=0, column=2, sticky=tk.W, padx=8, pady=6)
+        ttk.Combobox(
+            controls,
+            textvariable=scope_var,
+            values=("path", "directory", "name"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=3, sticky=tk.W, padx=(0, 12), pady=6)
+
+        ttk.Checkbutton(controls, text="Ban", variable=action_vars["ban"]).grid(row=1, column=0, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Kick", variable=action_vars["kick"]).grid(row=1, column=1, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Pause Exam", variable=action_vars["pause_exam"]).grid(row=1, column=2, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Kill PID", variable=action_vars["kill_pid"]).grid(row=1, column=3, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Save decision to policy", variable=save_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=8, pady=6)
+
+        ttk.Button(
+            controls,
+            text="Google Search",
+            command=lambda: webbrowser.open(process_row_google_search_url(row)),
+        ).grid(row=2, column=2, sticky=tk.EW, padx=8, pady=6)
+        ttk.Button(
+            controls,
+            text="Apply Policy",
+            command=lambda: self._emit_process_decision(
+                top,
+                row,
+                status_var.get(),
+                scope_var.get(),
+                {name: var.get() for name, var in action_vars.items()},
+                save_var.get(),
+            ),
+        ).grid(row=2, column=3, sticky=tk.EW, padx=8, pady=6)
+
+        students_frame = ttk.LabelFrame(frame, text="Matching Students And Action State")
+        students_frame.grid(row=2, column=0, sticky=tk.NSEW)
+        student_columns = ("student", "status", "pid", "active", "actions")
+        students_tree = ttk.Treeview(
+            students_frame,
+            columns=student_columns,
+            show="headings",
+            style="Monospace.Treeview",
+        )
+        for column, text, width in (
+            ("student", "Student", 140),
+            ("status", "Session", 120),
+            ("pid", "PID", 80),
+            ("active", "Active", 70),
+            ("actions", "Action State", 560),
+        ):
+            students_tree.heading(column, text=text)
+            students_tree.column(column, width=width, anchor=tk.W)
+        students_scroll = ttk.Scrollbar(students_frame, orient=tk.VERTICAL, command=students_tree.yview)
+        students_tree.configure(yscrollcommand=students_scroll.set)
+        students_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        students_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for student in row.get("action_states", []):
+            students_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    student.get("login_id") or student.get("client_id") or "-",
+                    student.get("session_state") or "-",
+                    student.get("pid") or "-",
+                    "Yes" if student.get("active") else "No",
+                    self._format_student_action_state(student),
+                ),
+            )
+
+        previous_frame = ttk.LabelFrame(frame, text="Previous Matching Entries / Definitions")
+        previous_frame.grid(row=3, column=0, sticky=tk.NSEW, pady=(10, 0))
+        previous_columns = ("status", "scope", "path", "actions", "decided")
+        previous_tree = ttk.Treeview(
+            previous_frame,
+            columns=previous_columns,
+            show="headings",
+            style="Monospace.Treeview",
+        )
+        for column, text, width in (
+            ("status", "Status", 90),
+            ("scope", "Scope", 90),
+            ("path", "Path / Directory", 430),
+            ("actions", "Actions", 180),
+            ("decided", "Decided", 150),
+        ):
+            previous_tree.heading(column, text=text)
+            previous_tree.column(column, width=width, anchor=tk.W)
+        previous_scroll = ttk.Scrollbar(previous_frame, orient=tk.VERTICAL, command=previous_tree.yview)
+        previous_tree.configure(yscrollcommand=previous_scroll.set)
+        previous_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        previous_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for previous in row.get("previous_matching_entries", []):
+            previous_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    previous.get("status") or "-",
+                    previous.get("match_scope") or "-",
+                    previous.get("process_path") or previous.get("process_dir") or "-",
+                    ", ".join(name for name, enabled in previous.get("actions", {}).items() if enabled) or "-",
+                    previous.get("decided_at") or previous.get("updated_at") or "-",
+                ),
+            )
+
+    def _format_student_action_state(self, student: dict) -> str:
+        parts = []
+        for action in ("ban", "kick", "pause_exam", "kill_pid"):
+            action_state = student.get("actions", {}).get(action, {})
+            state_name = str(action_state.get("state", "not_possible") or "not_possible")
+            reason = str(action_state.get("reason", "") or "")
+            label = action.replace("_", " ")
+            parts.append(f"{label}: {state_name}{f' ({reason})' if reason else ''}")
+        return "; ".join(parts)
+
+    def _emit_process_decision(self, window, row: dict, status: str, match_scope: str, actions: dict, save_policy: bool):
+        payload = build_process_decision_payload(
+            row,
+            status=status,
+            match_scope=match_scope,
+            actions=actions,
+            save_policy=save_policy,
+        )
+        print(json.dumps(payload), flush=True)
+        window.destroy()
+        self._append_log(
+            f"[ADMIN] Applied process decision for {row.get('process_name') or row.get('normalized_process_name')}"
+        )
 
     def kill_selected_pid(self):
         incidents = self._selected_incidents()
@@ -1117,6 +1503,8 @@ class ServerGUI(tk.Tk):
         incidents = payload.get("incidents", [])
         self.incidents_data = incidents
         self._rebuild_incident_tree()
+        self.process_database_data = payload.get("process_database", [])
+        self._rebuild_process_database_tree()
         active_warning_count = sum(
             1
             for incident in incidents
@@ -1232,6 +1620,76 @@ class ServerGUI(tk.Tk):
             self._incident_tree_refreshing = False
 
         self._update_incident_detail()
+
+    def _rebuild_process_database_tree(self):
+        selected_key = self._selected_process_key()
+        focus_item = self.process_tree.focus()
+        focus_values = self.process_tree.item(focus_item, "values") if focus_item else ()
+        focused_key = str(focus_values[0]) if focus_values else ""
+        yview = self.process_tree.yview()
+        restored_selection = ""
+        restored_focus = ""
+
+        self._process_tree_refreshing = True
+        try:
+            for item_id in self.process_tree.get_children():
+                self.process_tree.delete(item_id)
+            self.process_database_items = {}
+
+            for row in self.process_database_data:
+                if not process_row_matches_filter(row, self.process_filter_var.get()):
+                    continue
+                process_key = str(row.get("process_key", "") or "")
+                path_display = (
+                    row.get("process_path")
+                    or row.get("process_dir")
+                    or row.get("normalized_process_path")
+                    or row.get("normalized_process_dir")
+                    or "-"
+                )
+                students = ", ".join(row.get("affected_students", [])[:4])
+                if len(row.get("affected_students", [])) > 4:
+                    students += " ..."
+                values = (
+                    process_key,
+                    row.get("process_name") or row.get("normalized_process_name") or "",
+                    row.get("status", ""),
+                    path_display,
+                    row.get("match_scope", ""),
+                    row.get("match_count", 0),
+                    students or "-",
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                )
+                item_id = self.process_tree.insert("", tk.END, values=values)
+                self.process_database_items[process_key] = item_id
+                if selected_key and process_key == selected_key:
+                    restored_selection = item_id
+                if focused_key and process_key == focused_key:
+                    restored_focus = item_id
+
+            if restored_selection:
+                self.process_tree.selection_set(restored_selection)
+            else:
+                self.process_tree.selection_remove(self.process_tree.selection())
+
+            if restored_focus:
+                self.process_tree.focus(restored_focus)
+            elif restored_selection:
+                self.process_tree.focus(restored_selection)
+
+            if yview:
+                self.process_tree.yview_moveto(yview[0])
+        finally:
+            self._process_tree_refreshing = False
+        self._sync_process_buttons()
+
+    def _sync_process_buttons(self):
+        has_selection = self._selected_process_row() is not None
+        state_name = tk.NORMAL if has_selection else tk.DISABLED
+        self.process_options_button.config(state=state_name)
+        self.process_google_button.config(state=state_name)
 
 
 def ipc_reader(app: ServerGUI):

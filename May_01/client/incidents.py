@@ -6,6 +6,14 @@ from collections import deque
 from dataclasses import dataclass
 
 from common import protocol
+from common.process_definitions import (
+    PROCESS_DEFINITIONS_RULE_ID,
+    PROCESS_PATH_CLARIFICATION_RULE_ID,
+    find_matching_definitions,
+    find_saved_definition_for_path,
+    normalize_actions,
+    normalize_definitions,
+)
 from common.process_users import current_process_usernames, normalize_process_username
 
 
@@ -80,6 +88,20 @@ def _process_parts(process: ProcessEntry) -> tuple[int, str, str | None, str | N
     return pid, name, username, process_path
 
 
+def _client_definition_summary(definition: dict) -> dict:
+    return {
+        "definition_id": str(definition.get("definition_id", "") or ""),
+        "process_key": str(definition.get("process_key", "") or ""),
+        "process_name": str(definition.get("process_name", "") or ""),
+        "normalized_process_name": str(definition.get("normalized_process_name", "") or ""),
+        "process_path": str(definition.get("process_path", "") or ""),
+        "process_dir": str(definition.get("process_dir", "") or ""),
+        "match_scope": str(definition.get("match_scope", "") or ""),
+        "status": str(definition.get("status", "") or ""),
+        "actions": normalize_actions(definition.get("actions", {})),
+    }
+
+
 @dataclass
 class _FocusState:
     subject_key: tuple[str, str] | None = None
@@ -105,6 +127,9 @@ class ClientIncidentEngine:
         self._rules_by_id: dict[str, dict] = {}
         self._open_process_incidents: dict[tuple[str, int, str], dict] = {}
         self._known_processes: set[str] = set()
+        self._process_definitions: list[dict] = []
+        self._unexpected_seen_identities: set[str] = set()
+        self._unexpected_baseline_ready = False
         self._open_unexpected_process_incidents: dict[str, dict] = {}
         self._focus_state = _FocusState()
         self._rapid_switch_state = _RapidSwitchState()
@@ -131,6 +156,11 @@ class ClientIncidentEngine:
 
         self.policy_version = policy_version
         self._rules_by_id = normalized_rules
+        self._process_definitions = normalize_definitions(
+            normalized_rules.get(PROCESS_DEFINITIONS_RULE_ID, {}).get("definitions", [])
+        )
+        self._unexpected_seen_identities = set()
+        self._unexpected_baseline_ready = False
         self._focus_state = _FocusState()
         self._rapid_switch_state = _RapidSwitchState()
         self._known_processes = {
@@ -146,47 +176,98 @@ class ClientIncidentEngine:
         return True, ""
 
     def observe_processes(self, processes: set[ProcessEntry]) -> list[dict]:
-        incidents = self._observe_unexpected_processes(processes)
+        incidents, suppressed_identities = self._observe_process_definitions(processes)
+        blacklist_incidents, blacklist_identities = self._observe_blacklisted_processes(processes)
+        incidents.extend(blacklist_incidents)
+        suppressed_identities.update(blacklist_identities)
+        incidents.extend(
+            self._observe_unexpected_processes(
+                processes,
+                suppressed_identities=suppressed_identities,
+            )
+        )
+        return incidents
 
+    def _observe_blacklisted_processes(self, processes: set[ProcessEntry]) -> tuple[list[dict], set[str]]:
         rule = self._rules_by_id.get("process_blacklist", {})
         if not rule or not rule.get("enabled", True):
-            incidents.extend(self._resolve_all_process_incidents())
-            return incidents
+            return (
+                self._resolve_process_incidents_for_rules({"process_blacklist", PROCESS_PATH_CLARIFICATION_RULE_ID}),
+                set(),
+            )
 
         blacklist = {_normalize_name(entry) for entry in rule.get("entries", [])}
         monitored_usernames = current_process_usernames(_string_list(rule.get("process_usernames", [])))
         current_matches = {}
+        suppressed_identities: set[str] = set()
         for process in sorted(processes, key=lambda item: (str(item[1]).lower(), int(item[0]))):
             pid, name, username, process_path = _process_parts(process)
             normalized = _normalize_process_name(name)
             if normalized not in blacklist:
                 continue
+            if self._is_whitelisted_process(name, process_path):
+                continue
             normalized_username = normalize_process_username(username)
             if normalized_username and normalized_username not in monitored_usernames:
                 continue
-            key = ("process_blacklist", int(pid), normalized)
-            current_matches[key] = {
-                "pid": int(pid),
-                "process_name": str(name),
-                "process_username": username,
-                "process_path": process_path,
-                "process_dir": _process_dir(process_path),
-                "summary": f"Blacklisted process detected: {name} (pid {pid})",
-            }
+            saved_definition = find_saved_definition_for_path(self._process_definitions, name, process_path)
+            if saved_definition:
+                continue
+            identity = _normalize_path(process_path) or normalized
+            if process_path:
+                key = (PROCESS_PATH_CLARIFICATION_RULE_ID, int(pid), identity)
+                current_matches[key] = {
+                    "rule": self._path_clarification_rule(),
+                    "pid": int(pid),
+                    "process_name": str(name),
+                    "process_username": username,
+                    "process_path": process_path,
+                    "process_dir": _process_dir(process_path),
+                    "normalized_process_name": normalized,
+                    "summary": f"Blacklisted executable needs path clarification: {name} (pid {pid})",
+                    "event_type": "process_path_clarification",
+                    "known_definition_candidates": [
+                        _client_definition_summary(definition)
+                        for definition in self._process_definitions
+                        if definition.get("normalized_process_name") == normalized
+                    ],
+                }
+            else:
+                key = ("process_blacklist", int(pid), normalized)
+                current_matches[key] = {
+                    "rule": rule,
+                    "pid": int(pid),
+                    "process_name": str(name),
+                    "process_username": username,
+                    "process_path": process_path,
+                    "process_dir": _process_dir(process_path),
+                    "normalized_process_name": normalized,
+                    "summary": f"Blacklisted process detected: {name} (pid {pid})",
+                    "event_type": "process_blacklist",
+                }
+            suppressed_identities.add(identity)
 
+        incidents = []
         for key, details in current_matches.items():
             if key in self._open_process_incidents:
                 continue
-            incident = self._new_incident(rule, status="opened", summary=details["summary"])
+            incident = self._new_incident(details["rule"], status="opened", summary=details["summary"])
             incident["process_name"] = details["process_name"]
             incident["pid"] = details["pid"]
             incident["process_username"] = details["process_username"]
             incident["process_path"] = details["process_path"]
             incident["process_dir"] = details["process_dir"]
+            incident["normalized_process_name"] = details["normalized_process_name"]
+            incident["event_type"] = details["event_type"]
+            if details.get("known_definition_candidates"):
+                incident["known_definition_candidates"] = details["known_definition_candidates"]
             self._open_process_incidents[key] = incident
             incidents.append(dict(incident))
 
         for key, incident in list(self._open_process_incidents.items()):
+            rule_id = str(incident.get("rule_id", "") or key[0])
+            if rule_id not in {"process_blacklist", PROCESS_PATH_CLARIFICATION_RULE_ID}:
+                continue
             if key in current_matches:
                 continue
             now = protocol.now_iso()
@@ -199,7 +280,7 @@ class ClientIncidentEngine:
             incidents.append(resolved)
             self._open_process_incidents.pop(key, None)
 
-        return incidents
+        return incidents, suppressed_identities
 
     def observe_focused_window(self, snapshot: dict) -> list[dict]:
         incidents = self._observe_rapid_application_switching(snapshot)
@@ -248,6 +329,24 @@ class ClientIncidentEngine:
         self._open_process_incidents = {}
         return incidents
 
+    def _resolve_process_incidents_for_rules(self, rule_ids: set[str]) -> list[dict]:
+        incidents = []
+        normalized_rule_ids = {str(rule_id) for rule_id in rule_ids}
+        for key, incident in list(self._open_process_incidents.items()):
+            if str(incident.get("rule_id", "") or key[0]) not in normalized_rule_ids:
+                continue
+            now = protocol.now_iso()
+            resolved = dict(incident)
+            resolved["status"] = "resolved"
+            resolved["resolved_at"] = now
+            resolved["event_at"] = now
+            resolved["timestamp"] = now
+            resolved["summary"] = f"Policy disabled while incident was open: {incident.get('process_name', 'unknown')}"
+            resolved["needs_evidence"] = False
+            incidents.append(resolved)
+            self._open_process_incidents.pop(key, None)
+        return incidents
+
     def _new_incident(self, rule: dict, *, status: str, summary: str) -> dict:
         timestamp = protocol.now_iso()
         rule_id = str(rule.get("rule_id", ""))
@@ -266,11 +365,93 @@ class ClientIncidentEngine:
             "needs_evidence": status in {"opened", "escalated"},
         }
 
-    def _observe_unexpected_processes(self, processes: set[ProcessEntry]) -> list[dict]:
-        rule = self._rules_by_id.get("unexpected_process", {})
-        if not rule or not rule.get("enabled", False):
+    def _observe_process_definitions(self, processes: set[ProcessEntry]) -> tuple[list[dict], set[str]]:
+        rule = self._rules_by_id.get(PROCESS_DEFINITIONS_RULE_ID, {})
+        if not rule or not rule.get("enabled", True):
+            return self._resolve_process_incidents_for_rules({PROCESS_DEFINITIONS_RULE_ID}), set()
+
+        incidents: list[dict] = []
+        suppressed_identities: set[str] = set()
+        current_keys = set()
+        for process in sorted(processes, key=lambda item: (str(item[1]).lower(), int(item[0]))):
+            pid, name, username, process_path = _process_parts(process)
+            identity = _normalize_path(process_path) or _normalize_process_name(name)
+            matches = find_matching_definitions(self._process_definitions, name, process_path)
+            if not matches:
+                continue
+            definition = matches[0]
+            status = str(definition.get("status", "unknown") or "unknown").lower()
+            if status == "whitelist":
+                suppressed_identities.add(identity)
+                continue
+            severity = "violation" if status == "blacklist" else "warning"
+            incident_rule = {
+                **rule,
+                "rule_id": PROCESS_DEFINITIONS_RULE_ID,
+                "rule_name": PROCESS_DEFINITIONS_RULE_ID,
+                "source": "process_monitor",
+                "severity": severity,
+                "allow_remote_kill": True,
+            }
+            key = (PROCESS_DEFINITIONS_RULE_ID, int(pid), f"{definition.get('definition_id')}:{identity}")
+            current_keys.add(key)
+            suppressed_identities.add(identity)
+            if key in self._open_process_incidents:
+                continue
+            incident = self._new_incident(
+                incident_rule,
+                status="opened",
+                summary=f"Process definition matched ({status}): {name} (pid {pid})",
+            )
+            incident.update(
+                {
+                    "event_type": "process_definition_match",
+                    "pid": int(pid),
+                    "process_name": str(name),
+                    "process_username": username,
+                    "process_path": process_path,
+                    "process_dir": _process_dir(process_path),
+                    "normalized_process_name": _normalize_process_name(name),
+                    "matched_definition_id": definition.get("definition_id", ""),
+                    "matched_definition": _client_definition_summary(definition),
+                    "configured_actions": normalize_actions(definition.get("actions", {})),
+                }
+            )
+            self._open_process_incidents[key] = incident
+            incidents.append(dict(incident))
+
+        for key, incident in list(self._open_process_incidents.items()):
+            if str(incident.get("rule_id", "") or "") != PROCESS_DEFINITIONS_RULE_ID:
+                continue
+            if key in current_keys:
+                continue
+            now = protocol.now_iso()
+            resolved = dict(incident)
+            resolved["status"] = "resolved"
+            resolved["resolved_at"] = now
+            resolved["event_at"] = now
+            resolved["timestamp"] = now
+            resolved["summary"] = f"Process definition no longer matched: {incident.get('process_name', 'unknown')}"
+            resolved["needs_evidence"] = False
+            incidents.append(resolved)
+            self._open_process_incidents.pop(key, None)
+
+        return incidents, suppressed_identities
+
+    def _observe_unexpected_processes(
+        self,
+        processes: set[ProcessEntry],
+        *,
+        suppressed_identities: set[str] | None = None,
+    ) -> list[dict]:
+        rule = self._unexpected_process_rule()
+        if not rule:
             self._open_unexpected_process_incidents = {}
+            self._unexpected_seen_identities = set()
+            self._unexpected_baseline_ready = False
             return []
+        suppressed_identities = suppressed_identities or set()
+        baseline_existing = bool(rule.get("baseline_existing_processes", False))
 
         allowed = {_normalize_process_name(entry) for entry in _string_list(rule.get("allowed_process_names", []))}
         known = set(self._known_processes)
@@ -297,16 +478,30 @@ class ClientIncidentEngine:
             )
         ]
         incidents = []
+        candidate_identities: set[str] = set()
 
         for process in sorted(processes, key=lambda item: (str(item[1]).lower(), int(item[0]))):
             pid, name, username, process_path = _process_parts(process)
             normalized = _normalize_process_name(name)
             normalized_path = _normalize_path(process_path)
             identity = normalized_path or normalized
-            current_identities.add(identity)
+            if identity in suppressed_identities:
+                continue
+            if self._is_whitelisted_process(name, process_path):
+                continue
             if not normalized or normalized in known:
                 continue
             if any(_is_path_under_directory(process_path, directory) for directory in known_directories):
+                continue
+            current_identities.add(identity)
+            candidate_identities.add(identity)
+            if (
+                baseline_existing
+                and not self._unexpected_baseline_ready
+            ):
+                self._unexpected_seen_identities.add(identity)
+                continue
+            if identity in self._unexpected_seen_identities and identity not in self._open_unexpected_process_incidents:
                 continue
             if identity in self._open_unexpected_process_incidents:
                 continue
@@ -329,7 +524,10 @@ class ClientIncidentEngine:
                 }
             )
             self._open_unexpected_process_incidents[identity] = incident
+            self._unexpected_seen_identities.add(identity)
             incidents.append(dict(incident))
+
+        self._unexpected_baseline_ready = True
 
         for identity, incident in list(self._open_unexpected_process_incidents.items()):
             if identity in current_identities or identity in current_names:
@@ -344,8 +542,57 @@ class ClientIncidentEngine:
             resolved["needs_evidence"] = False
             incidents.append(resolved)
             self._open_unexpected_process_incidents.pop(identity, None)
+            self._unexpected_seen_identities.discard(identity)
+
+        self._unexpected_seen_identities.intersection_update(candidate_identities | set(self._open_unexpected_process_incidents))
 
         return incidents
+
+    def _unexpected_process_rule(self) -> dict:
+        rule = self._rules_by_id.get("unexpected_process", {})
+        if rule and rule.get("enabled", False):
+            return rule
+        definition_rule = self._rules_by_id.get(PROCESS_DEFINITIONS_RULE_ID, {})
+        if not definition_rule or not definition_rule.get("enabled", True):
+            return {}
+        if not definition_rule.get("detect_unknown_processes", True):
+            return {}
+        return {
+            "rule_id": "unexpected_process",
+            "rule_name": "unexpected_process",
+            "source": "process_monitor",
+            "type": "unexpected_process",
+            "enabled": True,
+            "severity": str(definition_rule.get("unknown_severity", "warning") or "warning"),
+            "known_process_names": list(rule.get("known_process_names", [])) if isinstance(rule, dict) else [],
+            "known_directory_paths": list(rule.get("known_directory_paths", [])) if isinstance(rule, dict) else [],
+            "allowed_process_names": list(rule.get("allowed_process_names", [])) if isinstance(rule, dict) else [],
+            "auto_violation_pause": False,
+            "baseline_existing_processes": bool(definition_rule.get("baseline_existing_processes", True)),
+        }
+
+    def _is_whitelisted_process(self, process_name: str | None, process_path: str | None = None) -> bool:
+        return bool(
+            find_matching_definitions(
+                self._process_definitions,
+                process_name,
+                process_path,
+                statuses={"whitelist"},
+            )
+        )
+
+    def _path_clarification_rule(self) -> dict:
+        rule = self._rules_by_id.get(PROCESS_PATH_CLARIFICATION_RULE_ID, {})
+        if rule:
+            return rule
+        return {
+            "rule_id": PROCESS_PATH_CLARIFICATION_RULE_ID,
+            "rule_name": PROCESS_PATH_CLARIFICATION_RULE_ID,
+            "source": "process_monitor",
+            "type": "process_path_clarification",
+            "enabled": True,
+            "severity": "warning",
+        }
 
     def _observe_rapid_application_switching(self, snapshot: dict) -> list[dict]:
         rule = self._rules_by_id.get("rapid_application_switching", {})
