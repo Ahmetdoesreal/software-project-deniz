@@ -358,6 +358,219 @@ QProgressBar::chunk {{
 """
 
 
+# ── Glass / starfield stylesheet (for server dashboard) ───────────────────────
+# Used when StarfieldBackground is the central widget.
+# All QWidget descendants are transparent by default; panels use rgba glass.
+
+GLASS_QSS = """
+* {
+    font-family: "Inter", "Public Sans", "Segoe UI", system-ui, sans-serif;
+    font-size: 13px;
+    color: #f8fafc;
+}
+QMainWindow {
+    background-color: #020617;
+}
+QWidget {
+    background: transparent;
+    color: #f8fafc;
+}
+/* ─ Dialogs must stay opaque ─ */
+QDialog {
+    background-color: rgba(10, 16, 35, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
+}
+QDialogButtonBox QPushButton { min-width: 80px; }
+/* ─ Glass group boxes ─ */
+QGroupBox {
+    background-color: rgba(15, 23, 42, 0.70);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
+    margin-top: 22px;
+    padding: 8px 6px 6px 6px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 4px;
+    color: rgba(248, 250, 252, 0.55);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+/* ─ Scrollbars: minimal ─ */
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical {
+    background: transparent; width: 6px; margin: 4px 0;
+}
+QScrollBar::handle:vertical {
+    background: rgba(255,255,255,0.15); border-radius: 3px; min-height: 32px;
+}
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.30); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal {
+    background: transparent; height: 6px; margin: 0 4px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(255,255,255,0.15); border-radius: 3px; min-width: 32px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+/* ─ Tables ─ */
+QTableWidget {
+    background: rgba(2, 6, 23, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    gridline-color: transparent;
+    outline: none;
+    selection-background-color: transparent;
+}
+QTableWidget::item {
+    padding: 4px 10px;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: #e2e8f0;
+}
+QTableWidget::item:selected {
+    background: rgba(59, 130, 246, 0.15);
+    color: #f8fafc;
+}
+QTableWidget::item:hover:!selected {
+    background: rgba(255, 255, 255, 0.04);
+}
+/* ─ Tree widget ─ */
+QTreeWidget {
+    background: rgba(2, 6, 23, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    outline: none;
+}
+QTreeWidget::item { padding: 3px 6px; color: #e2e8f0; }
+QTreeWidget::item:selected { background: rgba(59, 130, 246, 0.15); }
+QTreeWidget::item:hover:!selected { background: rgba(255,255,255,0.04); }
+/* ─ Headers ─ */
+QHeaderView { background: rgba(2, 6, 23, 0.80); border: none; }
+QHeaderView::section {
+    background: rgba(2, 6, 23, 0.80);
+    color: rgba(148, 163, 184, 0.90);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 10px;
+    border: none;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+QHeaderView::section:last { border-right: none; }
+/* ─ Line edit ─ */
+QLineEdit {
+    background: rgba(2, 6, 23, 0.70);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    padding: 7px 12px;
+    color: #f8fafc;
+    font-size: 13px;
+}
+QLineEdit:focus {
+    border: 1px solid rgba(177, 197, 255, 0.50);
+    background: rgba(2, 6, 23, 0.85);
+}
+QLineEdit:read-only { color: rgba(148, 163, 184, 0.80); }
+/* ─ Spin box ─ */
+QSpinBox {
+    background: rgba(2, 6, 23, 0.70);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: #f8fafc;
+}
+QSpinBox:focus { border: 1px solid rgba(177, 197, 255, 0.50); }
+QSpinBox::up-button, QSpinBox::down-button {
+    background: rgba(255,255,255,0.08); border: none; width: 18px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background: rgba(177, 197, 255, 0.20);
+}
+/* ─ Checkbox ─ */
+QCheckBox { color: rgba(203, 213, 225, 0.85); spacing: 8px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 4px;
+    background: rgba(2,6,23,0.60);
+}
+QCheckBox::indicator:checked {
+    background: #3b82f6;
+    border-color: #3b82f6;
+}
+/* ─ Splitter ─ */
+QSplitter::handle { background: rgba(255,255,255,0.05); }
+QSplitter::handle:hover { background: rgba(177, 197, 255, 0.20); }
+/* ─ Tabs ─ */
+QTabWidget::pane {
+    background: rgba(15, 23, 42, 0.50);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+}
+QTabBar { background: rgba(15, 23, 42, 0.65); border-radius: 8px; }
+QTabBar::tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 12px 20px;
+    color: rgba(148, 163, 184, 0.80);
+    font-size: 13px;
+    font-weight: 500;
+    min-width: 80px;
+}
+QTabBar::tab:selected {
+    color: #b1c5ff;
+    border-bottom: 3px solid #b1c5ff;
+    background: rgba(177, 197, 255, 0.06);
+}
+QTabBar::tab:hover:!selected {
+    color: #f8fafc;
+    background: rgba(255, 255, 255, 0.04);
+}
+/* ─ Status bar ─ */
+QStatusBar {
+    background: rgba(2, 6, 23, 0.85);
+    border: none;
+    color: rgba(148, 163, 184, 0.80);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 16px;
+}
+/* ─ Plain / rich text ─ */
+QPlainTextEdit, QTextEdit {
+    background: rgba(2, 6, 23, 0.80);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    color: #e2e8f0;
+    selection-background-color: rgba(59, 130, 246, 0.25);
+}
+/* ─ Labels transparent ─ */
+QLabel { background: transparent; color: #f8fafc; }
+/* ─ Menus ─ */
+QMenu {
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 8px;
+}
+QMenu::item { padding: 8px 20px; color: #f8fafc; font-size: 13px; }
+QMenu::item:selected { background: rgba(59, 130, 246, 0.20); }
+/* ─ Tooltip ─ */
+QToolTip {
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 6px;
+    color: #f8fafc;
+    padding: 6px 10px;
+    font-size: 11px;
+}
+"""
+
 # ── State badge inline style ──────────────────────────────────────────────────
 
 def state_badge_style(state: str) -> str:

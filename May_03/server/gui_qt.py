@@ -63,9 +63,10 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from common.runtime_logging import setup_runtime_logging
-from ui.widgets import apply_theme, make_button, style_button
+from ui.widgets import apply_glass_theme, make_button, style_button
 from ui.theme import M, STATE_COLORS
 from ui.styles import state_badge_style
+from ui.background import StarfieldBackground
 
 
 def _monospace_font() -> QFont:
@@ -377,10 +378,11 @@ class ServerGUI(QMainWindow):
 
     # ------------------------------------------------------------------ layout
     def _build_layout(self) -> None:
-        central = QWidget(self)
+        central = StarfieldBackground(self)
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setContentsMargins(20, 16, 20, 12)
+        outer.setSpacing(10)
 
         self.tabs = QTabWidget(self)
         outer.addWidget(self.tabs, stretch=1)
@@ -957,6 +959,9 @@ class ServerGUI(QMainWindow):
             self._tick_timer.stop()
         except Exception:
             pass
+        central = self.centralWidget()
+        if isinstance(central, StarfieldBackground):
+            central.stop_animation()
         self.close()
         QApplication.instance().quit()
 
@@ -1174,7 +1179,7 @@ def run() -> int:
         PROJECT_DIR / "data" / "logs" / "server",
     )
     app = QApplication.instance() or QApplication(sys.argv)
-    apply_theme(app)
+    apply_glass_theme(app)
     standalone = sys.stdin.isatty()
     gui = ServerGUI(standalone_mode=standalone)
     gui.show()

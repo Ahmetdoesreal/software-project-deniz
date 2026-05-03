@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.styles import (
+    GLASS_QSS,
     GLOBAL_QSS,
     btn_filled,
     btn_outlined,
@@ -49,6 +50,11 @@ _BTN_STYLES: dict[str, object] = {
 def apply_theme(app: QApplication) -> None:
     """Apply the global Sovereign Sentinel stylesheet to *app*."""
     app.setStyleSheet(GLOBAL_QSS)
+
+
+def apply_glass_theme(app: QApplication) -> None:
+    """Apply the glass/starfield stylesheet (for the server dashboard)."""
+    app.setStyleSheet(GLASS_QSS)
 
 
 def make_button(

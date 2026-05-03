@@ -201,14 +201,20 @@ class TeeStream:
     def write(self, data):
         if not data:
             return 0
-        self.original_stream.write(data)
+        try:
+            self.original_stream.write(data)
+        except OSError:
+            pass
         self._line_buffer += data
         self._flush_complete_lines()
         return len(data)
 
     def flush(self):
         self._flush_remainder()
-        self.original_stream.flush()
+        try:
+            self.original_stream.flush()
+        except OSError:
+            pass
         self.log_writer.flush()
 
     def isatty(self):
