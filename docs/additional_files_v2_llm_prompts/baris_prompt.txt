@@ -1,0 +1,210 @@
+Claude Code prompt for Baris's files
+====================================
+
+Repository
+----------
+C:\Users\Deniz\Documents\GitHub\software-project-deniz
+
+Important instruction
+---------------------
+Do not rewrite features that already exist in May_01. The goal is to extract only the missing, useful ideas from Baris's prototype and integrate them incrementally into the current May_01 architecture.
+
+Do not replace:
+- The existing aiohttp server.
+- The existing HTTP routes.
+- The existing May_01 WebSocket event protocol.
+- The existing common.security layer.
+- The existing admin CLI/GUI commands.
+- The existing start/pause/resume/add-time/finish flows.
+- The existing replay, incident, artifact, and submission upload paths.
+- The existing process monitoring and incident engine, except for small enrichment.
+
+Source files to inspect
+-----------------------
+Use Get-ChildItem -LiteralPath "additional files v2\wp" to locate the Baris directory. It is the directory whose name starts with "bar" and contains:
+
+1. server_core.py
+2. school_service.py
+3. server.ipynb
+
+Notes:
+- server_core.py is a standalone websockets prototype with global dictionaries.
+- server.ipynb is a notebook launcher/reset sketch.
+- school_service.py is a CATS login scraper prototype.
+- Use these files as reference only. Do not paste them into May_01.
+
+Current May_01 files to read first
+----------------------------------
+1. May_01\server\app.py
+2. May_01\server\main.py
+3. May_01\server\handlers.py
+4. May_01\server\tasks.py
+5. May_01\server\state.py
+6. May_01\server\session_state.py
+7. May_01\server\settings_service.py
+8. May_01\server\gui.py
+9. May_01\common\events.py
+10. May_01\common\protocol.py
+11. May_01\common\security.py
+12. May_01\tests\unit\test_server_handlers.py
+13. May_01\tests\unit\test_server_app.py
+14. May_01\tests\unit\test_server_state.py
+15. May_01\tests\unit\test_settings_service.py
+16. May_01\tests\unit\test_process_database.py
+
+What to implement from Baris's files
+------------------------------------
+Implement only these missing or useful pieces:
+
+1. Optional CATS/school authentication provider
+   Add CATS authentication as an optional provider. Keep existing allowed_users.json login as the default.
+
+   Recommended module:
+   - May_01\server\auth_providers.py
+   or
+   - May_01\server\school_auth.py
+
+   Suggested objects:
+   - AuthResult dataclass
+   - LocalAllowedUsersAuth
+   - CatsAuthProvider
+
+   Requirements:
+   - Default provider remains local allowed_users.json.
+   - Add server config/CLI option such as --auth-provider local|cats.
+   - Add optional --cats-login-url and --cats-timeout-seconds.
+   - Parse successful login name and displayed id from HTML.
+   - Reject displayed-id mismatch.
+   - Handle timeout/network errors cleanly.
+   - Tests must fake HTML/network. Do not call the real CATS website in tests.
+   - Do not store extra plaintext external credentials beyond what May_01 already needs.
+
+2. Login rate limiting
+   Add a small, testable login rate limiter before expensive auth checks.
+
+   Recommended module:
+   - May_01\server\login_rate_limit.py
+
+   Requirements:
+   - Configurable interval.
+   - Key by IP and/or login id.
+   - Does not block normal reconnects.
+   - Clean 429 or clear JSON error when blocked.
+   - Unit tests for allow, block, expiry, and separate keys.
+
+3. Optional same-machine/session guard
+   Baris's prototype blocks multiple active logins from the same IP.
+
+   Implement only if policy-driven and disabled by default, because labs/NAT/shared networks can share IPs.
+
+   Requirements:
+   - Keep current same-login-active protection.
+   - Optional setting for same-IP duplicate guard.
+   - Clear error message when enabled and triggered.
+   - Tests for disabled default and enabled blocking.
+
+4. Risk scoring module
+   Extract the useful risk scoring idea into pure, testable logic.
+
+   Recommended module:
+   - May_01\server\risk_scoring.py
+
+   Inputs may include:
+   - active window title
+   - open apps/processes
+   - incident severity
+   - matched process rule
+   - idle time
+   - buffered/delayed metadata
+   - policy keyword configuration
+
+   Outputs should include:
+   - score
+   - level
+   - matched_keywords
+   - recommended_action
+
+   Requirements:
+   - No large hard-coded keyword list inside handlers.py.
+   - Put defaults in risk_scoring.py or settings/policy with an override path.
+   - Deterministic pure function tests.
+   - Integrate results into existing incident/process handling without changing event names.
+
+5. Dashboard and incident enrichment
+   Enrich existing server GUI/dashboard state with useful fields from Baris's prototype.
+
+   Possible fields:
+   - risk_score
+   - risk_level
+   - last_window
+   - current_apps
+   - idle_seconds
+   - matched_keywords
+   - seq
+   - buffered
+   - queued_at
+
+   Requirements:
+   - Use existing server/tasks.py and server/gui.py state flow.
+   - Do not build a second dashboard.
+   - Evidence-only incident updates must not re-trigger auto actions.
+
+6. Defensive timer duplicate guard
+   Baris's notebook had a generation guard for duplicate global timers.
+
+   May_01 already starts time_broadcaster from app startup, so do not rewrite the timer.
+
+   Only add:
+   - A small test or guard that prevents duplicate broadcaster tasks for the same app, if a real risk exists.
+   - No notebook reset logic.
+   - No global exam_registry replacement.
+
+Do not implement from Baris's files
+-----------------------------------
+- A standalone websockets server.
+- db_manager or a new SQLite persistence layer.
+- Notebook hard-reset/runtime startup code.
+- New parallel actions such as register_exam/start_all_students unless explicitly mapped to existing May_01 commands.
+- Global active_students/exam_registry state that conflicts with server.state.
+- Emoji/mojibake-heavy prints or comments.
+- CATS auth as the forced default.
+
+Recommended implementation order
+--------------------------------
+1. Add auth provider abstraction with local provider as default.
+2. Add optional CATS provider and fake-HTML tests.
+3. Add login rate limiter and tests.
+4. Add risk_scoring.py and tests.
+5. Wire risk scoring/enrichment into existing incident/process handlers.
+6. Update existing GUI/dashboard state only where fields already fit naturally.
+7. Add optional same-IP guard only after local auth and rate limiter tests are stable.
+8. Run targeted tests and the full suite.
+
+Commands to run from May_01
+---------------------------
+python -m unittest tests.unit.test_server_handlers
+python -m unittest tests.unit.test_server_app
+python -m unittest tests.unit.test_server_state
+python -m unittest tests.unit.test_settings_service
+python -m unittest tests.unit.test_process_database
+python -m unittest discover -s tests
+
+Acceptance criteria
+-------------------
+- Existing May_01 features are preserved.
+- Local allowed_users login remains the default.
+- Optional CATS auth works through a modular provider with mocked tests.
+- Login rate limiting is configurable and tested.
+- Risk scoring is modular, deterministic, and integrated into existing incident/dashboard state.
+- No new standalone server or notebook runtime code.
+- No db_manager dependency.
+- Full May_01 test suite passes.
+
+Final response expected from Claude Code
+----------------------------------------
+Summarize:
+- Files changed.
+- Which Baris ideas were implemented.
+- Which prototype parts were intentionally not copied.
+- New CLI/config options.
+- Tests run and results.

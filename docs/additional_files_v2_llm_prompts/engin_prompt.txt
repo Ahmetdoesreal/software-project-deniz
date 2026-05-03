@@ -1,0 +1,157 @@
+Claude Code prompt for Engin's files
+====================================
+
+Repository
+----------
+C:\Users\Deniz\Documents\GitHub\software-project-deniz
+
+Important instruction
+---------------------
+Do not rewrite features that already exist in May_01. The goal is to extract only the missing, useful ideas from Engin's prototype and integrate them incrementally into the current May_01 architecture.
+
+Do not replace:
+- The existing aiohttp client/server flow.
+- The existing May_01 WebSocketSession design.
+- The existing common.protocol checksum format.
+- The existing common.security secured-message layer.
+- The existing replay save queue, artifact upload, submission upload, or incident reporting flow.
+- The existing start/pause/resume/finish/session_state flow.
+
+Source files to inspect
+-----------------------
+1. additional files v2\wp\engin\network_sender (1) (1).py
+2. additional files v2\wp\engin\network_sender (1).py
+
+Notes:
+- The second file is empty. Treat it as an empty duplicate.
+- The non-empty file is a standalone prototype. Use it as reference only.
+- Do not copy it directly into May_01.
+- Do not add a new websockets dependency or a second networking stack.
+
+Current May_01 files to read first
+----------------------------------
+1. May_01\client\ws_client.py
+2. May_01\client\main.py
+3. May_01\client\auth.py
+4. May_01\common\events.py
+5. May_01\common\protocol.py
+6. May_01\common\security.py
+7. May_01\server\handlers.py
+8. May_01\tests\unit\test_protocol_integrity_fields.py
+9. May_01\tests\unit\test_client_incident_reporting.py
+
+What to implement from Engin's file
+-----------------------------------
+Implement only these missing or useful pieces:
+
+1. General client outbound buffer
+   Add a small bounded FIFO buffer for client-to-server WebSocket messages that cannot be sent during a temporary disconnect.
+
+   Requirements:
+   - FIFO flush order.
+   - Bounded capacity.
+   - Optional telemetry can be dropped under overload.
+   - Important events must not disappear silently.
+   - Failed partial flush keeps remaining messages in the right order.
+   - No unbounded background tasks or futures.
+
+2. Transport sequence metadata
+   Standardize metadata on relevant outbound client messages:
+   - seq
+   - session_id
+   - queued_at
+   - buffered
+
+   May_01\common\protocol.py already has INTEGRITY_FIELDS for these. Use the existing support instead of inventing a parallel protocol.
+
+3. Reconnect flush behavior
+   When the existing client WebSocket reconnects, flush buffered messages in FIFO order.
+
+   If a flush fails halfway:
+   - Mark the connection as unhealthy.
+   - Put unsent messages back in the buffer.
+   - Retry on the next reconnect.
+
+4. Delivery status reporting
+   Add internal statuses such as:
+   - sent
+   - buffered
+   - dropped
+   - failed
+
+   Keep this mostly for logs/tests/debugging. Do not create new UI unless the existing UI already has a natural place for it.
+
+Recommended modular design
+--------------------------
+Create a small module instead of growing ws_client.py too much.
+
+Recommended files:
+- May_01\client\network\__init__.py
+- May_01\client\network\reliable_queue.py
+
+Suggested objects:
+- DeliveryStatus enum
+- BufferedOutboundMessage dataclass
+- OutboundMessageBuffer class
+
+Only add May_01\client\network\reliable_sender.py if it removes real complexity from ws_client.py.
+
+Integration guidance
+--------------------
+- Keep WebSocketSession as the orchestration point.
+- Put pure queue behavior in the new module.
+- Add metadata to relevant existing client-to-server events.
+- Candidate events:
+  - client_info
+  - start_exam
+  - process_catch
+  - policy_applied
+  - client_monitor_event
+  - incident_report
+  - kill_process_result
+  - ping, if currently sent through the same path
+- Do not touch replay saves except where incident/report metadata already interacts with outbound messages.
+- Do not add SKIP_WAITING_ROOM. May_01 already has waiting/session_state flow.
+- Do not hard-code SERVER_IP, STUDENT_ID, EXAM_ID, or credentials.
+
+Testing required
+----------------
+Add focused tests for the new queue:
+- FIFO flush order.
+- Bounded capacity.
+- Optional message dropped when full.
+- Critical message preserved or rejected explicitly when full.
+- push_back/retry preserves order.
+- queued_at, seq, session_id, buffered, and attempts are preserved.
+
+Add integration-level tests with mocks:
+- Metadata survives protocol encode/decode.
+- Buffered messages flush after reconnect.
+- Failed flush leaves remaining messages queued.
+- Existing incident reporting still sends the first incident promptly.
+
+Do not test with a real network server unless an existing test already does so.
+
+Commands to run from May_01
+---------------------------
+python -m unittest tests.unit.test_protocol_integrity_fields
+python -m unittest tests.unit.test_client_incident_reporting
+python -m unittest discover -s tests
+
+Acceptance criteria
+-------------------
+- Engin's reliability ideas are integrated without replacing May_01 networking.
+- Existing behavior still works.
+- Outbound metadata is present where useful.
+- Offline/reconnect buffering is bounded and tested.
+- No new standalone websockets stack.
+- No hard-coded prototype config.
+- Full May_01 test suite passes.
+
+Final response expected from Claude Code
+----------------------------------------
+Summarize:
+- Files changed.
+- Which Engin ideas were implemented.
+- Which prototype parts were intentionally not copied.
+- Tests run and results.
