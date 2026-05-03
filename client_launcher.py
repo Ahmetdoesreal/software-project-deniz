@@ -24,6 +24,9 @@ class ClientManager(tk.Tk):
             log_dir=self.project_dir / "data" / "logs" / "client" / "sessions",
         )
         self.validation_in_progress = False
+        self._login_prompt_status = (
+            "Client stopped. Start a session to open the timer window and CLI."
+        )
         self.console_window = ConsoleWindow(
             self,
             title="Client CLI",
@@ -66,7 +69,8 @@ class ClientManager(tk.Tk):
 
         ttk.Label(self, text="Login ID:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=6)
         self.v_login = tk.StringVar(value="")
-        ttk.Entry(self, textvariable=self.v_login).grid(
+        self.login_entry = ttk.Entry(self, textvariable=self.v_login)
+        self.login_entry.grid(
             row=1,
             column=1,
             sticky=tk.EW,
@@ -76,7 +80,8 @@ class ClientManager(tk.Tk):
 
         ttk.Label(self, text="Password:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=6)
         self.v_pass = tk.StringVar(value="")
-        ttk.Entry(self, textvariable=self.v_pass, show="*").grid(
+        self.password_entry = ttk.Entry(self, textvariable=self.v_pass, show="*")
+        self.password_entry.grid(
             row=2,
             column=1,
             sticky=tk.EW,
@@ -308,6 +313,9 @@ class ClientManager(tk.Tk):
         if not self._validate_form():
             return
 
+        self._login_prompt_status = (
+            "Client stopped. Start a session to open the timer window and CLI."
+        )
         self.validation_in_progress = True
         self.start_button.config(state=tk.DISABLED, text="Validating...")
         thread = threading.Thread(target=self._run_login_check, daemon=True)
@@ -364,9 +372,25 @@ class ClientManager(tk.Tk):
         self._set_setup_visible(False)
         self.open_cli()
 
-    def _handle_validation_error(self, message: str):
+    def _return_to_login_prompt(self, message: str | None = None):
         self.validation_in_progress = False
         self.start_button.config(state=tk.NORMAL, text="Connect & Login")
+        self._set_setup_visible(True)
+        self.summary_var.set("Session Summary: -")
+        if message:
+            self._login_prompt_status = f"Login failed. {message}"
+        self.status_var.set(self._login_prompt_status)
+        self.deiconify()
+        self.lift()
+        focus_target = self.password_entry if self.v_login.get().strip() else self.login_entry
+        focus_target.focus_set()
+        try:
+            focus_target.selection_range(0, tk.END)
+        except tk.TclError:
+            pass
+
+    def _handle_validation_error(self, message: str):
+        self._return_to_login_prompt(message)
         messagebox.showerror(
             "Login Failed",
             f"Could not connect or authenticate with the server:\n\n{message}",
@@ -386,7 +410,7 @@ class ClientManager(tk.Tk):
             return
 
         self.process_session.stop()
-        self.status_var.set("Stopping client...")
+        self._return_to_login_prompt()
 
     def open_cli(self):
         self.console_window.show_window()
@@ -420,9 +444,7 @@ class ClientManager(tk.Tk):
             self.status_var.set(f"Client stopped. Exit code: {returncode}")
             self.pid_var.set(f"PID: {process.pid}")
         else:
-            self.status_var.set(
-                "Client stopped. Start a session to open the timer window and CLI."
-            )
+            self.status_var.set(self._login_prompt_status)
             self.pid_var.set("PID: -")
 
         if running or self.validation_in_progress:

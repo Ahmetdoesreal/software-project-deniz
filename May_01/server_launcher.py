@@ -416,7 +416,7 @@ class ServerManager(tk.Tk):
             return
 
         self.process_session.stop()
-        self.status_var.set("Stopping server...")
+        self._return_to_server_prompt("Server stopped.")
 
     def open_cli(self):
         self.console_window.show_window()

@@ -13,6 +13,22 @@ from common.manager_support import (
     apply_dpi_awareness,
     install_close_guard,
 )
+from common.server_ports import detect_port_conflict
+
+
+def _extract_startup_failure(output: str) -> str | None:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        normalized = line.removeprefix("[ERROR] ").strip()
+        lower = normalized.lower()
+        if "server with id" in lower and "already running" in lower:
+            advice = ""
+            if index + 1 < len(lines) and lines[index + 1].startswith("[ERROR]"):
+                advice = " " + lines[index + 1].removeprefix("[ERROR] ").strip()
+            return normalized + advice
+        if "port" in lower and ("already in use" in lower or "already used" in lower):
+            return normalized
+    return None
 
 
 class ServerManager(tk.Tk):
@@ -33,6 +49,8 @@ class ServerManager(tk.Tk):
             empty_message="Start the server to begin capturing session output.",
         )
         self._last_known_returncode = None
+        self._startup_failure_reported = False
+        self._server_prompt_status = "Server stopped."
 
         self.title("Exam Server Manager")
         self.geometry("920x760")
@@ -79,7 +97,8 @@ class ServerManager(tk.Tk):
 
         ttk.Label(self, text="Server ID:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=8)
         self.v_id = tk.StringVar(value="default")
-        ttk.Entry(self, textvariable=self.v_id).grid(
+        self.id_entry = ttk.Entry(self, textvariable=self.v_id)
+        self.id_entry.grid(
             row=1,
             column=1,
             sticky=tk.EW,
@@ -115,7 +134,8 @@ class ServerManager(tk.Tk):
 
         ttk.Label(self, text="Port:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=8)
         self.v_port = tk.IntVar(value=self.local_port)
-        ttk.Entry(self, textvariable=self.v_port).grid(
+        self.port_entry = ttk.Entry(self, textvariable=self.v_port)
+        self.port_entry.grid(
             row=4,
             column=1,
             sticky=tk.EW,
@@ -325,6 +345,15 @@ class ServerManager(tk.Tk):
         if not 1 <= self.v_port.get() <= 65535:
             messagebox.showerror("Validation Error", "Port must be between 1 and 65535.")
             return False
+        conflict = detect_port_conflict(
+            self.v_host.get().strip() or "0.0.0.0",
+            self.v_port.get(),
+            self.v_id.get().strip(),
+        )
+        if conflict:
+            self._return_to_server_prompt(conflict)
+            messagebox.showerror("Server Start Blocked", conflict)
+            return False
         return True
 
     def start_server(self):
@@ -343,13 +372,30 @@ class ServerManager(tk.Tk):
                 env=env,
             )
         except Exception as exc:
+            self._return_to_server_prompt(str(exc))
             messagebox.showerror("Launch Error", str(exc))
             return
 
         self._last_known_returncode = None
+        self._startup_failure_reported = False
+        self._server_prompt_status = "Server stopped."
         self.summary_var.set(self._session_summary_text())
         self.status_var.set("Server starting...")
         self._set_setup_visible(False)
+
+    def _return_to_server_prompt(self, message: str | None = None):
+        self._set_setup_visible(True)
+        self.summary_var.set("Session Summary: -")
+        if message:
+            self._server_prompt_status = message
+        self.status_var.set(self._server_prompt_status)
+        self.deiconify()
+        self.lift()
+        self.port_entry.focus_set()
+        try:
+            self.port_entry.selection_range(0, tk.END)
+        except tk.TclError:
+            pass
 
     def stop_server(self):
         if not self._server_running():
@@ -365,7 +411,7 @@ class ServerManager(tk.Tk):
             return
 
         self.process_session.stop()
-        self.status_var.set("Stopping server...")
+        self._return_to_server_prompt("Server stopped.")
 
     def open_cli(self):
         self.console_window.show_window()
@@ -404,10 +450,18 @@ class ServerManager(tk.Tk):
             self.status_var.set("Server running under manager control.")
             self.pid_var.set(f"PID: {process.pid}")
         elif process is not None and returncode is not None:
-            self.status_var.set(f"Server stopped. Exit code: {returncode}")
+            startup_failure = _extract_startup_failure(self.process_session.read_output_text())
+            if startup_failure:
+                self._server_prompt_status = startup_failure
+                self._return_to_server_prompt(startup_failure)
+                if not self._startup_failure_reported:
+                    self._startup_failure_reported = True
+                    messagebox.showerror("Server Start Failed", startup_failure)
+            else:
+                self.status_var.set(f"Server stopped. Exit code: {returncode}")
             self.pid_var.set(f"PID: {process.pid}")
         else:
-            self.status_var.set("Server stopped.")
+            self.status_var.set(self._server_prompt_status)
             self.pid_var.set("PID: -")
 
         if running:

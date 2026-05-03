@@ -416,7 +416,7 @@ class ClientManager(tk.Tk):
             return
 
         self.process_session.stop()
-        self.status_var.set("Stopping client...")
+        self._return_to_login_prompt()
 
     def open_cli(self):
         self.console_window.show_window()

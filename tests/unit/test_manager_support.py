@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from common.manager_support import ManagedProcessSession
+from common.server_ports import describe_port_conflict
+from server_launcher import _extract_startup_failure
 
 
 class ManagerSupportTests(unittest.TestCase):
@@ -61,6 +63,33 @@ class ManagerSupportTests(unittest.TestCase):
             output = session.read_output_text()
             self.assertIn("[MANAGER] > start", output)
             self.assertIn("echo:start", output)
+
+
+class LauncherFailureParsingTests(unittest.TestCase):
+    def test_extract_startup_failure_from_duplicate_server_output(self):
+        output = "\n".join(
+            [
+                "[CHECK] Waiting up to 5.0s for an existing server with id 'default' to announce itself...",
+                "[ERROR] A server with id 'default' is already running at 127.0.0.1:8080",
+                "[ERROR] Use a different --id or stop the other server first.",
+            ]
+        )
+
+        message = _extract_startup_failure(output)
+
+        self.assertIn("already running", message)
+        self.assertIn("Use a different --id", message)
+
+    def test_extract_startup_failure_from_port_conflict_output(self):
+        message = _extract_startup_failure("[ERROR] Port 8080 is already in use.")
+
+        self.assertEqual(message, "Port 8080 is already in use.")
+
+    def test_describe_port_conflict_mentions_existing_server_id(self):
+        message = describe_port_conflict("default", 8080, "lab")
+
+        self.assertIn("lab", message)
+        self.assertIn("8080", message)
 
 
 if __name__ == "__main__":
