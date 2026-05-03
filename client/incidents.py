@@ -19,6 +19,14 @@ def _normalize_name(value: str | None) -> str:
     return str(value or "").strip().lower()
 
 
+def _title_matches_any(window_title: str, entries: list[str], match_mode: str) -> bool:
+    title = _normalize_name(window_title)
+    clean_entries = [_normalize_name(entry) for entry in entries if _normalize_name(entry)]
+    if match_mode == "exact":
+        return title in clean_entries
+    return any(entry in title for entry in clean_entries)
+
+
 def _process_parts(process: ProcessEntry) -> tuple[int, str, str | None]:
     pid = int(process[0])
     name = str(process[1])
@@ -318,17 +326,18 @@ class ClientIncidentEngine:
         process_name = _normalize_name(snapshot.get("process_name"))
         window_title = _normalize_name(snapshot.get("window_title"))
         blocked_process_names = {_normalize_name(value) for value in rule.get("blocked_process_names", [])}
-        blocked_window_titles = {_normalize_name(value) for value in rule.get("blocked_window_titles", [])}
+        blocked_window_titles = [_normalize_name(value) for value in rule.get("blocked_window_titles", [])]
         allowed_process_names = {_normalize_name(value) for value in rule.get("allowed_process_names", [])}
-        allowed_window_titles = {_normalize_name(value) for value in rule.get("allowed_window_titles", [])}
+        allowed_window_titles = [_normalize_name(value) for value in rule.get("allowed_window_titles", [])]
+        window_title_match_mode = str(rule.get("window_title_match_mode", "contains") or "contains").strip().lower()
 
         if process_name and process_name in blocked_process_names:
             return True
-        if window_title and window_title in blocked_window_titles:
+        if window_title and _title_matches_any(window_title, blocked_window_titles, window_title_match_mode):
             return True
         if allowed_process_names and process_name not in allowed_process_names:
             return True
-        if allowed_window_titles and window_title not in allowed_window_titles:
+        if allowed_window_titles and not _title_matches_any(window_title, allowed_window_titles, window_title_match_mode):
             return True
         return False
 

@@ -162,6 +162,49 @@ class ClientIncidentEngineTests(unittest.TestCase):
 
         self.assertEqual([incident for incident in incidents if incident["rule_id"] == "unexpected_process"], [])
 
+    def test_focused_window_blocked_title_uses_contains_matching(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update(
+            {
+                "allowed_process_names": [],
+                "blocked_window_titles": ["discord"],
+                "window_title_match_mode": "contains",
+                "open_after_consecutive": 1,
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "chrome.exe", "window_title": "Discord - Chat", "process_id": 1}
+        )
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["status"], "opened")
+
+    def test_focused_window_allowed_title_uses_contains_matching(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update(
+            {
+                "allowed_process_names": [],
+                "allowed_window_titles": ["exam portal"],
+                "window_title_match_mode": "contains",
+                "open_after_consecutive": 1,
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "browser.exe", "window_title": "Spring Exam Portal - Question 1", "process_id": 1}
+        )
+
+        self.assertEqual(incidents, [])
+
 
 if __name__ == "__main__":
     unittest.main()

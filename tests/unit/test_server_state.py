@@ -87,6 +87,7 @@ class ServerStatePolicyTests(unittest.TestCase):
                                 "enabled": True,
                                 "severity": "warning",
                                 "blocked_window_titles": ["discord"],
+                                "window_title_match_mode": "contains",
                             },
                         },
                         "operator_defaults": {
@@ -110,6 +111,10 @@ class ServerStatePolicyTests(unittest.TestCase):
                 self.assertEqual(state.process_blacklist, ["discord.exe", "steam.exe"])
                 self.assertFalse(state.session_policy()["auto_resume_on_reconnect"])
                 self.assertFalse(state.rule_config("process_blacklist")["allow_remote_kill"])
+                self.assertEqual(
+                    state.rule_config("focused_window_policy")["window_title_match_mode"],
+                    "contains",
+                )
                 self.assertFalse(state.operator_defaults()["confirm_kill_pid"])
 
                 with open(export_path, "r", encoding="utf-8") as settings_file:

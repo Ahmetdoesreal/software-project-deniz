@@ -4,10 +4,11 @@ from tkinter import filedialog, messagebox, ttk
 
 
 SEVERITY_VALUES = ("info", "warning", "violation")
+WINDOW_TITLE_MATCH_MODES = ("contains", "exact")
 SETTINGS_TAB_LABELS = {
     "Session Policy": "Session",
     "Process Blacklist": "Blacklist",
-    "Focused Window": "Focus",
+    "Focused Window": "Titlebar",
     "Rapid Application Switching": "Rapid Switch",
     "Unexpected Process": "Unexpected",
     "Operator Confirmations": "Confirmations",
@@ -40,19 +41,29 @@ class PolicySettingsMixin:
 
         toolbar = ttk.Frame(container, padding=(10, 10, 10, 0))
         toolbar.pack(fill=tk.X)
+        toolbar.columnconfigure(0, weight=1)
+        toolbar.columnconfigure(1, weight=0)
+
+        save_group = ttk.Frame(toolbar)
+        save_group.grid(row=0, column=0, sticky=tk.W)
+
+        file_group = ttk.Frame(toolbar)
+        file_group.grid(row=0, column=1, sticky=tk.E)
+
         self.save_settings_button = ttk.Button(
-            toolbar,
+            save_group,
             text="Save Settings",
             command=self.save_settings,
             state=tk.DISABLED,
+            width=16,
         )
         self.save_settings_button.pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Reload From Server", command=self.reload_settings_form).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(toolbar, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(toolbar, text="Import Settings", command=self.import_settings).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(toolbar, text="Open Policy File", command=self.edit_policy).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(toolbar, text="Apply Policy File", command=self.apply_policy).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(toolbar, textvariable=self.settings_status_var).pack(side=tk.RIGHT, padx=(10, 0))
+        ttk.Button(save_group, text="Reload", command=self.reload_settings_form, width=12).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(file_group, text="Export", command=self.export_settings, width=10).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(file_group, text="Import", command=self.import_settings, width=10).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(file_group, text="Open Policy File", command=self.edit_policy, width=16).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(file_group, text="Apply Policy File", command=self.apply_policy, width=16).pack(side=tk.LEFT)
+        ttk.Label(toolbar, textvariable=self.settings_status_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
 
         self.settings_notebook = ttk.Notebook(container)
         self.settings_notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -143,13 +154,14 @@ class PolicySettingsMixin:
         frame = self._settings_section("Focused Window")
         self._settings_check(frame, "rules.focused_window.enabled", "Enabled", 0, 0)
         self._settings_combo(frame, "Severity", "rules.focused_window.severity", 0, 1, SEVERITY_VALUES)
-        self._settings_entry(frame, "Open After", "rules.focused_window.open_after_consecutive", 1, 0, width=12)
-        self._settings_entry(frame, "Resolve After", "rules.focused_window.resolve_after_consecutive", 1, 2, width=12)
-        self._settings_check(frame, "rules.focused_window.auto_violation_pause", "Auto pause on violation", 2, 0, columnspan=2)
+        self._settings_combo(frame, "Titlebar Match", "rules.focused_window.window_title_match_mode", 1, 0, WINDOW_TITLE_MATCH_MODES)
+        self._settings_entry(frame, "Open After", "rules.focused_window.open_after_consecutive", 1, 2, width=12)
+        self._settings_entry(frame, "Resolve After", "rules.focused_window.resolve_after_consecutive", 2, 0, width=12)
+        self._settings_check(frame, "rules.focused_window.auto_violation_pause", "Auto pause on violation", 2, 2, columnspan=2)
         self._settings_text(frame, "Allowed process names, one per line", "rules.focused_window.allowed_process_names", 3, height=3)
-        self._settings_text(frame, "Allowed window titles, one per line", "rules.focused_window.allowed_window_titles", 4, height=3)
+        self._settings_text(frame, "Allowed titlebar text, one per line", "rules.focused_window.allowed_window_titles", 4, height=3)
         self._settings_text(frame, "Blocked process names, one per line", "rules.focused_window.blocked_process_names", 5, height=3)
-        self._settings_text(frame, "Blocked window titles, one per line", "rules.focused_window.blocked_window_titles", 6, height=3)
+        self._settings_text(frame, "Blocked titlebar text, one per line", "rules.focused_window.blocked_window_titles", 6, height=3)
 
     def _build_rapid_switch_settings_section(self):
         frame = self._settings_section("Rapid Application Switching")
@@ -183,8 +195,8 @@ class PolicySettingsMixin:
 
         top = tk.Toplevel(self)
         top.title("Policy Settings")
-        top.geometry("980x680")
-        top.minsize(860, 560)
+        top.geometry("1040x720")
+        top.minsize(920, 620)
         self._settings_window = top
         top.protocol("WM_DELETE_WINDOW", self._close_policy_settings_window)
         top.bind("<Destroy>", lambda event: self._forget_policy_settings_window(top) if event.widget is top else None)
@@ -342,6 +354,10 @@ class PolicySettingsMixin:
             )
 
             self._set_rule_common("rules.focused_window", focused_window, default_enabled=False, default_severity="warning")
+            self._set_settings_var(
+                "rules.focused_window.window_title_match_mode",
+                focused_window.get("window_title_match_mode", "contains"),
+            )
             self._set_settings_var("rules.focused_window.open_after_consecutive", focused_window.get("open_after_consecutive", 3))
             self._set_settings_var("rules.focused_window.resolve_after_consecutive", focused_window.get("resolve_after_consecutive", 2))
             for key in (
@@ -427,6 +443,10 @@ class PolicySettingsMixin:
         return value
 
     def _collect_settings_payload(self) -> dict:
+        title_match_mode = str(self._settings_var_value("rules.focused_window.window_title_match_mode") or "contains").strip().lower()
+        if title_match_mode not in WINDOW_TITLE_MATCH_MODES:
+            raise ValueError("Titlebar match must be contains or exact.")
+
         exam_policy = {
             "session": {
                 "auto_resume_on_reconnect": self._settings_bool("session.auto_resume_on_reconnect"),
@@ -447,6 +467,7 @@ class PolicySettingsMixin:
                     "allowed_window_titles": self._settings_text_lines("rules.focused_window.allowed_window_titles"),
                     "blocked_process_names": self._settings_text_lines("rules.focused_window.blocked_process_names"),
                     "blocked_window_titles": self._settings_text_lines("rules.focused_window.blocked_window_titles"),
+                    "window_title_match_mode": title_match_mode,
                     "open_after_consecutive": self._positive_int_setting(
                         "rules.focused_window.open_after_consecutive",
                         "Focused-window open-after count",

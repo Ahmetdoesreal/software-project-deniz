@@ -140,77 +140,48 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         info_frame = ttk.LabelFrame(parent, text="Server Info")
         info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
 
-        action_frame = ttk.Frame(info_frame, padding=(8, 8, 8, 0))
-        action_frame.pack(fill=tk.X)
+        toolbar = ttk.Frame(info_frame, padding=(8, 8, 8, 0))
+        toolbar.pack(fill=tk.X)
+        toolbar.columnconfigure(0, weight=1)
+        toolbar.columnconfigure(1, weight=0)
+
+        exam_controls = ttk.Frame(toolbar)
+        exam_controls.grid(row=0, column=0, sticky=tk.W)
+
+        settings_controls = ttk.Frame(toolbar)
+        settings_controls.grid(row=0, column=1, sticky=tk.E)
 
         self.start_exam_button = ttk.Button(
-            action_frame,
+            exam_controls,
             text="Start Exam",
             command=self.start_exam_globally,
+            width=14,
         )
         self.start_exam_button.pack(side=tk.LEFT)
 
         self.finish_exam_button = ttk.Button(
-            action_frame,
+            exam_controls,
             text="Finish Exam",
             command=self.finish_exam_globally,
+            width=14,
         )
         self.finish_exam_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        blacklist_frame = ttk.Frame(info_frame, padding=(8, 6, 8, 0))
-        blacklist_frame.pack(fill=tk.X)
-        for column in range(3):
-            blacklist_frame.columnconfigure(column, weight=1)
-
-        self.edit_blacklist_button = ttk.Button(
-            blacklist_frame,
-            text="Edit Blacklist",
-            command=self.edit_blacklist,
-        )
-        self.edit_blacklist_button.grid(row=0, column=0, sticky=tk.EW)
-
-        self.apply_blacklist_button = ttk.Button(
-            blacklist_frame,
-            text="Apply Blacklist",
-            command=self.apply_blacklist,
-        )
-        self.apply_blacklist_button.grid(row=0, column=1, sticky=tk.EW, padx=(8, 0))
-
-        self.edit_policy_button = ttk.Button(
-            blacklist_frame,
+        self.policy_settings_button = ttk.Button(
+            settings_controls,
             text="Policy Settings",
             command=self.open_policy_settings_window,
+            width=18,
         )
-        self.edit_policy_button.grid(row=0, column=2, sticky=tk.EW, padx=(8, 0))
-
-        self.apply_policy_button = ttk.Button(
-            blacklist_frame,
-            text="Apply Policy",
-            command=self.apply_policy,
-        )
-        self.apply_policy_button.grid(row=1, column=0, sticky=tk.EW, pady=(8, 0))
-
-        self.export_settings_button = ttk.Button(
-            blacklist_frame,
-            text="Export Settings",
-            command=self.export_settings,
-        )
-        self.export_settings_button.grid(row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
-
-        self.import_settings_button = ttk.Button(
-            blacklist_frame,
-            text="Import Settings",
-            command=self.import_settings,
-        )
-        self.import_settings_button.grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
+        self.policy_settings_button.pack(side=tk.LEFT)
 
         remember_toggle = ttk.Checkbutton(
-            info_frame,
+            settings_controls,
             text="Remember Settings",
             variable=self.remember_settings_var,
             command=self.toggle_remember_settings,
         )
-        remember_toggle.pack(anchor=tk.W, padx=8, pady=(4, 0))
+        remember_toggle.pack(side=tk.LEFT, padx=(12, 0))
 
         self.server_info_var = tk.StringVar(value="Waiting for server state...")
         info_label = ttk.Label(
@@ -708,14 +679,6 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def finish_exam_globally(self):
         print(json.dumps({"cmd": "finish_exam_global"}), flush=True)
         self._append_log("[ADMIN] Requested global exam finish")
-
-    def edit_blacklist(self):
-        print(json.dumps({"cmd": "edit_blacklist"}), flush=True)
-        self._append_log("[ADMIN] Opening process blacklist file")
-
-    def apply_blacklist(self):
-        print(json.dumps({"cmd": "apply_blacklist"}), flush=True)
-        self._append_log("[ADMIN] Applying process blacklist")
 
     def edit_policy(self):
         print(json.dumps({"cmd": "edit_policy"}), flush=True)

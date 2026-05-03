@@ -277,6 +277,7 @@ class ServerState:
                     "allowed_window_titles": list(focused_window.get("allowed_window_titles", [])),
                     "blocked_process_names": list(focused_window.get("blocked_process_names", [])),
                     "blocked_window_titles": list(focused_window.get("blocked_window_titles", [])),
+                    "window_title_match_mode": str(focused_window.get("window_title_match_mode", "contains")),
                     "open_after_consecutive": int(focused_window.get("open_after_consecutive", 3)),
                     "resolve_after_consecutive": int(focused_window.get("resolve_after_consecutive", 2)),
                     "auto_violation_pause": bool(focused_window.get("auto_violation_pause", False)),
@@ -428,6 +429,7 @@ class ServerState:
                     "allowed_window_titles": [],
                     "blocked_process_names": [],
                     "blocked_window_titles": [],
+                    "window_title_match_mode": "contains",
                     "open_after_consecutive": 3,
                     "resolve_after_consecutive": 2,
                     "auto_violation_pause": False,
@@ -537,6 +539,10 @@ class ServerState:
             normalized["rules"]["focused_window"]["blocked_window_titles"] = self._string_list(
                 focused_window.get("blocked_window_titles", [])
             )
+            match_mode = str(focused_window.get("window_title_match_mode", "contains")).strip().lower()
+            if match_mode not in {"contains", "exact"}:
+                match_mode = "contains"
+            normalized["rules"]["focused_window"]["window_title_match_mode"] = match_mode
             normalized["rules"]["focused_window"]["open_after_consecutive"] = max(
                 1,
                 int(focused_window.get("open_after_consecutive", 3) or 3),
