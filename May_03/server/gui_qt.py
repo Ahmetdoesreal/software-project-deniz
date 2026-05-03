@@ -6,7 +6,9 @@ Selected at runtime by ``server/gui.py --ui qt``.
 
 from __future__ import annotations
 
+import faulthandler
 import json
+import queue
 import sys
 from collections import Counter
 from datetime import datetime
@@ -229,8 +231,6 @@ def _emit_command(payload: dict) -> None:
 
 
 class _IPCSignals(QObject):
-    state_update = Signal(dict)
-    client_message = Signal(str, str)
     parent_closed = Signal()
 
 
@@ -1152,7 +1152,7 @@ class ServerGUI(QMainWindow):
         )
 
 
-def _ipc_reader(signals: _IPCSignals) -> None:
+def _ipc_reader(q: queue.Queue) -> None:
     try:
         for line in iter(sys.stdin.readline, ""):
             line = line.strip()
@@ -1163,34 +1163,51 @@ def _ipc_reader(signals: _IPCSignals) -> None:
             except json.JSONDecodeError as exc:
                 print(f"[DEBUG] GUI IPC Error: {exc}", file=sys.stderr)
                 continue
-            message_type = msg.get("type")
-            if message_type == "state_update":
-                signals.state_update.emit(msg)
-            elif message_type == "client_message":
-                signals.client_message.emit(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
+            q.put(msg)
     except (OSError, ValueError):
         pass
-    signals.parent_closed.emit()
+    q.put(None)  # sentinel → parent closed
 
 
 def run() -> int:
-    setup_runtime_logging(
-        "server_gui",
-        PROJECT_DIR / "data" / "logs" / "server",
-    )
+    log_dir = PROJECT_DIR / "data" / "logs" / "server"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    setup_runtime_logging("server_gui", log_dir)
+    _crash_log = log_dir / f"server_gui_crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    faulthandler.enable(file=_crash_log.open("w", encoding="utf-8"), all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
     apply_glass_theme(app)
     standalone = sys.stdin.isatty()
     gui = ServerGUI(standalone_mode=standalone)
     gui.show()
 
+    ipc_queue: queue.Queue = queue.Queue()
+
     signals = _IPCSignals()
-    signals.state_update.connect(gui.process_state_update)
-    signals.client_message.connect(gui.log_message)
     if not standalone:
         signals.parent_closed.connect(gui.force_close)
 
-    reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
+    def _poll_ipc() -> None:
+        try:
+            while True:
+                msg = ipc_queue.get_nowait()
+                if msg is None:
+                    signals.parent_closed.emit()
+                    return
+                message_type = msg.get("type")
+                if message_type == "state_update":
+                    gui.process_state_update(msg)
+                elif message_type == "client_message":
+                    gui.log_message(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
+        except queue.Empty:
+            pass
+
+    poll_timer = QTimer()
+    poll_timer.setInterval(50)
+    poll_timer.timeout.connect(_poll_ipc)
+    poll_timer.start()
+
+    reader_thread = Thread(target=_ipc_reader, args=(ipc_queue,), daemon=True)
     reader_thread.start()
 
     return app.exec()

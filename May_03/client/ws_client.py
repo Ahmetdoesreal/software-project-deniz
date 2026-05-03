@@ -6,6 +6,8 @@ import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from threading import Thread
 
 import aiohttp
@@ -131,12 +133,16 @@ class ClientGUIBridge:
         if self.process is not None and self.process.poll() is None:
             return
 
+        stderr_log_dir = Path(_project_dir()) / "data" / "logs" / "client"
+        stderr_log_dir.mkdir(parents=True, exist_ok=True)
+        stderr_log_path = stderr_log_dir / f"client_gui_stderr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         self.process = subprocess.Popen(
             [sys.executable, "-m", "client.gui", "--ui", self.ui],
             cwd=_project_dir(),
             env=_child_env(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            stderr=stderr_log_path.open("w", encoding="utf-8", errors="replace"),
             text=True,
             bufsize=1,
         )

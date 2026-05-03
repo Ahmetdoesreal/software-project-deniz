@@ -6,6 +6,7 @@ Selected at runtime by ``client/gui.py --ui qt``.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import sys
 from pathlib import Path
@@ -605,10 +606,11 @@ def _ipc_reader(signals: _IPCSignals) -> None:
 
 
 def run() -> int:
-    setup_runtime_logging(
-        "client_gui",
-        PROJECT_DIR / "data" / "logs" / "client",
-    )
+    log_dir = PROJECT_DIR / "data" / "logs" / "client"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    setup_runtime_logging("client_gui", log_dir)
+    _crash_log = log_dir / f"client_gui_crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    faulthandler.enable(file=_crash_log.open("w", encoding="utf-8"), all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
     apply_theme(app)
     standalone = sys.stdin.isatty()

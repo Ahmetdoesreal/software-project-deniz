@@ -6,6 +6,8 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 from threading import Thread
 
 from aiohttp import web
@@ -101,6 +103,9 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
     gui_env["PYTHONPATH"] = str(project_dir) + os.pathsep + gui_env.get("PYTHONPATH", "")
     gui_env["PYTHONUNBUFFERED"] = "1"
 
+    stderr_log_dir = Path(project_dir) / "data" / "logs" / "server"
+    stderr_log_dir.mkdir(parents=True, exist_ok=True)
+    stderr_log_path = stderr_log_dir / f"server_gui_stderr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     try:
         gui_process = subprocess.Popen(
             [python_executable, "-m", str(gui_module), "--ui", gui_ui],
@@ -108,6 +113,7 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
             env=gui_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            stderr=stderr_log_path.open("w", encoding="utf-8", errors="replace"),
             text=True,
             bufsize=1,
         )
