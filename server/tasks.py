@@ -77,10 +77,28 @@ def _push_gui_state(app: web.Application):
         {
             "type": "state_update",
             "server": _build_server_info(app),
+            "settings": _settings_snapshot(app),
             "clients": _build_gui_clients(exam_duration_sec),
             "incidents": _build_gui_incidents(),
         }
     )
+
+
+def _settings_snapshot(app: web.Application) -> dict:
+    policy = state.current_exam_policy()
+    return {
+        "exam_policy": json.loads(json.dumps(state.exam_policy_config)),
+        "current_exam_policy": policy,
+        "policy_version": policy.get("policy_version", ""),
+        "process_blacklist": list(state.process_blacklist),
+        "process_blacklist_version": state.process_blacklist_version,
+        "operator_defaults": state.operator_defaults(),
+        "session": state.session_policy(),
+        "runtime": {
+            "exam_duration": app.get("exam_duration"),
+            "exam_files": app.get("exam_files"),
+        },
+    }
 
 
 def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) -> str:
@@ -449,6 +467,180 @@ async def _handle_import_settings(parts: list[str]):
         f"Policy {previous_version} -> {state.current_exam_policy().get('policy_version', '')}. "
         f"Updated {max(blacklist_sent, policy_sent)} connected client(s)."
     )
+
+
+def _dedupe_setting_strings(values) -> list[str]:
+    if not isinstance(values, list):
+        raise ValueError("Expected a list of strings.")
+    result = []
+    seen = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(clean)
+    return result
+
+
+def _apply_gui_runtime_settings(app: web.Application, runtime: dict) -> tuple[list[str], list[str]]:
+    if not isinstance(runtime, dict):
+        return ["Runtime settings must be an object."], []
+
+    errors: list[str] = []
+    updates = {}
+    if "exam_duration" in runtime:
+        try:
+            exam_duration = int(runtime.get("exam_duration"))
+        except (TypeError, ValueError):
+            errors.append("exam_duration must be a positive integer.")
+        else:
+            if exam_duration <= 0:
+                errors.append("exam_duration must be greater than 0.")
+            else:
+                updates["exam_duration"] = exam_duration
+
+    if "exam_files" in runtime:
+        exam_files = runtime.get("exam_files")
+        if exam_files in {None, ""}:
+            updates["exam_files"] = None
+        else:
+            exam_file = os.path.abspath(str(exam_files))
+            if not exam_file.lower().endswith(".zip"):
+                errors.append("exam_files must be a .zip file.")
+            elif not os.path.isfile(exam_file):
+                errors.append(f"exam_files does not exist: {exam_file}")
+            else:
+                updates["exam_files"] = exam_file
+
+    unsupported = sorted(set(runtime) - {"exam_duration", "exam_files"})
+    if unsupported:
+        errors.append(f"Unsupported runtime setting(s): {', '.join(unsupported)}")
+    if errors:
+        return errors, []
+
+    changed_paths = []
+    for key, value in updates.items():
+        if app.get(key) != value:
+            app[key] = value
+            changed_paths.append(f"runtime.{key}")
+    return [], changed_paths
+
+
+def _apply_gui_exam_policy(policy: dict) -> list[str]:
+    before = json.dumps(state.exam_policy_config, sort_keys=True, separators=(",", ":"))
+    normalized = state._normalize_exam_policy_config(policy)
+    after = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    if before == after:
+        return []
+    state.exam_policy_config = normalized
+    state.save_exam_policy()
+    return ["exam_policy"]
+
+
+def _apply_gui_process_blacklist(payload) -> list[str]:
+    if isinstance(payload, dict):
+        entries = payload.get("entries", [])
+    else:
+        entries = payload
+    next_entries = _dedupe_setting_strings(entries)
+    if [entry.lower() for entry in next_entries] == [entry.lower() for entry in state.process_blacklist]:
+        return []
+    state.process_blacklist = next_entries
+    state.save_process_blacklist()
+    return ["process_blacklist"]
+
+
+async def _handle_save_settings_from_gui(request: dict, app: web.Application):
+    errors: list[str] = []
+    changed_paths: list[str] = []
+    policy_changed = False
+    blacklist_changed = False
+
+    try:
+        if "runtime" in request:
+            runtime_errors, runtime_changed = _apply_gui_runtime_settings(app, request.get("runtime", {}))
+            if runtime_errors:
+                _write_to_gui(
+                    {
+                        "type": "settings_result",
+                        "ok": False,
+                        "message": "Settings were not saved.",
+                        "errors": runtime_errors,
+                        "changed_paths": [],
+                    }
+                )
+                _push_gui_state(app)
+                return
+            changed_paths.extend(runtime_changed)
+
+        if "exam_policy" in request:
+            policy_changed_paths = _apply_gui_exam_policy(request.get("exam_policy", {}))
+            changed_paths.extend(policy_changed_paths)
+            policy_changed = bool(policy_changed_paths)
+
+        if "process_blacklist" in request:
+            blacklist_changed_paths = _apply_gui_process_blacklist(request.get("process_blacklist", {}))
+            changed_paths.extend(blacklist_changed_paths)
+            blacklist_changed = bool(blacklist_changed_paths)
+
+        if errors:
+            _write_to_gui(
+                {
+                    "type": "settings_result",
+                    "ok": False,
+                    "message": "Settings were not saved.",
+                    "errors": errors,
+                    "changed_paths": changed_paths,
+                }
+            )
+            _push_gui_state(app)
+            return
+
+        policy_sent = 0
+        blacklist_sent = 0
+        if policy_changed or blacklist_changed:
+            blacklist_sent = await _broadcast_process_blacklist()
+            policy_sent = await _broadcast_exam_policy(update=True)
+
+        changed_count = len(set(changed_paths))
+        if changed_count:
+            message = (
+                f"Saved {changed_count} setting path(s). "
+                f"Updated {max(blacklist_sent, policy_sent)} connected client(s)."
+            )
+        else:
+            message = "No settings changes."
+
+        _write_to_gui(
+            {
+                "type": "settings_result",
+                "ok": True,
+                "message": message,
+                "errors": [],
+                "changed_paths": sorted(set(changed_paths)),
+                "policy_version": state.current_exam_policy().get("policy_version", ""),
+                "process_blacklist_version": state.process_blacklist_version,
+            }
+        )
+        print(f"[CMD] GUI settings saved. {message}")
+        _push_gui_state(app)
+    except Exception as exc:
+        error = f"Failed to save GUI settings: {exc}"
+        print(f"[CMD] {error}")
+        _write_to_gui(
+            {
+                "type": "settings_result",
+                "ok": False,
+                "message": error,
+                "errors": [error],
+                "changed_paths": changed_paths,
+            }
+        )
+        _push_gui_state(app)
 
 
 async def _handle_set_remember_settings(parts: list[str]):
@@ -1179,6 +1371,13 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "apply_policy":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command("/applypolicy", app),
+            loop,
+        )
+        return
+
+    if command == "save_settings":
+        asyncio.run_coroutine_threadsafe(
+            _handle_save_settings_from_gui(request, app),
             loop,
         )
         return

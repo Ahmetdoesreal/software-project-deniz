@@ -10,59 +10,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from common.manager_support import install_close_guard
 from common.runtime_logging import setup_runtime_logging
-
-
-def _format_bytes(size_bytes: int) -> str:
-    size = float(max(0, size_bytes))
-    units = ["B", "KB", "MB", "GB"]
-    unit_index = 0
-    while size >= 1024 and unit_index < len(units) - 1:
-        size /= 1024
-        unit_index += 1
-    if unit_index == 0:
-        return f"{int(size)} {units[unit_index]}"
-    return f"{size:.1f} {units[unit_index]}"
+from server.dashboard_popups import DashboardPopupMixin
+from server.policy_settings_window import PolicySettingsMixin
 
 
 def _format_remaining(seconds: int) -> str:
     minutes, remaining_seconds = divmod(int(max(0, seconds)), 60)
     return f"{minutes:02d}:{remaining_seconds:02d}"
-
-
-def _detail_lines(client_id: str, data: dict) -> list[str]:
-    time_spent = int(data.get("time_spent_seconds", 0))
-    extra_time = int(data.get("extra_time_seconds", 0))
-    minutes_spent, seconds_spent = divmod(time_spent, 60)
-    extra_minutes, extra_seconds = divmod(extra_time, 60)
-    return [
-        f"Login ID: {data.get('login_id', 'Unknown')}",
-        f"UUID: {client_id}",
-        f"Computer Name: {data.get('computer_name') or '-'}",
-        f"Short ID: {data.get('short_id') or '-'}",
-        f"Connection: {data.get('connection_status', 'Unknown')}",
-        f"Exam State: {data.get('exam_state', 'Unknown')}",
-        f"Banned: {'Yes' if data.get('banned') else 'No'}",
-        f"Admin Paused: {'Yes' if data.get('admin_paused') else 'No'}",
-        f"Pause Reason: {data.get('admin_pause_reason') or '-'}",
-        f"Remaining: {_format_remaining(data.get('remaining', 0))}",
-        f"Time Spent: {minutes_spent:02d}:{seconds_spent:02d}",
-        f"Extra Time: {extra_minutes:02d}:{extra_seconds:02d}",
-        f"Kick Count: {data.get('kick_count', 0)}",
-        f"Blacklist Catches: {data.get('blacklist_catch_count', 0)}",
-        f"Last Blacklist Match: {', '.join(data.get('last_blacklist_match', [])) or '-'}",
-        f"Latest Incident Rule: {data.get('latest_incident_rule_id') or '-'}",
-        f"Latest Incident Severity: {data.get('latest_incident_severity') or '-'}",
-        f"Latest Incident Status: {data.get('latest_incident_status') or '-'}",
-        f"Latest Incident Summary: {data.get('latest_incident_summary') or '-'}",
-        f"Latest Incident Artifact: {data.get('latest_incident_artifact_path') or '-'}",
-        f"Applied Policy Version: {data.get('applied_policy_version') or '-'}",
-        f"Last Action: {data.get('last_action') or '-'}",
-        f"IP Address: {data.get('ip') or '-'}",
-        f"Submission: {data.get('submission_name') or '-'}",
-        f"Submission Size: {_format_bytes(int(data.get('submission_size_bytes', 0)))}",
-        f"Submitted At: {data.get('submitted_at') or '-'}",
-        f"Submission Path: {data.get('submission_path') or '-'}",
-    ]
 
 
 def _incident_detail_lines(incident: dict) -> list[str]:
@@ -131,7 +85,7 @@ def _multi_incident_detail_lines(incidents: list[dict]) -> list[str]:
     return lines
 
 
-class ServerGUI(tk.Tk):
+class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def __init__(self):
         super().__init__()
         self.clients_data: dict[str, dict] = {}
@@ -141,6 +95,7 @@ class ServerGUI(tk.Tk):
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self._init_policy_settings()
         self._incident_tree_refreshing = False
 
         self.title("Server Monitor Dashboard")
@@ -223,8 +178,8 @@ class ServerGUI(tk.Tk):
 
         self.edit_policy_button = ttk.Button(
             blacklist_frame,
-            text="Edit Policy",
-            command=self.edit_policy,
+            text="Policy Settings",
+            command=self.open_policy_settings_window,
         )
         self.edit_policy_button.grid(row=0, column=2, sticky=tk.EW, padx=(8, 0))
 
@@ -524,97 +479,6 @@ class ServerGUI(tk.Tk):
 
         self.after(1000, self.update_timers)
 
-    def show_info(self):
-        client_id, data = self._selected_client_data()
-        if not client_id:
-            messagebox.showinfo("Info", "Select a client first.")
-            return
-
-        window_key = ("info", client_id)
-        if self._focus_existing_window(window_key):
-            return
-
-        self._open_detail_window(
-            window_key=window_key,
-            title=f"Info: {data.get('login_id', 'Unknown')}",
-            lines=_detail_lines(client_id, data or {}),
-        )
-
-    def show_options(self):
-        client_id, data = self._selected_client_data()
-        if not client_id:
-            messagebox.showinfo("Options", "Select a client first.")
-            return
-        data = data or {}
-
-        window_key = ("options", client_id)
-        if self._focus_existing_window(window_key):
-            return
-
-        top = tk.Toplevel(self)
-        top.title(f"Options: {data.get('login_id', 'Unknown')}")
-        top.geometry("430x500")
-        self._register_window(window_key, top)
-
-        frame = ttk.Frame(top, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(frame, text="User Actions:").pack(anchor=tk.W, pady=(0, 10))
-        ttk.Button(
-            frame,
-            text="Kick Client",
-            command=lambda: self._send_window_command(top, "kick", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Ban User",
-            command=lambda: self._send_window_command(top, "ban", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Pause Exam",
-            command=lambda: self._send_window_command(top, "pause_exam", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Resume Exam",
-            command=lambda: self._send_window_command(top, "resume_exam", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Unban User",
-            command=lambda: self._send_window_command(top, "unban", client_id),
-        ).pack(fill=tk.X, pady=5)
-
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-
-        ttk.Label(frame, text="Connected Client Commands:").pack(anchor=tk.W, pady=4)
-        ttk.Button(
-            frame,
-            text="Request Save Screen",
-            command=lambda: self._send_client_command(top, "savescreen", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Request Process Report",
-            command=lambda: self._send_client_command(top, "get_processes", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-
-        add_time_frame = ttk.Frame(frame, padding=(0, 10, 0, 0))
-        add_time_frame.pack(fill=tk.X)
-
-        ttk.Label(add_time_frame, text="Add Minutes:").pack(side=tk.LEFT)
-        minutes_entry = ttk.Entry(add_time_frame, width=8)
-        minutes_entry.pack(side=tk.LEFT, padx=8)
-        ttk.Button(
-            add_time_frame,
-            text="Apply",
-            command=lambda: self._send_add_time(top, client_id, minutes_entry.get()),
-        ).pack(side=tk.LEFT)
-
     def kill_selected_pid(self):
         incidents = self._selected_incidents()
         if not incidents:
@@ -837,29 +701,6 @@ class ServerGUI(tk.Tk):
             else tk.DISABLED
         )
 
-    def _send_client_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
-        window.destroy()
-        self._append_log(f"[ADMIN] Sent {command} to {client_id}")
-
-    def _send_window_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
-        window.destroy()
-        self._append_log(f"[ADMIN] Sent {command} to {client_id}")
-
-    def _send_add_time(self, window, client_id: str, minutes_text: str):
-        minutes_text = minutes_text.strip()
-        if not minutes_text:
-            messagebox.showwarning("Add Time", "Enter a number of minutes first.")
-            return
-
-        print(
-            json.dumps({"type": "console_command", "command": f"/addtime {client_id} {minutes_text}"}),
-            flush=True,
-        )
-        window.destroy()
-        self._append_log(f"[ADMIN] Added {minutes_text} minute(s) to {client_id}")
-
     def start_exam_globally(self):
         print(json.dumps({"cmd": "start_exam_global"}), flush=True)
         self._append_log("[ADMIN] Enabled exam start globally")
@@ -919,57 +760,6 @@ class ServerGUI(tk.Tk):
             f"[ADMIN] Remember settings {'enabled' if self.remember_settings_var.get() else 'disabled'}"
         )
 
-    def _open_detail_window(self, window_key, title: str, lines: list[str]):
-        top = tk.Toplevel(self)
-        top.title(title)
-        top.geometry("560x460")
-        self._register_window(window_key, top)
-
-        frame = ttk.Frame(top, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
-
-        details = tk.Text(frame, wrap=tk.NONE, height=12)
-        details.configure(
-            relief=tk.SUNKEN,
-            borderwidth=1,
-            highlightthickness=0,
-            padx=6,
-            pady=6,
-            font=self.mono_font,
-        )
-        detail_scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=details.yview)
-        detail_x_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=details.xview)
-        details.configure(
-            yscrollcommand=detail_scroll.set,
-            xscrollcommand=detail_x_scroll.set,
-        )
-        details.grid(row=0, column=0, sticky=tk.NSEW)
-        detail_scroll.grid(row=0, column=1, sticky=tk.NS)
-        detail_x_scroll.grid(row=1, column=0, sticky=tk.EW)
-        details.insert(tk.END, "\n".join(lines))
-        details.config(state=tk.DISABLED)
-
-    def _register_window(self, window_key, window):
-        self.open_windows[window_key] = window
-        window.bind("<Destroy>", lambda _event: self._forget_window(window_key, window))
-
-    def _forget_window(self, window_key, window):
-        existing = self.open_windows.get(window_key)
-        if existing is window:
-            self.open_windows.pop(window_key, None)
-
-    def _focus_existing_window(self, window_key) -> bool:
-        window = self.open_windows.get(window_key)
-        if not window or not window.winfo_exists():
-            self.open_windows.pop(window_key, None)
-            return False
-
-        window.lift()
-        window.focus_force()
-        return True
-
     def send_console_command(self):
         command = self.cmd_entry.get().strip()
         if not command:
@@ -1011,6 +801,9 @@ class ServerGUI(tk.Tk):
         self.server_info = payload.get("server", {})
         self.remember_settings_var.set(bool(self.server_info.get("remember_settings", True)))
         self._update_server_info_panel()
+        settings_snapshot = payload.get("settings", {})
+        if isinstance(settings_snapshot, dict) and settings_snapshot:
+            self.update_settings_snapshot(settings_snapshot)
 
         clients = payload.get("clients", [])
         seen_client_ids = set()
@@ -1173,6 +966,8 @@ def ipc_reader(app: ServerGUI):
             app.after(0, app.process_state_update, msg)
         elif message_type == "client_message":
             app.after(0, app.log_message, msg.get("uuid"), msg.get("text"))
+        elif message_type == "settings_result":
+            app.after(0, app.process_settings_result, msg)
 
 
 if __name__ == "__main__":

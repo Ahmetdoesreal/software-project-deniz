@@ -13,7 +13,14 @@ from common.discovery import ServerAnnouncer
 from common import events, protocol, security
 from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, state
 from . import session_state
-from .settings_service import apply_process_decision, build_process_database
+from .settings_service import (
+    apply_process_decision,
+    build_process_database,
+    get_settings_snapshot,
+    update_exam_policy,
+    update_process_blacklist,
+    update_runtime_settings,
+)
 
 
 def _user_has_submission(user: dict) -> bool:
@@ -77,6 +84,7 @@ def _push_gui_state(app: web.Application):
         {
             "type": "state_update",
             "server": _build_server_info(app),
+            "settings": get_settings_snapshot(state, app),
             "clients": _build_gui_clients(exam_duration_sec),
             "incidents": _build_gui_incidents(),
             "process_database": build_process_database(state),
@@ -453,6 +461,108 @@ async def _handle_import_settings(parts: list[str]):
         f"Policy {previous_version} -> {state.current_exam_policy().get('policy_version', '')}. "
         f"Updated {max(blacklist_sent, policy_sent)} connected client(s)."
     )
+
+
+async def _handle_save_settings_from_gui(request: dict, app: web.Application):
+    errors: list[str] = []
+    messages: list[str] = []
+    changed_paths: list[str] = []
+    policy_changed = False
+    blacklist_changed = False
+
+    try:
+        if "runtime" in request:
+            runtime_result = update_runtime_settings(app, request.get("runtime", {}), actor="gui")
+            messages.append(runtime_result.message)
+            changed_paths.extend(runtime_result.changed_paths)
+            errors.extend(runtime_result.errors)
+            if errors:
+                _write_to_gui(
+                    {
+                        "type": "settings_result",
+                        "ok": False,
+                        "message": "Settings were not saved.",
+                        "errors": errors,
+                        "changed_paths": changed_paths,
+                    }
+                )
+                _push_gui_state(app)
+                return
+
+        if "exam_policy" in request:
+            policy_result = update_exam_policy(state, request.get("exam_policy", {}), actor="gui")
+            messages.append(policy_result.message)
+            changed_paths.extend(policy_result.changed_paths)
+            errors.extend(policy_result.errors)
+            policy_changed = bool(policy_result.changed)
+
+        if "process_blacklist" in request:
+            blacklist_payload = request.get("process_blacklist", {})
+            if isinstance(blacklist_payload, dict):
+                entries = blacklist_payload.get("entries", [])
+            else:
+                entries = blacklist_payload
+            blacklist_result = update_process_blacklist(state, "replace", entries, actor="gui")
+            messages.append(blacklist_result.message)
+            changed_paths.extend(blacklist_result.changed_paths)
+            errors.extend(blacklist_result.errors)
+            blacklist_changed = bool(blacklist_result.changed)
+
+        if errors:
+            _write_to_gui(
+                {
+                    "type": "settings_result",
+                    "ok": False,
+                    "message": "Settings were not saved.",
+                    "errors": errors,
+                    "changed_paths": changed_paths,
+                }
+            )
+            _push_gui_state(app)
+            return
+
+        policy_sent = 0
+        blacklist_sent = 0
+        if policy_changed or blacklist_changed:
+            blacklist_sent = await _broadcast_process_blacklist()
+            policy_sent = await _broadcast_exam_policy(update=True)
+
+        changed_count = len(set(changed_paths))
+        if changed_count:
+            message = (
+                f"Saved {changed_count} setting path(s). "
+                f"Updated {max(blacklist_sent, policy_sent)} connected client(s)."
+            )
+        else:
+            message = "No settings changes."
+
+        _write_to_gui(
+            {
+                "type": "settings_result",
+                "ok": True,
+                "message": message,
+                "errors": [],
+                "changed_paths": sorted(set(changed_paths)),
+                "policy_version": state.current_exam_policy().get("policy_version", ""),
+                "process_blacklist_version": state.process_blacklist_version,
+                "details": [msg for msg in messages if msg],
+            }
+        )
+        print(f"[CMD] GUI settings saved. {message}")
+        _push_gui_state(app)
+    except Exception as exc:
+        error = f"Failed to save GUI settings: {exc}"
+        print(f"[CMD] {error}")
+        _write_to_gui(
+            {
+                "type": "settings_result",
+                "ok": False,
+                "message": error,
+                "errors": [error],
+                "changed_paths": changed_paths,
+            }
+        )
+        _push_gui_state(app)
 
 
 async def _handle_set_remember_settings(parts: list[str]):
@@ -1280,6 +1390,13 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "apply_policy":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command("/applypolicy", app),
+            loop,
+        )
+        return
+
+    if command == "save_settings":
+        asyncio.run_coroutine_threadsafe(
+            _handle_save_settings_from_gui(request, app),
             loop,
         )
         return
