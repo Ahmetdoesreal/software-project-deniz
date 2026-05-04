@@ -79,7 +79,13 @@ async def resolve_server_target(args) -> tuple[str, int]:
 
 
 async def establish_session(base_url: str, args, recorder_manager: RecorderManager) -> str:
-    session_uuid = await perform_login(base_url, args.login_id, args.password)
+    ad_domain = getattr(args, "ad_domain", None) or None
+    ad_secret = getattr(args, "auth_secret", None) or None
+    session_uuid = await perform_login(
+        base_url, args.login_id, args.password,
+        ad_domain=ad_domain,
+        ad_secret=ad_secret,
+    )
 
     if getattr(args, "check_login", False):
         print("[+] Credentials verified successfully.")
@@ -185,6 +191,8 @@ def main():
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
     parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
     parser.add_argument("--ui", choices=["tk", "qt"], default="tk", help="UI backend for GUI windows: tk (default) or qt")
+    parser.add_argument("--ad-domain", default=None, help="AD domain for local credential validation (enables AD auth mode)")
+    parser.add_argument("--auth-secret", default=None, help="Shared auth secret matching the server --auth-secret")
     parser.set_defaults(record=True)
     args = parser.parse_args()
 

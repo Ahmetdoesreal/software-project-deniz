@@ -648,6 +648,51 @@ async def health(request: web.Request) -> web.Response:
         "clients_connected": len(state.clients),
     })
 
+def _ad_auth_enabled(request: web.Request) -> bool:
+    return bool(request.app.get("ad_auth_enabled"))
+
+
+def _verify_ad_token(login_id: str, token: str, secret: str) -> bool:
+    """
+    Verify the HMAC-SHA256 token produced by check_user.exe --gen-token.
+    Accepts the current 60-second window and one window either side to allow
+    clock skew between client and server.
+    """
+    import hmac as _hmac
+    import hashlib
+    import time
+
+    secret_bytes = secret.encode("utf-8")
+    window_now = int(time.time()) // 60
+    for w in (window_now - 1, window_now, window_now + 1):
+        msg = f"{login_id}|{w}".encode("utf-8")
+        expected = _hmac.new(secret_bytes, msg, hashlib.sha256).hexdigest()
+        if _hmac.compare_digest(expected, token):
+            return True
+    return False
+
+
+def _validate_credentials(request: web.Request, login_id: str, credential: str) -> web.Response | None:
+    """
+    Validate the credential field from the login payload.
+    AD mode:     credential is an HMAC token produced by check_user.exe.
+    Normal mode: credential is the plaintext password from allowed_users.json.
+    Returns an error Response on failure, None on success.
+    """
+    if _ad_auth_enabled(request):
+        secret = str(request.app.get("auth_secret") or "")
+        if not secret:
+            print("[AD] auth_secret is not configured on the server.")
+            return _json_error("Server auth misconfiguration.", 503)
+        if not _verify_ad_token(login_id, credential, secret):
+            return _json_error("Invalid credentials provided.", 401)
+        return None
+
+    if state.allowed_users.get(login_id) != credential:
+        return _json_error("Invalid credentials provided.", 401)
+    return None
+
+
 async def login_handler(request: web.Request) -> web.Response:
     try:
         data = await request.json()
@@ -661,8 +706,9 @@ async def login_handler(request: web.Request) -> web.Response:
     if login_id not in state.allowed_users:
         return _json_error("User is not allowed to take this exam.", 403)
 
-    if state.allowed_users[login_id] != password:
-        return _json_error("Invalid credentials provided.", 401)
+    cred_error = _validate_credentials(request, login_id, password)
+    if cred_error:
+        return cred_error
 
     user = state.users_db.get(login_id)
     block_reason = _login_block_reason(request, user)
@@ -670,12 +716,16 @@ async def login_handler(request: web.Request) -> web.Response:
         return _json_error(block_reason, 403 if "finished" in block_reason.lower() else 409)
 
     if not user:
-        return _register_new_user(login_id, password)
+        # In AD mode the server never stores the user's password — store a sentinel.
+        stored_password = "__ad_auth__" if _ad_auth_enabled(request) else password
+        return _register_new_user(login_id, stored_password)
+
     state.ensure_user_defaults(user)
     if user.get("banned", False):
         return _json_error("This user is banned.", 403)
 
-    if user["password"] != password:
+    # AD mode: token was already verified above — skip the stored-password check.
+    if not _ad_auth_enabled(request) and user["password"] != password:
         return _json_error("Invalid stored credentials", 401)
 
     if user["uuid"] in state.clients:

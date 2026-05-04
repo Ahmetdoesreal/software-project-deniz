@@ -19,12 +19,14 @@ from common.manager_support import (
     apply_dpi_awareness,
     install_close_guard,
 )
+from client.preflight import load_auth_config, run_preflight
 
 
 class ClientManager(tk.Tk):
     def __init__(self):
         super().__init__()
         self.project_dir = PROJECT_DIR
+        self._auth_config = load_auth_config(PROJECT_DIR)
         self.process_session = ManagedProcessSession(
             session_name="client_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "client" / "sessions",
@@ -277,6 +279,10 @@ class ClientManager(tk.Tk):
             "--password",
             self.v_pass.get().strip(),
         ]
+        ad_domain = self._auth_config.get("ad_domain", "")
+        auth_secret = self._auth_config.get("auth_secret", "")
+        if ad_domain and auth_secret:
+            command.extend(["--ad-domain", ad_domain, "--auth-secret", auth_secret])
         server_id = self.v_id.get().strip()
         if server_id:
             command.extend(["--id", server_id])
@@ -342,6 +348,20 @@ class ClientManager(tk.Tk):
         thread.start()
 
     def _run_login_check(self):
+        login_id   = self.v_login.get().strip()
+        password   = self.v_pass.get().strip()
+        ad_domain  = self._auth_config.get("ad_domain", "")
+        auth_secret = self._auth_config.get("auth_secret", "")
+
+        # Step 1: local preflight — CATS school auth + Windows AD auth in parallel
+        preflight_ok, preflight_result = run_preflight(
+            login_id, password, ad_domain, auth_secret
+        )
+        if not preflight_ok:
+            self.after(0, self._handle_validation_error, preflight_result)
+            return
+
+        # Step 2: server reachability + token acceptance check
         env = os.environ.copy()
         env["PYTHONPATH"] = str(self.project_dir) + os.pathsep + env.get("PYTHONPATH", "")
         env["PYTHONUNBUFFERED"] = "1"

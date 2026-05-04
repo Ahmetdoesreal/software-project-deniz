@@ -1,0 +1,4 @@
+{
+  "ad_domain": ".",
+  "auth_secret": "change_me_before_deployment"
+}

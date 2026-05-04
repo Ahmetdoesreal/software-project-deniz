@@ -76,6 +76,8 @@ def main():
     parser.add_argument("--ui", choices=["tk", "qt"], default="tk", help="UI backend for GUI windows: tk (default) or qt")
     parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
     parser.add_argument("--reset", action="store_true", help="Reset the server state (clear used IDs/timers) on startup")
+    parser.add_argument("--ad-auth", action="store_true", help="Expect HMAC tokens from check_user.exe instead of plaintext passwords")
+    parser.add_argument("--auth-secret", default=None, help="Shared secret for HMAC token verification (required with --ad-auth)")
     args = parser.parse_args()
 
     if args.reset:

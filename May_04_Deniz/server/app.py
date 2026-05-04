@@ -121,6 +121,8 @@ def create_app(args) -> web.Application:
     app["project_dir"] = getattr(args, "project_dir", None)
     app["python_executable"] = getattr(args, "python_executable", None)
     app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
+    app["ad_auth_enabled"] = bool(getattr(args, "ad_auth", False))
+    app["auth_secret"] = str(getattr(args, "auth_secret", None) or "")
     gui_ui = str(getattr(args, "ui", "tk") or "tk").strip().lower()
     if gui_ui not in {"tk", "qt"}:
         gui_ui = "tk"

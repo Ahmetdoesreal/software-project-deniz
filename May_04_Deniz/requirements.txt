@@ -5,5 +5,9 @@ psutil
 # Protected websocket signing/encryption
 cryptography
 
+# CATS school authentication (client-side preflight)
+requests
+beautifulsoup4
+
 # Qt UI (optional — required only for --ui qt mode)
 PySide6
