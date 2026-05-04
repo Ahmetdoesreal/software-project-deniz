@@ -162,7 +162,7 @@ class LoopbackWebSocketIPCServer:
         if self.connected:
             return web.Response(status=409, text="Local IPC already has an active peer.")
 
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(max_msg_size=0)
         await ws.prepare(request)
         self._ws = ws
         try:
@@ -316,7 +316,7 @@ class LoopbackWebSocketIPCClient:
     async def _run(self) -> None:
         headers = {LOCAL_IPC_TOKEN_HEADER: self.token}
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(self.url, headers=headers) as ws:
+            async with session.ws_connect(self.url, headers=headers, max_msg_size=0) as ws:
                 sender = asyncio.create_task(self._sender(ws))
                 try:
                     async for msg in ws:
