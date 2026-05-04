@@ -6,6 +6,21 @@ from pathlib import Path
 from typing import Any
 
 from common import protocol
+from common.process_definitions import (
+    PROCESS_DEFINITION_ACTIONS,
+    PROCESS_INCIDENT_RULE_IDS,
+    build_google_search_url,
+    definition_from_incident,
+    find_matching_definitions,
+    incident_matches_definition,
+    normalize_actions,
+    normalize_definition,
+    normalize_definitions,
+    process_incident_identity,
+    stable_process_key,
+)
+
+from . import session_state
 
 
 LIST_ACTIONS = {"add", "remove", "replace"}
@@ -192,6 +207,283 @@ def apply_incident_policy_action(state, incident: dict, action: str, *, actor="a
     return _error_result(f"Unsupported incident policy action: {action}", state)
 
 
+def process_definitions(state) -> list[dict]:
+    return normalize_definitions(
+        state.exam_policy_config.get("rules", {})
+        .get("process_definitions", {})
+        .get("definitions", [])
+    )
+
+
+def upsert_process_definition(state, definition: dict, *, actor="admin") -> SettingsResult:
+    normalized = normalize_definition(definition)
+    if not normalized.get("normalized_process_name"):
+        return _error_result("Process definition requires an executable name.", state)
+
+    current = process_definitions(state)
+    updated: list[dict] = []
+    replaced = False
+    for existing in current:
+        same_id = existing.get("definition_id") == normalized.get("definition_id")
+        same_key = existing.get("process_key") == normalized.get("process_key")
+        if same_id or same_key:
+            merged = {
+                **existing,
+                **normalized,
+                "created_at": existing.get("created_at") or normalized.get("created_at"),
+            }
+            updated.append(normalize_definition(merged))
+            replaced = True
+        else:
+            updated.append(existing)
+    if not replaced:
+        updated.append(normalized)
+
+    return update_exam_policy(
+        state,
+        {"rules": {"process_definitions": {"definitions": updated}}},
+        actor=actor,
+        _audit_action="upsert_process_definition",
+    )
+
+
+def matching_process_incidents(state, definition: dict) -> list[dict]:
+    normalized = normalize_definition(definition)
+    matches = []
+    for incident in state.incidents:
+        if not isinstance(incident, dict):
+            continue
+        if str(incident.get("rule_id", "") or "") not in PROCESS_INCIDENT_RULE_IDS:
+            continue
+        if incident_matches_definition(incident, normalized):
+            matches.append(incident)
+    return matches
+
+
+def process_history_entry(incident: dict, *, active: bool = False) -> dict:
+    identity = process_incident_identity(incident)
+    return {
+        "incident_id": str(incident.get("incident_id", "") or ""),
+        "client_id": str(incident.get("client_id", "") or ""),
+        "login_id": str(incident.get("login_id", "") or ""),
+        "status": str(incident.get("status", "") or ""),
+        "severity": str(incident.get("severity", "") or ""),
+        "rule_id": str(incident.get("rule_id", "") or ""),
+        "event_at": str(
+            incident.get("server_received_at")
+            or incident.get("reported_at")
+            or incident.get("event_at")
+            or incident.get("timestamp")
+            or ""
+        ),
+        "pid": int(incident.get("pid", 0) or 0),
+        "process_name": identity.get("process_name") or str(incident.get("process_name", "") or ""),
+        "process_path": identity.get("process_path") or str(incident.get("process_path", "") or ""),
+        "process_dir": identity.get("process_dir") or str(incident.get("process_dir", "") or ""),
+        "active": bool(active),
+        "summary": str(incident.get("summary", "") or ""),
+    }
+
+
+def build_action_states(state, history: list[dict]) -> list[dict]:
+    latest_by_login: dict[str, dict] = {}
+    fallback_entries: list[dict] = []
+    for entry in history:
+        login_id = str(entry.get("login_id", "") or "")
+        if not login_id:
+            fallback_entries.append(entry)
+            continue
+        current = latest_by_login.get(login_id)
+        if current is None or str(entry.get("event_at", "")) >= str(current.get("event_at", "")):
+            latest_by_login[login_id] = entry
+
+    entries = list(latest_by_login.values()) + fallback_entries
+    return [_action_state_for_entry(state, entry) for entry in sorted(entries, key=lambda item: str(item.get("login_id") or item.get("client_id") or ""))]
+
+
+def build_process_database(state) -> list[dict]:
+    definitions = process_definitions(state)
+    rows: dict[str, dict] = {}
+
+    for definition in definitions:
+        row = _empty_process_row(definition)
+        row["source"] = "policy"
+        rows[row["process_key"]] = row
+
+    for incident in state.incidents:
+        if not isinstance(incident, dict):
+            continue
+        if str(incident.get("rule_id", "") or "") not in PROCESS_INCIDENT_RULE_IDS:
+            continue
+        identity = process_incident_identity(incident)
+        if not identity.get("normalized_process_name"):
+            continue
+        matching = find_matching_definitions(
+            definitions,
+            identity.get("normalized_process_name"),
+            identity.get("normalized_process_path"),
+        )
+        if matching:
+            definition = matching[0]
+        else:
+            status = _status_from_incident(incident)
+            definition = definition_from_incident(incident, status=status)
+        process_key = definition.get("process_key") or stable_process_key(
+            identity.get("normalized_process_name"),
+            identity.get("normalized_process_path"),
+            definition.get("match_scope"),
+        )
+        row = rows.setdefault(process_key, _empty_process_row(definition))
+        incident_id = str(incident.get("incident_id", "") or "")
+        active = bool(incident_id and incident_id in state.active_incidents)
+        row["matching_history"].append(process_history_entry(incident, active=active))
+        row["active"] = bool(row["active"] or active)
+        if str(incident.get("status", "") or "") == "resolved":
+            row["resolved"] = True
+        event_at = str(
+            incident.get("server_received_at")
+            or incident.get("reported_at")
+            or incident.get("event_at")
+            or incident.get("timestamp")
+            or ""
+        )
+        if event_at and event_at > str(row.get("last_seen", "")):
+            row["last_seen"] = event_at
+
+    for row in rows.values():
+        history = row["matching_history"]
+        students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("login_id") or entry.get("client_id") or "")})
+        opened_students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("status", "") or "") == "opened" and str(entry.get("login_id") or entry.get("client_id") or "")})
+        resolved_students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("status", "") or "") == "resolved" and str(entry.get("login_id") or entry.get("client_id") or "")})
+        row["match_count"] = len(history)
+        row["affected_students"] = students
+        row["affected_student_count"] = len(students)
+        row["opened_students"] = opened_students
+        row["resolved_students"] = resolved_students
+        row["closed_students"] = resolved_students
+        row["saved_action_labels"] = _action_labels(row.get("actions", {}))
+        row["action_states"] = build_action_states(state, history)
+        row["action_availability"] = _summarize_action_states(row["action_states"])
+        row["previous_matching_entries"] = _previous_matching_definitions(row, definitions)
+        row["warning"] = row.get("status") == "warning"
+        if not row.get("last_seen") and row.get("updated_at"):
+            row["last_seen"] = row["updated_at"]
+
+    return sorted(
+        rows.values(),
+        key=lambda row: (
+            bool(row.get("active")),
+            str(row.get("last_seen", "")),
+            str(row.get("process_name", "")),
+        ),
+        reverse=True,
+    )
+
+
+def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
+    if not isinstance(decision, dict):
+        return {"ok": False, "message": "Process decision must be an object.", "errors": ["Process decision must be an object."]}
+
+    raw_definition = dict(decision.get("definition") or {})
+    if not raw_definition and decision.get("process"):
+        raw_definition = dict(decision.get("process") or {})
+    raw_definition["status"] = str(decision.get("status") or raw_definition.get("status") or "unknown")
+    raw_definition["match_scope"] = str(decision.get("match_scope") or raw_definition.get("match_scope") or "")
+    raw_definition["actions"] = normalize_actions(decision.get("actions") or raw_definition.get("actions"))
+    now = protocol.now_iso()
+    raw_definition["updated_at"] = now
+    raw_definition["decided_at"] = now
+    raw_definition["decided_by"] = str(actor or "admin")
+    if decision.get("reason"):
+        raw_definition["decision_reason"] = str(decision.get("reason") or "")
+
+    definition = normalize_definition(raw_definition, now=now)
+    if not definition.get("normalized_process_name"):
+        return {"ok": False, "message": "Decision requires an executable name.", "errors": ["Decision requires an executable name."]}
+
+    matches = matching_process_incidents(state, definition)
+    history = [process_history_entry(incident, active=str(incident.get("incident_id", "") or "") in state.active_incidents) for incident in matches]
+    definition["matching_history"] = history
+    definition["previous_matching_entries"] = _previous_matching_definitions(definition, process_definitions(state))
+
+    saved_to_policy = bool(decision.get("save_policy", False))
+    settings_result = None
+    if saved_to_policy:
+        settings_result = upsert_process_definition(state, definition, actor=actor)
+        if not settings_result.ok:
+            return {
+                "ok": False,
+                "message": settings_result.message,
+                "errors": settings_result.errors,
+                "definition": definition,
+            }
+
+    for incident in matches:
+        incident["process_decision"] = {
+            "definition_id": definition.get("definition_id"),
+            "process_key": definition.get("process_key"),
+            "status": definition.get("status"),
+            "actions": dict(definition.get("actions", {})),
+            "saved_to_policy": saved_to_policy,
+            "decided_at": now,
+            "decided_by": str(actor or "admin"),
+        }
+    if matches and hasattr(state, "save_incidents"):
+        state.save_incidents()
+
+    action_results = []
+    banned_login_ids = []
+    if definition.get("actions", {}).get("ban"):
+        for login_id in sorted({entry.get("login_id", "") for entry in history if entry.get("login_id")}):
+            user = state.users_db.get(login_id)
+            if not user:
+                action_results.append(_action_result(login_id, "ban", "not_possible", "unknown user"))
+                continue
+            if user.get("banned") or session_state.derive_state(user) == session_state.BANNED:
+                action_results.append(_action_result(login_id, "ban", "applied", "already banned"))
+                continue
+            session_state.set_state(user, session_state.BANNED, reason=f"Process policy decision: {definition.get('process_name')}")
+            user["kick_count"] = int(user.get("kick_count", 0)) + 1
+            user["last_action"] = f"Process decision ban: {definition.get('process_name') or definition.get('normalized_process_name')}"
+            banned_login_ids.append(login_id)
+            action_results.append(_action_result(login_id, "ban", "applied", "banned"))
+        if banned_login_ids:
+            state.save_users()
+
+    if hasattr(state, "append_audit"):
+        state.append_audit(
+            {
+                "timestamp": now,
+                "actor": str(actor or "admin"),
+                "action": "apply_process_decision",
+                "definition_id": definition.get("definition_id"),
+                "process_key": definition.get("process_key"),
+                "status": definition.get("status"),
+                "actions": definition.get("actions", {}),
+                "saved_to_policy": saved_to_policy,
+                "matching_incident_ids": [entry.get("incident_id") for entry in history],
+                "banned_login_ids": banned_login_ids,
+            }
+        )
+
+    return {
+        "ok": True,
+        "changed": bool(saved_to_policy and settings_result and settings_result.changed) or bool(matches) or bool(banned_login_ids),
+        "message": "Process decision applied.",
+        "definition": definition,
+        "matching_history": history,
+        "matching_incident_ids": [entry.get("incident_id") for entry in history],
+        "action_states": build_action_states(state, history),
+        "action_results": action_results,
+        "banned_login_ids": banned_login_ids,
+        "saved_to_policy": saved_to_policy,
+    }
+
+
+def process_google_search_url(process_name: str, process_path: str = "") -> str:
+    return build_google_search_url(process_name, process_path)
+
+
 def update_operator_defaults(state, patch: dict, *, actor="admin") -> SettingsResult:
     if not isinstance(patch, dict):
         return _error_result("Operator defaults patch must be an object.", state)
@@ -285,6 +577,200 @@ def update_runtime_settings(app, patch: dict, *, actor="admin") -> SettingsResul
         changed_paths=changed_paths,
         errors=[],
     )
+
+
+def _empty_process_row(definition: dict) -> dict:
+    normalized = normalize_definition(definition)
+    return {
+        "process_key": normalized.get("process_key", ""),
+        "definition_id": normalized.get("definition_id", ""),
+        "process_name": normalized.get("process_name") or normalized.get("normalized_process_name", ""),
+        "normalized_process_name": normalized.get("normalized_process_name", ""),
+        "process_path": normalized.get("process_path", ""),
+        "normalized_process_path": normalized.get("normalized_process_path", ""),
+        "process_dir": normalized.get("process_dir", ""),
+        "normalized_process_dir": normalized.get("normalized_process_dir", ""),
+        "match_scope": normalized.get("match_scope", "path"),
+        "status": normalized.get("status", "unknown"),
+        "actions": normalize_actions(normalized.get("actions", {})),
+        "source_incident_id": normalized.get("source_incident_id", ""),
+        "matching_history": [],
+        "previous_matching_entries": list(normalized.get("previous_matching_entries", [])),
+        "match_count": 0,
+        "affected_students": [],
+        "affected_student_count": 0,
+        "opened_students": [],
+        "resolved_students": [],
+        "closed_students": [],
+        "last_seen": "",
+        "active": False,
+        "resolved": False,
+        "warning": normalized.get("status") == "warning",
+        "source": normalized.get("source", ""),
+        "created_at": normalized.get("created_at", ""),
+        "updated_at": normalized.get("updated_at", ""),
+        "decided_at": normalized.get("decided_at", ""),
+        "decided_by": normalized.get("decided_by", ""),
+    }
+
+
+def _status_from_incident(incident: dict) -> str:
+    rule_id = str(incident.get("rule_id", "") or "")
+    if rule_id == "process_blacklist":
+        return "blacklist"
+    if rule_id == "process_path_clarification":
+        return "warning"
+    matched = incident.get("matched_definition")
+    if isinstance(matched, dict) and matched.get("status"):
+        return str(matched.get("status"))
+    return "unknown"
+
+
+def _previous_matching_definitions(row_or_definition: dict, definitions: list[dict]) -> list[dict]:
+    normalized_name = str(row_or_definition.get("normalized_process_name", "") or "")
+    current_id = str(row_or_definition.get("definition_id", "") or "")
+    current_key = str(row_or_definition.get("process_key", "") or "")
+    previous = []
+    for definition in definitions:
+        normalized = normalize_definition(definition)
+        if normalized.get("normalized_process_name") != normalized_name:
+            continue
+        if normalized.get("definition_id") == current_id or normalized.get("process_key") == current_key:
+            continue
+        previous.append(
+            {
+                "definition_id": normalized.get("definition_id", ""),
+                "process_key": normalized.get("process_key", ""),
+                "status": normalized.get("status", ""),
+                "match_scope": normalized.get("match_scope", ""),
+                "process_path": normalized.get("process_path", ""),
+                "process_dir": normalized.get("process_dir", ""),
+                "actions": normalize_actions(normalized.get("actions", {})),
+                "updated_at": normalized.get("updated_at", ""),
+                "decided_at": normalized.get("decided_at", ""),
+                "decided_by": normalized.get("decided_by", ""),
+            }
+        )
+    return previous
+
+
+def _action_state_for_entry(state, entry: dict) -> dict:
+    login_id = str(entry.get("login_id", "") or "")
+    client_id = str(entry.get("client_id", "") or "")
+    user = state.users_db.get(login_id) if login_id else None
+    if not user and client_id:
+        login_id, user = state.find_user_by_uuid(client_id)
+        login_id = login_id or ""
+    if user and not client_id:
+        client_id = str(user.get("uuid", "") or "")
+
+    connected = bool(client_id and client_id in state.clients)
+    session_name = session_state.derive_state(user) if user else ""
+    submitted = bool(user and (user.get("submitted_at") or session_name == session_state.SUBMITTED))
+    finished = bool(user and (session_name == session_state.AWAITING_SUBMISSION or (user.get("exam_finished") and not submitted)))
+    banned = bool(user and (user.get("banned") or session_name == session_state.BANNED))
+    pid = int(entry.get("pid", 0) or 0)
+    active = bool(entry.get("active", False))
+
+    action_states = {
+        "ban": _availability("possible"),
+        "kick": _availability("possible"),
+        "pause_exam": _availability("possible"),
+        "kill_pid": _availability("possible"),
+    }
+
+    if not user:
+        for action in PROCESS_DEFINITION_ACTIONS:
+            action_states[action] = _availability("not_possible", "unknown user")
+    elif banned:
+        action_states["ban"] = _availability("applied", "already banned")
+        action_states["kick"] = _availability("not_possible", "already banned")
+        action_states["pause_exam"] = _availability("not_possible", "already banned")
+        action_states["kill_pid"] = _availability("not_possible", "already banned")
+    else:
+        action_states["ban"] = _availability("possible")
+
+        if submitted:
+            action_states["kick"] = _availability("not_possible", "submitted")
+            action_states["pause_exam"] = _availability("not_possible", "submitted")
+        elif finished:
+            action_states["kick"] = _availability("not_possible", "already finished")
+            action_states["pause_exam"] = _availability("not_possible", "already finished")
+        elif not connected:
+            action_states["kick"] = _availability("not_possible", "disconnected")
+        else:
+            action_states["kick"] = _availability("possible")
+
+        if not submitted and not finished:
+            if session_name == session_state.RUNNING:
+                action_states["pause_exam"] = _availability("possible")
+            elif not connected:
+                action_states["pause_exam"] = _availability("not_possible", "disconnected")
+            else:
+                action_states["pause_exam"] = _availability("not_possible", "exam not running")
+
+        if submitted:
+            action_states["kill_pid"] = _availability("not_possible", "submitted")
+        elif finished:
+            action_states["kill_pid"] = _availability("not_possible", "already finished")
+        elif not connected:
+            action_states["kill_pid"] = _availability("not_possible", "disconnected")
+        elif pid <= 0 or not active:
+            action_states["kill_pid"] = _availability("not_possible", "no live PID")
+        else:
+            action_states["kill_pid"] = _availability("possible")
+
+    return {
+        "login_id": login_id,
+        "client_id": client_id,
+        "incident_id": str(entry.get("incident_id", "") or ""),
+        "process_name": str(entry.get("process_name", "") or ""),
+        "process_path": str(entry.get("process_path", "") or ""),
+        "pid": pid,
+        "active": active,
+        "session_state": session_name,
+        "connected": connected,
+        "actions": action_states,
+    }
+
+
+def _availability(state: str, reason: str = "") -> dict:
+    payload = {"state": state}
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _summarize_action_states(action_states: list[dict]) -> dict:
+    summary = {
+        action: {"possible": 0, "applied": 0, "not_possible": 0, "reasons": []}
+        for action in PROCESS_DEFINITION_ACTIONS
+    }
+    for student_state in action_states:
+        for action, action_state in student_state.get("actions", {}).items():
+            bucket = summary.setdefault(action, {"possible": 0, "applied": 0, "not_possible": 0, "reasons": []})
+            state_name = str(action_state.get("state", "not_possible") or "not_possible")
+            if state_name not in {"possible", "applied", "not_possible"}:
+                state_name = "not_possible"
+            bucket[state_name] += 1
+            reason = str(action_state.get("reason", "") or "")
+            if reason and reason not in bucket["reasons"]:
+                bucket["reasons"].append(reason)
+    return summary
+
+
+def _action_labels(actions: dict) -> str:
+    labels = [name.replace("_", " ") for name, enabled in normalize_actions(actions).items() if enabled]
+    return ", ".join(labels) if labels else "-"
+
+
+def _action_result(login_id: str, action: str, state_name: str, reason: str) -> dict:
+    return {
+        "login_id": login_id,
+        "action": action,
+        "state": state_name,
+        "reason": reason,
+    }
 
 
 def _update_policy_list(

@@ -253,6 +253,87 @@ class ClientIncidentEngineTests(unittest.TestCase):
 
         self.assertEqual([incident for incident in incidents if incident["rule_id"] == "unexpected_process"], [])
 
+    def test_process_database_unknown_detection_baselines_then_detects_new_processes(self):
+        engine = ClientIncidentEngine()
+        policy = {
+            "policy_version": "policy-v1",
+            "rules": [
+                {
+                    "rule_id": "unexpected_process",
+                    "source": "process_monitor",
+                    "type": "unexpected_process",
+                    "enabled": False,
+                    "known_process_names": ["exam.exe"],
+                    "known_directory_paths": [],
+                    "allowed_process_names": [],
+                },
+                {
+                    "rule_id": "process_definitions",
+                    "source": "process_monitor",
+                    "type": "process_definitions",
+                    "enabled": True,
+                    "definitions": [],
+                    "detect_unknown_processes": True,
+                    "baseline_existing_processes": True,
+                },
+            ],
+        }
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        first = engine.observe_processes({(1, "exam.exe"), (2, "already_open.exe")})
+        self.assertEqual([incident for incident in first if incident["rule_id"] == "unexpected_process"], [])
+
+        second = engine.observe_processes({(1, "exam.exe"), (2, "already_open.exe"), (3, "new_tool.exe")})
+        unexpected = [incident for incident in second if incident["rule_id"] == "unexpected_process"]
+        self.assertEqual(len(unexpected), 1)
+        self.assertEqual(unexpected[0]["process_name"], "new_tool.exe")
+
+        resolved = engine.observe_processes({(1, "exam.exe"), (2, "already_open.exe")})
+        self.assertEqual([incident["status"] for incident in resolved], ["resolved"])
+
+        reopened = engine.observe_processes({(1, "exam.exe"), (2, "already_open.exe"), (4, "new_tool.exe")})
+        unexpected_reopened = [incident for incident in reopened if incident["rule_id"] == "unexpected_process"]
+        self.assertEqual(len(unexpected_reopened), 1)
+
+    def test_blacklist_path_clarification_runs_before_generic_unknown_detection(self):
+        engine = ClientIncidentEngine()
+        policy = {
+            "policy_version": "policy-v1",
+            "rules": [
+                {
+                    "rule_id": "process_blacklist",
+                    "source": "process_monitor",
+                    "type": "process_blacklist",
+                    "enabled": True,
+                    "severity": "violation",
+                    "entries": ["discord.exe"],
+                    "process_usernames": [],
+                },
+                {
+                    "rule_id": "process_definitions",
+                    "source": "process_monitor",
+                    "type": "process_definitions",
+                    "enabled": True,
+                    "definitions": [
+                        {
+                            "process_name": "discord.exe",
+                            "process_path": "C:\\Known\\discord.exe",
+                            "status": "blacklist",
+                        }
+                    ],
+                    "detect_unknown_processes": True,
+                    "baseline_existing_processes": False,
+                },
+            ],
+        }
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_processes({(10, "discord.exe", None, "C:\\Other\\discord.exe")})
+
+        self.assertEqual([incident["rule_id"] for incident in incidents], ["process_path_clarification"])
+
     def test_focused_window_blocked_title_uses_contains_matching(self):
         engine = ClientIncidentEngine()
         policy = dict(PROCESS_BLACKLIST_POLICY)

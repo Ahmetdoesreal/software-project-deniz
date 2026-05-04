@@ -15,6 +15,12 @@ if str(PROJECT_DIR) not in sys.path:
 
 from common.manager_support import install_close_guard
 from common.runtime_logging import setup_runtime_logging
+from server.dashboard_popups import (
+    DashboardPopupMixin,
+    build_process_decision_payload,
+    process_row_google_search_url,
+)
+from server.policy_settings_window import PolicySettingsMixin
 
 
 def _format_bytes(size_bytes: int) -> str:
@@ -98,13 +104,6 @@ def _incident_detail_lines(incident: dict) -> list[tuple[str, str]]:
     ]
 
 
-def _format_counter(values: list[str]) -> str:
-    counts = Counter(value for value in values if value)
-    if not counts:
-        return "-"
-    return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
-
-
 def _multi_incident_detail_lines(incidents: list[dict]) -> list[tuple[str, str]]:
     users = sorted({str(incident.get("login_id") or "-") for incident in incidents})
     rows: list[tuple[str, str]] = [
@@ -142,6 +141,45 @@ def _multi_incident_detail_lines(incidents: list[dict]) -> list[tuple[str, str]]
     return rows
 
 
+PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
+
+
+def _format_counter(values: list[str]) -> str:
+    counts = Counter(value for value in values if value)
+    if not counts:
+        return "-"
+    return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
+
+
+def process_row_matches_filter(row: dict, filter_name: str) -> bool:
+    filter_name = str(filter_name or "All").strip().lower()
+    status = str(row.get("status", "") or "").strip().lower()
+    if filter_name == "all":
+        return True
+    if filter_name == "warnings":
+        return status == "warning" or bool(row.get("warning"))
+    if filter_name == "active":
+        return bool(row.get("active"))
+    if filter_name == "resolved":
+        return bool(row.get("resolved")) and not bool(row.get("active"))
+    return status == filter_name
+
+
+def format_process_action_availability(row: dict) -> str:
+    availability = row.get("action_availability", {})
+    if not isinstance(availability, dict):
+        return "-"
+    parts = []
+    for action in ("ban", "kick", "pause_exam", "kill_pid"):
+        state = availability.get(action, {})
+        possible = int(state.get("possible", 0) or 0) if isinstance(state, dict) else 0
+        applied = int(state.get("applied", 0) or 0) if isinstance(state, dict) else 0
+        blocked = int(state.get("not_possible", 0) or 0) if isinstance(state, dict) else 0
+        if possible or applied or blocked:
+            parts.append(f"{action.replace('_', ' ')} {possible}/{applied}/{blocked}")
+    return "; ".join(parts) if parts else "-"
+
+
 def _server_info_rows(info: dict) -> list[tuple[str, str]]:
     return [
         ("Server ID", str(info.get("server_id", "-"))),
@@ -165,7 +203,7 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
     ]
 
 
-class ServerGUI(tk.Tk):
+class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def __init__(self, *, standalone_mode: bool = False):
         super().__init__()
         self.standalone_mode = standalone_mode
@@ -173,10 +211,15 @@ class ServerGUI(tk.Tk):
         self.tree_items: dict[str, str] = {}
         self.incidents_data: list[dict] = []
         self.incident_items: dict[str, str] = {}
+        self.process_database_data: list[dict] = []
+        self.process_database_items: dict[str, str] = {}
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self.process_filter_var = tk.StringVar(value="All")
+        self._init_policy_settings()
         self._incident_tree_refreshing = False
+        self._process_tree_refreshing = False
 
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
@@ -196,11 +239,14 @@ class ServerGUI(tk.Tk):
 
         self.overview_tab = ttk.Frame(self.notebook)
         self.rules_tab = ttk.Frame(self.notebook)
+        self.process_database_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.overview_tab, text="Overview")
         self.notebook.add(self.rules_tab, text="Rule Breakings")
+        self.notebook.add(self.process_database_tab, text="Process Database")
 
         self._build_overview_tab()
         self._build_rule_breakings_tab()
+        self._build_process_database_tab()
         self._build_command_bar()
         self._build_stats_bar()
 
@@ -220,87 +266,57 @@ class ServerGUI(tk.Tk):
         info_frame = ttk.LabelFrame(parent, text="Server Info")
         info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
 
-        action_frame = ttk.Frame(info_frame, padding=(8, 8, 8, 0))
-        action_frame.pack(fill=tk.X)
+        toolbar = ttk.Frame(info_frame, padding=(8, 8, 8, 0))
+        toolbar.pack(fill=tk.X)
+        toolbar.columnconfigure(0, weight=1)
+        toolbar.columnconfigure(1, weight=0)
+
+        exam_controls = ttk.Frame(toolbar)
+        exam_controls.grid(row=0, column=0, sticky=tk.W)
+
+        settings_controls = ttk.Frame(toolbar)
+        settings_controls.grid(row=0, column=1, sticky=tk.E)
 
         self.start_exam_button = ttk.Button(
-            action_frame,
+            exam_controls,
             text="Start Exam",
             command=self.start_exam_globally,
+            width=14,
         )
         self.start_exam_button.pack(side=tk.LEFT)
 
         self.finish_exam_button = ttk.Button(
-            action_frame,
+            exam_controls,
             text="Finish Exam",
             command=self.finish_exam_globally,
+            width=14,
         )
         self.finish_exam_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        blacklist_frame = ttk.Frame(info_frame, padding=(8, 6, 8, 0))
-        blacklist_frame.pack(fill=tk.X)
-        for column in range(3):
-            blacklist_frame.columnconfigure(column, weight=1)
-
-        self.edit_blacklist_button = ttk.Button(
-            blacklist_frame,
-            text="Edit Blacklist",
-            command=self.edit_blacklist,
+        self.policy_settings_button = ttk.Button(
+            settings_controls,
+            text="Policy Settings",
+            command=self.open_policy_settings_window,
+            width=18,
         )
-        self.edit_blacklist_button.grid(row=0, column=0, sticky=tk.EW)
-
-        self.apply_blacklist_button = ttk.Button(
-            blacklist_frame,
-            text="Apply Blacklist",
-            command=self.apply_blacklist,
-        )
-        self.apply_blacklist_button.grid(row=0, column=1, sticky=tk.EW, padx=(8, 0))
-
-        self.edit_policy_button = ttk.Button(
-            blacklist_frame,
-            text="Edit Policy",
-            command=self.edit_policy,
-        )
-        self.edit_policy_button.grid(row=0, column=2, sticky=tk.EW, padx=(8, 0))
-
-        self.apply_policy_button = ttk.Button(
-            blacklist_frame,
-            text="Apply Policy",
-            command=self.apply_policy,
-        )
-        self.apply_policy_button.grid(row=1, column=0, sticky=tk.EW, pady=(8, 0))
-
-        self.export_settings_button = ttk.Button(
-            blacklist_frame,
-            text="Export Settings",
-            command=self.export_settings,
-        )
-        self.export_settings_button.grid(row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
-
-        self.import_settings_button = ttk.Button(
-            blacklist_frame,
-            text="Import Settings",
-            command=self.import_settings,
-        )
-        self.import_settings_button.grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(8, 0))
+        self.policy_settings_button.pack(side=tk.LEFT)
 
         remember_toggle = ttk.Checkbutton(
-            info_frame,
+            settings_controls,
             text="Remember Settings",
             variable=self.remember_settings_var,
             command=self.toggle_remember_settings,
         )
-        remember_toggle.pack(anchor=tk.W, padx=8, pady=(4, 0))
+        remember_toggle.pack(side=tk.LEFT, padx=(12, 0))
 
-        detail_actions = ttk.Frame(info_frame, padding=(8, 4, 8, 0))
-        detail_actions.pack(fill=tk.X)
         self.server_info_detail_button = ttk.Button(
-            detail_actions,
+            settings_controls,
             text="Detailed Info",
             command=self.show_server_info_details,
             state=tk.DISABLED,
+            width=14,
         )
-        self.server_info_detail_button.pack(side=tk.LEFT)
+        self.server_info_detail_button.pack(side=tk.LEFT, padx=(12, 0))
 
         self.server_info_var = tk.StringVar(value="Waiting for server state...")
         info_label = ttk.Label(
@@ -482,6 +498,95 @@ class ServerGUI(tk.Tk):
         detail_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+    def _build_process_database_tab(self):
+        container = ttk.Frame(self.process_database_tab, padding=10)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        toolbar = ttk.Frame(container)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(toolbar, text="Filter:").pack(side=tk.LEFT)
+        filter_box = ttk.Combobox(
+            toolbar,
+            textvariable=self.process_filter_var,
+            values=PROCESS_DATABASE_FILTERS,
+            state="readonly",
+            width=14,
+        )
+        filter_box.pack(side=tk.LEFT, padx=(6, 10))
+        filter_box.bind("<<ComboboxSelected>>", lambda _event: self._rebuild_process_database_tree())
+
+        self.process_options_button = ttk.Button(
+            toolbar,
+            text="Options",
+            command=self.show_process_decision_window,
+            state=tk.DISABLED,
+        )
+        self.process_options_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.process_google_button = ttk.Button(
+            toolbar,
+            text="Google Search",
+            command=self.google_search_selected_process,
+            state=tk.DISABLED,
+        )
+        self.process_google_button.pack(side=tk.LEFT)
+
+        tree_frame = ttk.LabelFrame(container, text="Process Definitions And Evidence")
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = (
+            "process_key",
+            "executable",
+            "status",
+            "path",
+            "scope",
+            "matches",
+            "students",
+            "last_seen",
+            "actions",
+            "availability",
+        )
+        self.process_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            style="Monospace.Treeview",
+        )
+        self.process_tree.heading("process_key", text="Process Key")
+        self.process_tree.heading("executable", text="Executable")
+        self.process_tree.heading("status", text="Status")
+        self.process_tree.heading("path", text="Path / Directory")
+        self.process_tree.heading("scope", text="Scope")
+        self.process_tree.heading("matches", text="Matches")
+        self.process_tree.heading("students", text="Affected Students")
+        self.process_tree.heading("last_seen", text="Last Seen")
+        self.process_tree.heading("actions", text="Saved Actions")
+        self.process_tree.heading("availability", text="Action Availability")
+        self.process_tree.column("process_key", width=0, stretch=False)
+        self.process_tree.column("executable", width=150)
+        self.process_tree.column("status", width=90, anchor=tk.CENTER)
+        self.process_tree.column("path", width=330)
+        self.process_tree.column("scope", width=90, anchor=tk.CENTER)
+        self.process_tree.column("matches", width=80, anchor=tk.CENTER)
+        self.process_tree.column("students", width=160)
+        self.process_tree.column("last_seen", width=150)
+        self.process_tree.column("actions", width=145)
+        self.process_tree.column("availability", width=220)
+        self.process_tree.bind("<<TreeviewSelect>>", lambda _event: self._sync_process_buttons())
+        self.process_tree.bind("<Double-1>", lambda _event: self.show_process_decision_window())
+
+        process_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.process_tree.yview)
+        process_x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.process_tree.xview)
+        self.process_tree.configure(
+            yscrollcommand=process_scroll.set,
+            xscrollcommand=process_x_scroll.set,
+        )
+        self.process_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        process_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        process_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
     def _build_command_bar(self):
         cmd_frame = ttk.Frame(self, padding=5)
         cmd_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -541,6 +646,22 @@ class ServerGUI(tk.Tk):
             if str(incident.get("incident_id", "") or "") in selected_ids
         ]
 
+    def _selected_process_key(self):
+        selected = self.process_tree.selection()
+        if not selected:
+            return None
+        values = self.process_tree.item(selected[0], "values")
+        return values[0] if values else None
+
+    def _selected_process_row(self):
+        process_key = self._selected_process_key()
+        if not process_key:
+            return None
+        for row in self.process_database_data:
+            if str(row.get("process_key", "") or "") == str(process_key):
+                return row
+        return None
+
     def _incident_connected(self, incident: dict) -> bool:
         client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
         return client.get("connection_status") == "Connected"
@@ -577,113 +698,6 @@ class ServerGUI(tk.Tk):
             self._upsert_tree_item(client_id, data)
 
         self.after(1000, self.update_timers)
-
-    def show_info(self):
-        client_id, data = self._selected_client_data()
-        if not client_id:
-            messagebox.showinfo("Info", "Select a client first.")
-            return
-
-        window_key = ("info", client_id)
-        if self._focus_existing_window(window_key):
-            return
-
-        self._open_detail_window(
-            window_key=window_key,
-            title=f"Info: {data.get('login_id', 'Unknown')}",
-            rows=_detail_lines(client_id, data or {}),
-        )
-
-    def show_server_info_details(self):
-        info = self.server_info
-        if not info:
-            messagebox.showinfo("Server Info", "No server state available yet.")
-            return
-
-        window_key = ("server_info", "details")
-        if self._focus_existing_window(window_key):
-            return
-
-        self._open_detail_window(
-            window_key=window_key,
-            title="Server Info Details",
-            rows=_server_info_rows(info),
-        )
-
-    def show_options(self):
-        client_id, data = self._selected_client_data()
-        if not client_id:
-            messagebox.showinfo("Options", "Select a client first.")
-            return
-        data = data or {}
-
-        window_key = ("options", client_id)
-        if self._focus_existing_window(window_key):
-            return
-
-        top = tk.Toplevel(self)
-        top.title(f"Options: {data.get('login_id', 'Unknown')}")
-        top.geometry("430x500")
-        self._register_window(window_key, top)
-
-        frame = ttk.Frame(top, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(frame, text="User Actions:").pack(anchor=tk.W, pady=(0, 10))
-        ttk.Button(
-            frame,
-            text="Kick Client",
-            command=lambda: self._send_window_command(top, "kick", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Ban User",
-            command=lambda: self._send_window_command(top, "ban", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Pause Exam",
-            command=lambda: self._send_window_command(top, "pause_exam", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Resume Exam",
-            command=lambda: self._send_window_command(top, "resume_exam", client_id),
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Unban User",
-            command=lambda: self._send_window_command(top, "unban", client_id),
-        ).pack(fill=tk.X, pady=5)
-
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-
-        ttk.Label(frame, text="Connected Client Commands:").pack(anchor=tk.W, pady=4)
-        ttk.Button(
-            frame,
-            text="Request Save Screen",
-            command=lambda: self._send_client_command(top, "savescreen", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-        ttk.Button(
-            frame,
-            text="Request Process Report",
-            command=lambda: self._send_client_command(top, "get_processes", client_id),
-            state=tk.NORMAL if data.get("connection_status") == "Connected" else tk.DISABLED,
-        ).pack(fill=tk.X, pady=5)
-
-        add_time_frame = ttk.Frame(frame, padding=(0, 10, 0, 0))
-        add_time_frame.pack(fill=tk.X)
-
-        ttk.Label(add_time_frame, text="Add Minutes:").pack(side=tk.LEFT)
-        minutes_entry = ttk.Entry(add_time_frame, width=8)
-        minutes_entry.pack(side=tk.LEFT, padx=8)
-        ttk.Button(
-            add_time_frame,
-            text="Apply",
-            command=lambda: self._send_add_time(top, client_id, minutes_entry.get()),
-        ).pack(side=tk.LEFT)
 
     def kill_selected_pid(self):
         incidents = self._selected_incidents()
@@ -909,29 +923,6 @@ class ServerGUI(tk.Tk):
             else tk.DISABLED
         )
 
-    def _send_client_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
-        window.destroy()
-        self._append_log(f"[ADMIN] Sent {command} to {client_id}")
-
-    def _send_window_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
-        window.destroy()
-        self._append_log(f"[ADMIN] Sent {command} to {client_id}")
-
-    def _send_add_time(self, window, client_id: str, minutes_text: str):
-        minutes_text = minutes_text.strip()
-        if not minutes_text:
-            messagebox.showwarning("Add Time", "Enter a number of minutes first.")
-            return
-
-        print(
-            json.dumps({"type": "console_command", "command": f"/addtime {client_id} {minutes_text}"}),
-            flush=True,
-        )
-        window.destroy()
-        self._append_log(f"[ADMIN] Added {minutes_text} minute(s) to {client_id}")
-
     def start_exam_globally(self):
         print(json.dumps({"cmd": "start_exam_global"}), flush=True)
         self._append_log("[ADMIN] Enabled exam start globally")
@@ -991,61 +982,6 @@ class ServerGUI(tk.Tk):
             f"[ADMIN] Remember settings {'enabled' if self.remember_settings_var.get() else 'disabled'}"
         )
 
-    def _open_detail_window(self, window_key, title: str, rows: list[tuple[str, str]]):
-        top = tk.Toplevel(self)
-        top.title(title)
-        top.geometry("560x460")
-        self._register_window(window_key, top)
-
-        frame = ttk.Frame(top, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
-
-        detail_columns = ("field", "value")
-        details = ttk.Treeview(
-            frame,
-            columns=detail_columns,
-            show="headings",
-            selectmode="browse",
-            style="Monospace.Treeview",
-        )
-        details.heading("field", text="Field")
-        details.heading("value", text="Value")
-        details.column("field", width=220, stretch=False, anchor=tk.W)
-        details.column("value", width=700, stretch=True, anchor=tk.W)
-
-        detail_scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=details.yview)
-        detail_x_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=details.xview)
-        details.configure(
-            yscrollcommand=detail_scroll.set,
-            xscrollcommand=detail_x_scroll.set,
-        )
-        details.grid(row=0, column=0, sticky=tk.NSEW)
-        detail_scroll.grid(row=0, column=1, sticky=tk.NS)
-        detail_x_scroll.grid(row=1, column=0, sticky=tk.EW)
-        for field, value in rows:
-            details.insert("", tk.END, values=(field, value))
-
-    def _register_window(self, window_key, window):
-        self.open_windows[window_key] = window
-        window.bind("<Destroy>", lambda _event: self._forget_window(window_key, window))
-
-    def _forget_window(self, window_key, window):
-        existing = self.open_windows.get(window_key)
-        if existing is window:
-            self.open_windows.pop(window_key, None)
-
-    def _focus_existing_window(self, window_key) -> bool:
-        window = self.open_windows.get(window_key)
-        if not window or not window.winfo_exists():
-            self.open_windows.pop(window_key, None)
-            return False
-
-        window.lift()
-        window.focus_force()
-        return True
-
     def send_console_command(self):
         command = self.cmd_entry.get().strip()
         if not command:
@@ -1090,6 +1026,9 @@ class ServerGUI(tk.Tk):
         self.server_info = payload.get("server", {})
         self.remember_settings_var.set(bool(self.server_info.get("remember_settings", True)))
         self._update_server_info_panel()
+        settings_snapshot = payload.get("settings", {})
+        if isinstance(settings_snapshot, dict) and settings_snapshot:
+            self.update_settings_snapshot(settings_snapshot)
 
         clients = payload.get("clients", [])
         seen_client_ids = set()
@@ -1117,6 +1056,8 @@ class ServerGUI(tk.Tk):
         incidents = payload.get("incidents", [])
         self.incidents_data = incidents
         self._rebuild_incident_tree()
+        self.process_database_data = payload.get("process_database", [])
+        self._rebuild_process_database_tree()
         active_warning_count = sum(
             1
             for incident in incidents
@@ -1233,6 +1174,76 @@ class ServerGUI(tk.Tk):
 
         self._update_incident_detail()
 
+    def _rebuild_process_database_tree(self):
+        selected_key = self._selected_process_key()
+        focus_item = self.process_tree.focus()
+        focus_values = self.process_tree.item(focus_item, "values") if focus_item else ()
+        focused_key = str(focus_values[0]) if focus_values else ""
+        yview = self.process_tree.yview()
+        restored_selection = ""
+        restored_focus = ""
+
+        self._process_tree_refreshing = True
+        try:
+            for item_id in self.process_tree.get_children():
+                self.process_tree.delete(item_id)
+            self.process_database_items = {}
+
+            for row in self.process_database_data:
+                if not process_row_matches_filter(row, self.process_filter_var.get()):
+                    continue
+                process_key = str(row.get("process_key", "") or "")
+                path_display = (
+                    row.get("process_path")
+                    or row.get("process_dir")
+                    or row.get("normalized_process_path")
+                    or row.get("normalized_process_dir")
+                    or "-"
+                )
+                students = ", ".join(row.get("affected_students", [])[:4])
+                if len(row.get("affected_students", [])) > 4:
+                    students += " ..."
+                values = (
+                    process_key,
+                    row.get("process_name") or row.get("normalized_process_name") or "",
+                    row.get("status", ""),
+                    path_display,
+                    row.get("match_scope", ""),
+                    row.get("match_count", 0),
+                    students or "-",
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                )
+                item_id = self.process_tree.insert("", tk.END, values=values)
+                self.process_database_items[process_key] = item_id
+                if selected_key and process_key == selected_key:
+                    restored_selection = item_id
+                if focused_key and process_key == focused_key:
+                    restored_focus = item_id
+
+            if restored_selection:
+                self.process_tree.selection_set(restored_selection)
+            else:
+                self.process_tree.selection_remove(self.process_tree.selection())
+
+            if restored_focus:
+                self.process_tree.focus(restored_focus)
+            elif restored_selection:
+                self.process_tree.focus(restored_selection)
+
+            if yview:
+                self.process_tree.yview_moveto(yview[0])
+        finally:
+            self._process_tree_refreshing = False
+        self._sync_process_buttons()
+
+    def _sync_process_buttons(self):
+        has_selection = self._selected_process_row() is not None
+        state_name = tk.NORMAL if has_selection else tk.DISABLED
+        self.process_options_button.config(state=state_name)
+        self.process_google_button.config(state=state_name)
+
 
 def ipc_reader(app: ServerGUI):
     for line in iter(sys.stdin.readline, ""):
@@ -1251,6 +1262,8 @@ def ipc_reader(app: ServerGUI):
             app.after(0, app.process_state_update, msg)
         elif message_type == "client_message":
             app.after(0, app.log_message, msg.get("uuid"), msg.get("text"))
+        elif message_type == "settings_result":
+            app.after(0, app.process_settings_result, msg)
 
     # When the parent server process exits, stdin pipe closes.
     # In managed mode, close the dashboard instead of leaving an orphan window.

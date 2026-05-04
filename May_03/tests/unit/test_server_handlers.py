@@ -77,6 +77,31 @@ class ServerHandlerIncidentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ws.messages[0][0], "session_state")
             self.assertEqual(ws.messages[1][0], "pause_exam")
             self.assertEqual(ws.messages[2][0], "incident_received")
+
+            await _handle_incident_report_event(
+                ws,
+                _FakeRequest(),
+                "client-1",
+                {
+                    "incident_id": "incident-1",
+                    "rule_id": "process_blacklist",
+                    "rule_name": "Process Blacklist",
+                    "status": "evidence_uploaded",
+                    "severity": "violation",
+                    "summary": "Evidence uploaded",
+                    "artifact_path": "data/server/artifacts/client-1/incident.zip",
+                    "evidence_status": "uploaded",
+                },
+            )
+
+            self.assertEqual(len(ws.messages), 4)
+            self.assertEqual(ws.messages[3][0], "incident_received")
+            self.assertEqual(user["session_state"], session_state.VIOLATION_PAUSED)
+            self.assertEqual(state.active_incidents["incident-1"]["status"], "opened")
+            self.assertEqual(
+                state.active_incidents["incident-1"]["artifact_path"],
+                "data/server/artifacts/client-1/incident.zip",
+            )
         finally:
             state.users_db = original_users
             state.clients = original_clients

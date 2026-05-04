@@ -37,6 +37,7 @@ try:
         QAbstractItemView,
         QApplication,
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
         QFileDialog,
@@ -65,6 +66,12 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from common.runtime_logging import setup_runtime_logging
+from server.dashboard_popups import (
+    DashboardPopupMixin,
+    build_process_decision_payload,
+    process_row_google_search_url,
+)
+from server.policy_settings_window import PolicySettingsMixin
 from ui.widgets import apply_glass_theme, make_button, style_button
 from ui.theme import M, STATE_COLORS
 from ui.styles import state_badge_style
@@ -230,6 +237,38 @@ def _emit_command(payload: dict) -> None:
     print(json.dumps(payload), flush=True)
 
 
+PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
+
+
+def process_row_matches_filter(row: dict, filter_name: str) -> bool:
+    filter_name = str(filter_name or "All").strip().lower()
+    status = str(row.get("status", "") or "").strip().lower()
+    if filter_name == "all":
+        return True
+    if filter_name == "warnings":
+        return status == "warning" or bool(row.get("warning"))
+    if filter_name == "active":
+        return bool(row.get("active"))
+    if filter_name == "resolved":
+        return bool(row.get("resolved")) and not bool(row.get("active"))
+    return status == filter_name
+
+
+def format_process_action_availability(row: dict) -> str:
+    availability = row.get("action_availability", {})
+    if not isinstance(availability, dict):
+        return "-"
+    parts = []
+    for action in ("ban", "kick", "pause_exam", "kill_pid"):
+        state = availability.get(action, {})
+        possible = int(state.get("possible", 0) or 0) if isinstance(state, dict) else 0
+        applied = int(state.get("applied", 0) or 0) if isinstance(state, dict) else 0
+        blocked = int(state.get("not_possible", 0) or 0) if isinstance(state, dict) else 0
+        if possible or applied or blocked:
+            parts.append(f"{action.replace('_', ' ')} {possible}/{applied}/{blocked}")
+    return "; ".join(parts) if parts else "-"
+
+
 class _IPCSignals(QObject):
     parent_closed = Signal()
 
@@ -340,7 +379,7 @@ class _OptionsDialog(QDialog):
         self.close()
 
 
-class ServerGUI(QMainWindow):
+class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
     INCIDENT_COLUMNS = [
         ("incident_id", "Incident ID"),
         ("time", "Time"),
@@ -359,11 +398,14 @@ class ServerGUI(QMainWindow):
         self.standalone_mode = standalone_mode
         self.clients_data: dict[str, dict] = {}
         self.incidents_data: list[dict] = []
+        self.process_database_data: list[dict] = []
+        self.process_database_items: dict[str, str] = {}
         self.server_info: dict = {}
         self._open_dialogs: dict[tuple[str, str], QDialog] = {}
         self._mono = _monospace_font()
         self._allow_close = False
         self._incident_tree_refreshing = False
+        self._process_tree_refreshing = False
 
         self.setWindowTitle("Server Monitor Dashboard")
         self.resize(1200, 760)
@@ -375,6 +417,20 @@ class ServerGUI(QMainWindow):
         self._tick_timer.setInterval(1000)
         self._tick_timer.timeout.connect(self._tick_running_timers)
         self._tick_timer.start()
+
+    # ------------------------------------------------------------------ tk compat shims
+    def after(self, delay_ms: int, func, *args) -> None:
+        """Compatibility shim: mirrors tk.Tk.after() for mixin code."""
+        QTimer.singleShot(delay_ms, lambda: func(*args))
+
+    def open_policy_settings_window(self) -> None:
+        """Open policy settings — show a Qt message since the mixin window is tkinter-based."""
+        QMessageBox.information(
+            self,
+            "Policy Settings",
+            "Policy Settings are only available in the Tkinter UI.\n"
+            "Run with --ui tk to access the full policy settings window.",
+        )
 
     # ------------------------------------------------------------------ layout
     def _build_layout(self) -> None:
@@ -389,10 +445,13 @@ class ServerGUI(QMainWindow):
 
         self.overview_tab = QWidget()
         self.rules_tab = QWidget()
+        self.process_database_tab = QWidget()
         self.tabs.addTab(self.overview_tab, "Overview")
         self.tabs.addTab(self.rules_tab, "Rule Breakings")
+        self.tabs.addTab(self.process_database_tab, "Process Database")
         self._build_overview_tab()
         self._build_rule_breakings_tab()
+        self._build_process_database_tab()
 
         cmd_row = QHBoxLayout()
         cmd_row.addWidget(QLabel("Admin Command:"))
@@ -434,41 +493,22 @@ class ServerGUI(QMainWindow):
         self.finish_exam_button.clicked.connect(self.finish_exam_globally)
         action_row.addWidget(self.finish_exam_button)
         action_row.addStretch(1)
-        info_layout.addLayout(action_row)
 
-        grid = QGridLayout()
-        self.edit_blacklist_button = make_button("Edit Blacklist", "tonal")
-        self.edit_blacklist_button.clicked.connect(self.edit_blacklist)
-        grid.addWidget(self.edit_blacklist_button, 0, 0)
-        self.apply_blacklist_button = make_button("Apply Blacklist", "tonal")
-        self.apply_blacklist_button.clicked.connect(self.apply_blacklist)
-        grid.addWidget(self.apply_blacklist_button, 0, 1)
-        self.edit_policy_button = make_button("Edit Policy", "tonal")
-        self.edit_policy_button.clicked.connect(self.edit_policy)
-        grid.addWidget(self.edit_policy_button, 0, 2)
-        self.apply_policy_button = make_button("Apply Policy", "tonal")
-        self.apply_policy_button.clicked.connect(self.apply_policy)
-        grid.addWidget(self.apply_policy_button, 1, 0)
-        self.export_settings_button = make_button("Export Settings", "text")
-        self.export_settings_button.clicked.connect(self.export_settings)
-        grid.addWidget(self.export_settings_button, 1, 1)
-        self.import_settings_button = make_button("Import Settings", "text")
-        self.import_settings_button.clicked.connect(self.import_settings)
-        grid.addWidget(self.import_settings_button, 1, 2)
-        info_layout.addLayout(grid)
+        self.policy_settings_button = make_button("Policy Settings", "tonal")
+        self.policy_settings_button.clicked.connect(self.open_policy_settings_window)
+        action_row.addWidget(self.policy_settings_button)
 
         self.remember_check = QCheckBox("Remember Settings")
         self.remember_check.setChecked(True)
         self.remember_check.toggled.connect(self.toggle_remember_settings)
-        info_layout.addWidget(self.remember_check)
+        action_row.addWidget(self.remember_check)
 
-        detail_row = QHBoxLayout()
         self.server_info_detail_button = make_button("Detailed Info", "text")
         self.server_info_detail_button.setEnabled(False)
         self.server_info_detail_button.clicked.connect(self.show_server_info_details)
-        detail_row.addWidget(self.server_info_detail_button)
-        detail_row.addStretch(1)
-        info_layout.addLayout(detail_row)
+        action_row.addWidget(self.server_info_detail_button)
+
+        info_layout.addLayout(action_row)
 
         self.server_info_label = QLabel("Waiting for server state...")
         self.server_info_label.setFont(self._mono)
@@ -571,6 +611,119 @@ class ServerGUI(QMainWindow):
         btn.clicked.connect(slot)
         layout.addWidget(btn)
         return btn
+
+    def _build_process_database_tab(self) -> None:
+        layout = QVBoxLayout(self.process_database_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Filter:"))
+        self.process_filter_combo = QComboBox()
+        for f in PROCESS_DATABASE_FILTERS:
+            self.process_filter_combo.addItem(f)
+        self.process_filter_combo.setFixedWidth(130)
+        self.process_filter_combo.setStyleSheet(
+            f"background-color: {M['surface_container']}; color: {M['on_surface']};"
+        )
+        self.process_filter_combo.currentTextChanged.connect(lambda _text: self._rebuild_process_database_tree())
+        toolbar.addWidget(self.process_filter_combo)
+        toolbar.addSpacing(10)
+
+        self.process_options_button = make_button("Options", "tonal")
+        self.process_options_button.setEnabled(False)
+        self.process_options_button.clicked.connect(self._on_process_options_clicked)
+        toolbar.addWidget(self.process_options_button)
+
+        self.process_google_button = make_button("Google Search", "text")
+        self.process_google_button.setEnabled(False)
+        self.process_google_button.clicked.connect(self._on_process_google_clicked)
+        toolbar.addWidget(self.process_google_button)
+
+        toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+
+        process_box = QGroupBox("Process Definitions And Evidence")
+        process_box_layout = QVBoxLayout(process_box)
+
+        PROCESS_COLUMNS = [
+            ("process_key", "Process Key"),
+            ("executable", "Executable"),
+            ("status", "Status"),
+            ("path", "Path / Directory"),
+            ("scope", "Scope"),
+            ("matches", "Matches"),
+            ("students", "Affected Students"),
+            ("last_seen", "Last Seen"),
+            ("actions", "Saved Actions"),
+            ("availability", "Action Availability"),
+        ]
+        self.process_tree = QTreeWidget()
+        self.process_tree.setColumnCount(len(PROCESS_COLUMNS))
+        self.process_tree.setHeaderLabels([label for _, label in PROCESS_COLUMNS])
+        self.process_tree.setColumnHidden(0, True)
+        self.process_tree.setFont(self._mono)
+        self.process_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.process_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.process_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.process_tree.setRootIsDecorated(False)
+        self.process_tree.setStyleSheet(
+            f"QTreeWidget {{ background-color: {M['surface_container']}; "
+            f"color: {M['on_surface']}; border: 1px solid {M.get('outline', '#444')}; }}"
+            f"QTreeWidget::item:selected {{ background-color: {M['primary_container']}; "
+            f"color: {M['on_primary_container']}; }}"
+            f"QHeaderView::section {{ background-color: {M['surface_variant']}; "
+            f"color: {M['on_surface_variant']}; padding: 4px; }}"
+        )
+        header = self.process_tree.header()
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # executable
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # status
+        header.setSectionResizeMode(3, QHeaderView.Stretch)  # path
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # scope
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # matches
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # students
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # last_seen
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # actions
+        header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # availability
+        self.process_tree.itemSelectionChanged.connect(self._sync_process_buttons)
+        self.process_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_process_options_clicked())
+
+        process_box_layout.addWidget(self.process_tree)
+        layout.addWidget(process_box, stretch=1)
+
+    def _on_process_options_clicked(self) -> None:
+        row = self._selected_process_row()
+        if not row:
+            QMessageBox.information(self, "Process Database", "Select a process entry first.")
+            return
+        # Options popup not yet implemented for Qt; show basic info dialog
+        rows = [
+            ("Process Key", str(row.get("process_key", "") or "-")),
+            ("Executable", str(row.get("process_name") or row.get("normalized_process_name") or "-")),
+            ("Status", str(row.get("status", "") or "-")),
+            ("Path", str(row.get("process_path") or row.get("normalized_process_path") or "-")),
+            ("Directory", str(row.get("process_dir") or row.get("normalized_process_dir") or "-")),
+            ("Scope", str(row.get("match_scope", "") or "-")),
+            ("Match Count", str(row.get("match_count", 0))),
+            ("Last Seen", str(row.get("last_seen", "") or "-")),
+            ("Saved Actions", str(row.get("saved_action_labels", "") or "-")),
+            ("Action Availability", format_process_action_availability(row)),
+        ]
+        dialog = _DetailsDialog(
+            f"Process: {row.get('process_name') or row.get('normalized_process_name') or 'Unknown'}",
+            rows,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _on_process_google_clicked(self) -> None:
+        import webbrowser
+        row = self._selected_process_row()
+        if not row:
+            return
+        webbrowser.open(process_row_google_search_url(row))
+        self._append_log(
+            f"[ADMIN] Google search for {row.get('process_name') or row.get('normalized_process_name')}"
+        )
 
     # ------------------------------------------------------------------ selection
     def _selected_client_id(self) -> Optional[str]:

@@ -20,7 +20,7 @@ except ImportError:
 
 
 FULL_SNAPSHOT_INTERVAL_SECONDS = 120
-DIFF_INTERVAL_SECONDS = 15
+DIFF_INTERVAL_SECONDS = 5
 ProcessEntry = (
     tuple[int, str]
     | tuple[int, str, str | None]
@@ -58,6 +58,7 @@ class ProcessMonitor:
 
         self.active = True
         self.previous_procs = self._get_current_processes()
+        self._emit_process_observation(self.previous_procs)
         self._task = asyncio.create_task(self._loop())
         print(f"[PROCESS] Monitor started. Logging to {self.log_file}")
 
@@ -95,6 +96,13 @@ class ProcessMonitor:
     def trigger_full_report(self):
         """Immediately generate and save a full list of processes."""
         self.export_requested_report()
+
+    def emit_current_snapshot(self) -> set[ProcessEntry]:
+        """Immediately send the current process set through live detection callbacks."""
+        current_procs = self._get_current_processes()
+        self._emit_process_observation(current_procs)
+        self.previous_procs = current_procs
+        return current_procs
 
     def export_requested_report(self) -> str | None:
         current_procs = self._get_current_processes()
@@ -205,6 +213,11 @@ class ProcessMonitor:
         if self.catch_callback:
             self.catch_callback(matches, self.blacklist_version)
 
+    def _emit_process_observation(self, processes: set[ProcessEntry]):
+        if self.poll_callback:
+            self.poll_callback(processes, self.blacklist_version)
+        self._report_blacklist_matches(self._detect_blacklist_matches(processes))
+
     async def _loop(self):
         ticks_per_full_snapshot = FULL_SNAPSHOT_INTERVAL_SECONDS // DIFF_INTERVAL_SECONDS
         tick_count = 0
@@ -214,9 +227,7 @@ class ProcessMonitor:
                 await asyncio.sleep(DIFF_INTERVAL_SECONDS)
                 tick_count += 1
                 current_procs = self._get_current_processes()
-                if self.poll_callback:
-                    self.poll_callback(current_procs, self.blacklist_version)
-                self._report_blacklist_matches(self._detect_blacklist_matches(current_procs))
+                self._emit_process_observation(current_procs)
 
                 if tick_count >= ticks_per_full_snapshot:
                     self._write_log(

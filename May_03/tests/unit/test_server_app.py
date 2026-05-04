@@ -1,7 +1,8 @@
 import unittest
+from argparse import Namespace
 from unittest.mock import patch
 
-from server.app import _duplicate_guard_timeout, _is_same_server_instance, _server_identity_hosts
+from server.app import _duplicate_guard_timeout, _is_same_server_instance, _server_identity_hosts, _shutdown_grace_seconds
 
 
 class ServerAppTests(unittest.TestCase):
@@ -25,6 +26,19 @@ class ServerAppTests(unittest.TestCase):
             self.assertTrue(_is_same_server_instance(app, "192.168.1.50", 8080))
             self.assertFalse(_is_same_server_instance(app, "192.168.1.51", 8080))
             self.assertFalse(_is_same_server_instance(app, "192.168.1.50", 8081))
+
+    def test_is_same_server_instance_uses_stored_identity_hosts(self):
+        app = {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "server_identity_hosts": {"192.168.1.50", "192.168.56.1", "127.0.0.1"},
+        }
+
+        self.assertTrue(_is_same_server_instance(app, "192.168.56.1", 8080))
+        self.assertFalse(_is_same_server_instance(app, "192.168.99.1", 8080))
+
+    def test_shutdown_grace_seconds_uses_cli_value(self):
+        self.assertEqual(_shutdown_grace_seconds(Namespace(shutdown_grace_seconds=12.5)), 12.5)
 
 
 if __name__ == "__main__":

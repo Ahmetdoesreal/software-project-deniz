@@ -11,7 +11,7 @@ import ipaddress
 import json
 import socket
 import struct
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 import aiohttp
 import psutil
@@ -133,6 +133,17 @@ def _candidate_ipv4_hosts() -> List[str]:
     ]
     default_ip = _default_route_ip()
     return _unique_preserve_order([*interface_hosts, default_ip, "127.0.0.1"])
+
+
+def _local_ipv4_hosts(extra_hosts: Optional[Iterable[str]] = None) -> set[str]:
+    """All IPv4 addresses that should be treated as this machine."""
+    candidates = [*_candidate_ipv4_hosts(), *(extra_hosts or [])]
+    hosts = set()
+    for host in candidates:
+        normalized = _normalize_ipv4(host)
+        if normalized and normalized != "0.0.0.0":
+            hosts.add(normalized)
+    return hosts
 
 
 class ServerAnnouncer:
@@ -276,6 +287,7 @@ async def _listen_for_server(
     bind_failure_result,
     on_bind_failure=None,
     on_timeout=None,
+    ignore_beacon: Optional[Callable[[dict], bool]] = None,
 ):
     try:
         sock = _create_listen_socket(bind_host=bind_host)
@@ -301,9 +313,11 @@ async def _listen_for_server(
             except asyncio.TimeoutError:
                 continue
 
-            server_info = _parse_server_beacon(data, addr, server_id)
-            if server_info is not None:
-                return server_info
+            beacon = _decode_server_beacon(data, addr, server_id)
+            if beacon is not None:
+                if ignore_beacon and ignore_beacon(beacon):
+                    continue
+                return beacon["host"], beacon["port"]
     finally:
         sock.close()
 
@@ -320,7 +334,7 @@ async def _wait_for_minimum_duration(started_at: float, duration: float):
         await asyncio.sleep(remaining)
 
 
-def _parse_server_beacon(data: bytes, addr: Tuple[str, int], server_id: str):
+def _decode_server_beacon(data: bytes, addr: Tuple[str, int], server_id: str):
     try:
         msg = json.loads(data.decode("ascii"))
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -338,7 +352,42 @@ def _parse_server_beacon(data: bytes, addr: Tuple[str, int], server_id: str):
     port = msg.get("port")
     if port is None:
         return None
-    return host, port
+    return {
+        "host": host,
+        "port": port,
+        "advertised_host": advertised_host,
+        "source_host": source_host,
+    }
+
+
+def _parse_server_beacon(data: bytes, addr: Tuple[str, int], server_id: str):
+    beacon = _decode_server_beacon(data, addr, server_id)
+    if beacon is None:
+        return None
+    return beacon["host"], beacon["port"]
+
+
+def _same_port(left, right) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return False
+
+
+def _server_beacon_matches_known_ipv4(
+    beacon: dict,
+    known_ipv4s: set[str],
+    known_port: Optional[int],
+) -> bool:
+    if known_port is None or not _same_port(beacon.get("port"), known_port):
+        return False
+
+    beacon_hosts = {
+        _normalize_ipv4(beacon.get("host")),
+        _normalize_ipv4(beacon.get("advertised_host")),
+        _normalize_ipv4(beacon.get("source_host")),
+    }
+    return bool(known_ipv4s.intersection(host for host in beacon_hosts if host))
 
 
 async def discover_server(
@@ -417,6 +466,8 @@ async def check_duplicate_server(
     bind_host: str = "",
     *,
     local_port: Optional[int] = None,
+    known_self_ipv4s: Optional[Iterable[str]] = None,
+    self_port: Optional[int] = None,
 ):
     """
     Listen briefly for beacons. If we hear another server with the same ID,
@@ -425,6 +476,18 @@ async def check_duplicate_server(
     """
     print(f"[CHECK] Checking for existing server '{server_id}' on the network...")
     started_at = asyncio.get_running_loop().time()
+    ignore_beacon = None
+    if self_port is not None:
+        if known_self_ipv4s is None:
+            known_ipv4s = _local_ipv4_hosts([bind_host])
+        else:
+            known_ipv4s = _local_ipv4_hosts([*known_self_ipv4s, bind_host])
+
+        def _ignore_self_beacon(beacon: dict) -> bool:
+            return _server_beacon_matches_known_ipv4(beacon, known_ipv4s, self_port)
+
+        ignore_beacon = _ignore_self_beacon
+
     result = await _listen_for_server(
         server_id,
         timeout,
@@ -436,6 +499,7 @@ async def check_duplicate_server(
             "[CHECK] UDP duplicate check unavailable; waiting the startup guard interval before proceeding."
         ),
         on_timeout=None,
+        ignore_beacon=ignore_beacon,
     )
     if result is not None:
         return result
