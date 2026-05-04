@@ -260,6 +260,11 @@ class ServerManager(tk.Tk):
             wraplength=860,
             foreground="#5c4d7d",
         ).grid(row=9, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(0, 10))
+        self._setup_widgets = [
+            widget
+            for widget in self.grid_slaves()
+            if 1 <= int(widget.grid_info().get("row", -1)) <= 6
+        ]
 
     def _get_free_port(self):
         try:
@@ -329,10 +334,7 @@ class ServerManager(tk.Tk):
         )
 
     def _set_setup_visible(self, visible: bool):
-        for widget in self.grid_slaves():
-            row = int(widget.grid_info().get("row", -1))
-            if row > 6:
-                continue
+        for widget in self._setup_widgets:
             if visible:
                 widget.grid()
             else:
@@ -396,6 +398,7 @@ class ServerManager(tk.Tk):
         self.status_var.set(self._server_prompt_status)
         self.deiconify()
         self.lift()
+        self.update_idletasks()
         self.port_entry.focus_set()
         try:
             self.port_entry.selection_range(0, tk.END)

@@ -224,6 +224,7 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
         ("Has Exam Files", "Yes" if info.get("has_exam_files") else "No"),
         ("Exam Files Path", str(info.get("exam_files_path") or "-")),
         ("Blacklist Entries", str(info.get("process_blacklist_count", 0))),
+        ("Process Definitions", str(info.get("process_definition_count", 0))),
         ("Blacklist Version", str(info.get("process_blacklist_version", "-"))),
         ("Blacklist File", str(info.get("process_blacklist_file", "-"))),
         ("Policy Version", str(info.get("policy_version", "-"))),
@@ -636,6 +637,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("Filter:"))
         self.process_filter_combo = QComboBox()
+        self.process_filter_combo.setEditable(False)
+        self.process_filter_combo.setInsertPolicy(QComboBox.NoInsert)
         for f in PROCESS_DATABASE_FILTERS:
             self.process_filter_combo.addItem(f)
         self.process_filter_combo.setFixedWidth(130)

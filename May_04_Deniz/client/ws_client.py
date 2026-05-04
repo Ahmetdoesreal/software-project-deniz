@@ -1286,51 +1286,6 @@ class WebSocketSession:
 
     def _print_remaining_time(self, remaining: int):
         last_remaining = self.state.last_printed_remaining
-
-    async def handle_kill_process(self, data: dict):
-        pid = int(data.get("pid", 0) or 0)
-        incident_id = str(data.get("incident_id", "") or "")
-        process_name = str(data.get("process_name", "") or "")
-        if pid <= 0:
-            await self._send_payload(
-                events.kill_process_result(
-                    pid,
-                    incident_id=incident_id,
-                    ok=False,
-                    process_name=process_name,
-                    message="invalid pid",
-                )
-            )
-            return
-
-        ok, message = await self.loop.run_in_executor(None, self._kill_local_process, pid)
-        await self._send_payload(
-            events.kill_process_result(
-                pid,
-                incident_id=incident_id,
-                ok=ok,
-                process_name=process_name,
-                message=message,
-            )
-        )
-
-    def _kill_local_process(self, pid: int) -> tuple[bool, str]:
-        try:
-            process = psutil.Process(pid)
-        except (psutil.NoSuchProcess, psutil.Error) as exc:
-            return False, str(exc)
-
-        try:
-            process.kill()
-            process.wait(timeout=3)
-            return True, f"terminated pid {pid}"
-        except psutil.TimeoutExpired:
-            return False, f"timed out waiting for pid {pid} to exit"
-        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.Error, OSError) as exc:
-            return False, str(exc)
-
-    def _print_remaining_time(self, remaining: int):
-        last_remaining = self.state.last_printed_remaining
         if last_remaining is None or remaining <= last_remaining - 10:
             self.state.last_printed_remaining = remaining
             print(f"[EXAM] Time remaining: {_time_text(remaining)}")

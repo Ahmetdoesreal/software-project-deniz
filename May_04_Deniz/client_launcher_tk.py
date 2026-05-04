@@ -121,12 +121,13 @@ class ClientManager(tk.Tk):
         )
 
         self.v_adv = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.advanced_check = ttk.Checkbutton(
             self,
             text="Advanced Networking Options",
             variable=self.v_adv,
             command=self.toggle_advanced,
-        ).grid(row=6, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 0))
+        )
+        self.advanced_check.grid(row=6, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 0))
 
         self.adv_frame = ttk.Frame(self)
         self.adv_frame.columnconfigure(1, weight=1)
@@ -238,8 +239,15 @@ class ClientManager(tk.Tk):
             wraplength=700,
             foreground="#5c4d7d",
         ).grid(row=10, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(0, 10))
+        self._setup_widgets = [
+            widget
+            for widget in self.grid_slaves()
+            if 0 <= int(widget.grid_info().get("row", -1)) <= 6
+        ]
 
     def toggle_advanced(self):
+        if not self.advanced_check.winfo_ismapped():
+            return
         if self.v_adv.get():
             self.adv_frame.grid(row=7, column=0, columnspan=2, sticky=tk.EW)
             self.geometry("760x790")
@@ -294,14 +302,20 @@ class ClientManager(tk.Tk):
         )
 
     def _set_setup_visible(self, visible: bool):
-        for widget in self.grid_slaves():
-            row = int(widget.grid_info().get("row", -1))
-            if row > 7:
-                continue
+        for widget in self._setup_widgets:
             if visible:
                 widget.grid()
             else:
                 widget.grid_remove()
+        if visible:
+            if self.v_adv.get():
+                self.adv_frame.grid(row=7, column=0, columnspan=2, sticky=tk.EW)
+                self.geometry("760x790")
+            else:
+                self.adv_frame.grid_remove()
+                self.geometry("760x720")
+        else:
+            self.adv_frame.grid_remove()
 
     def _validate_form(self) -> bool:
         if self._client_running():
@@ -388,6 +402,7 @@ class ClientManager(tk.Tk):
         self.status_var.set(self._login_prompt_status)
         self.deiconify()
         self.lift()
+        self.update_idletasks()
         focus_target = self.password_entry if self.v_login.get().strip() else self.login_entry
         focus_target.focus_set()
         try:

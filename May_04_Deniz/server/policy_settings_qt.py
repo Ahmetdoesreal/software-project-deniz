@@ -96,6 +96,8 @@ class ProcessDecisionDialog(QDialog):
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Status:"))
         self.status_combo = QComboBox()
+        self.status_combo.setEditable(False)
+        self.status_combo.setInsertPolicy(QComboBox.NoInsert)
         self.status_combo.addItems(["unknown", "whitelist", "blacklist", "warning"])
         self.status_combo.setCurrentText(str(self.row.get("status") or "unknown"))
         row1.addWidget(self.status_combo)
@@ -103,6 +105,8 @@ class ProcessDecisionDialog(QDialog):
         row1.addSpacing(20)
         row1.addWidget(QLabel("Match Scope:"))
         self.scope_combo = QComboBox()
+        self.scope_combo.setEditable(False)
+        self.scope_combo.setInsertPolicy(QComboBox.NoInsert)
         self.scope_combo.addItems(["path", "directory", "name"])
         self.scope_combo.setCurrentText(str(self.row.get("match_scope") or "path"))
         row1.addWidget(self.scope_combo)
@@ -352,6 +356,8 @@ class PolicySettingsDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(label))
         combo = QComboBox()
+        combo.setEditable(False)
+        combo.setInsertPolicy(QComboBox.NoInsert)
         combo.addItems(items)
         combo.currentTextChanged.connect(self._mark_dirty)
         self.vars[key] = combo
@@ -735,4 +741,3 @@ class PolicySettingsDialog(QDialog):
                 event.ignore()
                 return
         super().closeEvent(event)
-
