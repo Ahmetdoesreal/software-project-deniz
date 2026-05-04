@@ -10,6 +10,7 @@ from common.runtime_logging import install_asyncio_exception_logging, setup_runt
 from .custommodules.replay_recorder import ReplayRecorder
 from .auth import check_health, perform_login
 from .exam import fetch_exam_prep
+from .incident_buffer import IncidentBuffer
 from .ws_client import run_ws
 
 
@@ -105,6 +106,7 @@ def build_ws_url(host: str, port: int, session_uuid: str) -> str:
 async def main_loop(args):
     install_asyncio_exception_logging(asyncio.get_running_loop())
     recorder_manager = RecorderManager(record_enabled=args.record)
+    incident_buffer = IncidentBuffer()
     active_session_uuid = None
 
     print(f"=== Client [{args.login_id}] (awaiting session assignment) ===\n")
@@ -133,6 +135,7 @@ async def main_loop(args):
                     args.password,
                     recorder_manager.recorder,
                     gui_ui=getattr(args, "ui", "tk") or "tk",
+                    incident_buffer=incident_buffer,
                 )
                 if submission_completed:
                     print("[EXAM] Submission complete. Exiting client.")

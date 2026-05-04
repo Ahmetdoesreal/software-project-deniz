@@ -23,8 +23,10 @@ from .transfers import (
 )
 from .custommodules.focused_window_monitor import FocusedWindowMonitor
 from .custommodules.hardware_monitor import HardwareMonitor
+from .custommodules.idle_monitor import IdleMonitor
 from .custommodules.process_monitor import ProcessMonitor
 from .custommodules.replay_recorder import ReplayRecorder
+from .incident_buffer import IncidentBuffer
 
 REPLAY_SAVE_TIMEOUT_SECONDS = 45
 SUBMISSION_UPLOAD_TIMEOUT_SECONDS = 900
@@ -445,6 +447,7 @@ class WebSocketSession:
         recorder: ReplayRecorder | None,
         *,
         gui_ui: str = "tk",
+        incident_buffer: IncidentBuffer | None = None,
     ):
         self.ws_url = ws_url
         self.base_url = base_url
@@ -463,12 +466,18 @@ class WebSocketSession:
         self.gui = ClientGUIBridge(self.loop, self.stdin.queue, ui=gui_ui)
         self.exam_state_logger = ExamStateLogger(self.output_dir)
         self.incident_engine = ClientIncidentEngine()
+        self.incident_buffer = incident_buffer
+        if self.incident_buffer:
+            restored = self.incident_buffer.begin_session(session_uuid)
+            if restored:
+                print(f"[INCIDENT] Restored {restored} unacked incident(s) from previous session.")
         self._background_tasks: set[asyncio.Task] = set()
         self.replay_save_queue = ReplaySaveQueue(recorder, self.loop)
         self.process_monitor = self._create_process_monitor()
         self.hardware_monitor = self._create_hardware_monitor()
         self._last_focused_window_server_send = 0.0
         self.focused_window_monitor = self._create_focused_window_monitor()
+        self.idle_monitor = self._create_idle_monitor()
         self._record_timer_transition(timer_state="idle", source="client", reason="session_initialized")
 
     def _create_process_monitor(self):
@@ -495,10 +504,24 @@ class WebSocketSession:
         monitor.start()
         return monitor
 
+    def _create_idle_monitor(self):
+        monitor = IdleMonitor(
+            self.output_dir,
+            snapshot_callback=self._queue_idle_snapshot,
+        )
+        monitor.start()
+        return monitor
+
+    def _queue_idle_snapshot(self, snapshot: dict):
+        self._schedule_background_task(
+            self._process_local_incidents(self.incident_engine.observe_idle(snapshot))
+        )
+
     def _stop_runtime_monitors(self):
         self.process_monitor.stop()
         self.hardware_monitor.stop()
         self.focused_window_monitor.stop()
+        self.idle_monitor.stop()
 
     def _schedule_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -555,6 +578,7 @@ class WebSocketSession:
             self._record_timer_transition(timer_state=timer_state, source=source, reason=reason)
 
     async def run(self):
+        await self._flush_incident_buffer()
         listener_task = asyncio.create_task(self.listener())
         try:
             await self.sender()
@@ -742,6 +766,8 @@ class WebSocketSession:
 
         if event == events.INCIDENT_RECEIVED:
             incident_id = data.get("incident_id", "")
+            if self.incident_buffer:
+                self.incident_buffer.mark_acked(incident_id)
             print(f"[INCIDENT] Server acknowledged incident {incident_id}.")
             return
 
@@ -1106,6 +1132,21 @@ class WebSocketSession:
         for incident in incidents:
             await self._report_incident(incident)
 
+    async def _flush_incident_buffer(self):
+        if not self.incident_buffer or self.incident_buffer.unacked_count() == 0:
+            return
+        unacked = self.incident_buffer.get_unacked()
+        print(f"[INCIDENT] Flushing {len(unacked)} unacked incident(s) (seq {unacked[0].get('seq')}–{unacked[-1].get('seq')})...")
+        for payload in unacked:
+            seq = payload.get("seq")
+            try:
+                await self._send_payload(events.incident_report(payload))
+                if seq is not None:
+                    self.incident_buffer.mark_sent(seq)
+            except Exception as exc:
+                print(f"[INCIDENT] Flush stopped at seq={seq}: {exc} — remaining stay in buffer.")
+                break
+
     async def _report_incident(self, incident: dict):
         incident_payload = dict(incident)
         incident_payload["session_uuid"] = self.session_uuid
@@ -1116,10 +1157,18 @@ class WebSocketSession:
         if needs_evidence:
             incident_payload["evidence_status"] = "pending"
 
+        if self.incident_buffer:
+            incident_payload = self.incident_buffer.enqueue(incident_payload)
+
+        seq = incident_payload.get("seq")
         try:
             await self._send_payload(events.incident_report(incident_payload))
+            if self.incident_buffer and seq is not None:
+                self.incident_buffer.mark_sent(seq)
         except Exception as exc:
-            print(f"[INCIDENT] Failed to send incident {incident_payload.get('incident_id')}: {exc}")
+            incident_id = incident_payload.get("incident_id")
+            seq_label = f" seq={seq}" if seq is not None else ""
+            print(f"[INCIDENT] Failed to send {incident_id}{seq_label}: {exc} — queued on disk.")
             return
 
         status = incident_payload.get("status", "")
@@ -1299,6 +1348,7 @@ async def run_ws(
     recorder: ReplayRecorder | None,
     *,
     gui_ui: str = "tk",
+    incident_buffer: IncidentBuffer | None = None,
 ):
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
@@ -1306,4 +1356,5 @@ async def run_ws(
             return await WebSocketSession(
                 ws_url, base_url, session_uuid, password, ws, recorder,
                 gui_ui=gui_ui,
+                incident_buffer=incident_buffer,
             ).run()

@@ -133,6 +133,8 @@ class ClientIncidentEngine:
         self._open_unexpected_process_incidents: dict[str, dict] = {}
         self._focus_state = _FocusState()
         self._rapid_switch_state = _RapidSwitchState()
+        self._idle_incident_id: str = ""
+        self._idle_level: str = "none"  # "none" | "warn" | "critical"
 
     def apply_policy(self, policy: dict) -> tuple[bool, str]:
         if not isinstance(policy, dict):
@@ -163,6 +165,8 @@ class ClientIncidentEngine:
         self._unexpected_baseline_ready = False
         self._focus_state = _FocusState()
         self._rapid_switch_state = _RapidSwitchState()
+        self._idle_incident_id = ""
+        self._idle_level = "none"
         self._known_processes = {
             _normalize_process_name(entry)
             for rule in normalized_rules.values()
@@ -300,6 +304,98 @@ class ClientIncidentEngine:
         else:
             incidents.extend(self._handle_focus_clear(rule, subject_key))
         return incidents
+
+    def observe_idle(self, snapshot: dict) -> list[dict]:
+        """
+        Evaluate idle time against the server-configured idle_policy rule.
+
+        Rule fields (all optional, with defaults):
+          enabled                  bool   (default False)
+          warn_threshold_seconds   float  (default 80)
+          critical_threshold_seconds float (default 150)
+
+        Opens an incident when the student crosses a threshold, resolves it
+        when they become active again.
+        """
+        rule = self._rules_by_id.get("idle_policy", {})
+        if not rule or not rule.get("enabled", False):
+            incidents = self._resolve_idle_if_open("Idle policy disabled.")
+            self._idle_level = "none"
+            return incidents
+
+        idle_seconds = float(snapshot.get("idle_seconds", -1))
+        if idle_seconds < 0:
+            return []
+
+        warn_threshold = float(rule.get("warn_threshold_seconds", 80))
+        critical_threshold = float(rule.get("critical_threshold_seconds", 150))
+
+        if idle_seconds >= critical_threshold:
+            new_level = "critical"
+        elif idle_seconds >= warn_threshold:
+            new_level = "warn"
+        else:
+            new_level = "none"
+
+        incidents: list[dict] = []
+
+        if new_level == "none":
+            incidents.extend(self._resolve_idle_if_open("Student is active again."))
+            self._idle_level = "none"
+            return incidents
+
+        # escalate: warn -> critical opens a fresh incident
+        if new_level == "critical" and self._idle_level == "warn" and self._idle_incident_id:
+            incidents.extend(self._resolve_idle_if_open(
+                f"Escalating idle incident to critical ({idle_seconds:.0f}s)."
+            ))
+            self._idle_level = "none"
+
+        if not self._idle_incident_id:
+            severity = "violation" if new_level == "critical" else "warning"
+            incident_rule = {
+                **rule,
+                "rule_id": "idle_policy",
+                "rule_name": rule.get("rule_name", "idle_policy"),
+                "source": "idle_monitor",
+                "severity": severity,
+            }
+            summary = (
+                f"Student idle for {idle_seconds:.0f}s "
+                f"({'critical' if new_level == 'critical' else 'warning'} threshold "
+                f"{critical_threshold if new_level == 'critical' else warn_threshold:.0f}s)"
+            )
+            incident = self._new_incident(incident_rule, status="opened", summary=summary)
+            incident["idle_seconds"] = idle_seconds
+            incident["event_type"] = f"idle_{new_level}"
+            self._idle_incident_id = incident["incident_id"]
+            self._idle_level = new_level
+            incidents.append(incident)
+
+        return incidents
+
+    def _resolve_idle_if_open(self, summary: str) -> list[dict]:
+        if not self._idle_incident_id:
+            return []
+        now = protocol.now_iso()
+        resolved = {
+            "incident_id": self._idle_incident_id,
+            "policy_version": self.policy_version,
+            "rule_id": "idle_policy",
+            "rule_name": "idle_policy",
+            "source": "idle_monitor",
+            "severity": "warning",
+            "status": "resolved",
+            "summary": summary,
+            "event_type": "idle_resolved",
+            "event_at": now,
+            "timestamp": now,
+            "resolved_at": now,
+            "needs_evidence": False,
+        }
+        self._idle_incident_id = ""
+        self._idle_level = "none"
+        return [resolved]
 
     def incident_for_id(self, incident_id: str) -> dict | None:
         for incident in self._open_process_incidents.values():
