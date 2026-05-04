@@ -65,6 +65,30 @@ def apply_table_style(tree: QTreeWidget) -> None:
     tree.setRootIsDecorated(False)
 
 
+def configure_tree_columns(tree: QTreeWidget, widths: tuple[tuple[int, int], ...]) -> None:
+    header = tree.header()
+    header.setSectionsMovable(False)
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(70)
+    minimums: dict[int, int] = {}
+    for index, (width, minimum) in enumerate(widths):
+        minimums[index] = minimum
+        header.setSectionResizeMode(index, QHeaderView.Interactive)
+        header.resizeSection(index, max(width, minimum))
+
+    def _clamp_section(index: int, _old_size: int, new_size: int) -> None:
+        minimum = minimums.get(index, 70)
+        if new_size >= minimum:
+            return
+        header.blockSignals(True)
+        try:
+            header.resizeSection(index, minimum)
+        finally:
+            header.blockSignals(False)
+
+    header.sectionResized.connect(_clamp_section)
+
+
 def process_row_google_search_url(row: dict) -> str:
     return build_google_search_url(row.get("process_name", ""), row.get("process_path", ""))
 
@@ -168,12 +192,10 @@ class ProcessDecisionDialog(QDialog):
         self.students_tree.setColumnCount(5)
         self.students_tree.setHeaderLabels(["Student", "Session", "PID", "Active", "Action State"])
         apply_table_style(self.students_tree)
-        header = self.students_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        configure_tree_columns(
+            self.students_tree,
+            ((150, 100), (135, 95), (85, 65), (85, 65), (470, 180)),
+        )
         
         for student in self.row.get("action_states", []):
             item = QTreeWidgetItem([
@@ -194,12 +216,10 @@ class ProcessDecisionDialog(QDialog):
         self.prev_tree.setColumnCount(5)
         self.prev_tree.setHeaderLabels(["Status", "Scope", "Path / Directory", "Actions", "Decided"])
         apply_table_style(self.prev_tree)
-        header2 = self.prev_tree.header()
-        header2.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header2.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header2.setSectionResizeMode(2, QHeaderView.Stretch)
-        header2.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header2.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        configure_tree_columns(
+            self.prev_tree,
+            ((105, 80), (90, 70), (420, 180), (170, 110), (150, 110)),
+        )
         
         for previous in self.row.get("previous_matching_entries", []):
             actions_str = ", ".join(name for name, enabled in previous.get("actions", {}).items() if enabled) or "-"

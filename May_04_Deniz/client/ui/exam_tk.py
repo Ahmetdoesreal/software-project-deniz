@@ -138,7 +138,7 @@ class ExamTimerGUI:
 
     def set_remaining(self, seconds):
         if seconds < 0:
-            self.root.destroy()
+            self.force_close()
             return
 
         self.remaining = seconds
@@ -210,10 +210,9 @@ class ExamTimerGUI:
 
     def handle_upload_success(self, message: str):
         self.finish_in_progress = False
-        if self.submission_window and self.submission_window.winfo_exists():
-            self.submission_window.destroy()
+        self.close_submission_window()
         messagebox.showinfo("Submission Uploaded", message or "Submission uploaded successfully.")
-        self.root.destroy()
+        self.force_close()
 
     def handle_upload_error(self, message: str):
         self.finish_in_progress = False
@@ -260,9 +259,29 @@ class ExamTimerGUI:
         if not self.finish_in_progress and self.started:
             self.finish_btn.config(state=tk.NORMAL)
 
+    def close_submission_window(self):
+        if not self.submission_window:
+            return
+        try:
+            if self.submission_window.winfo_exists():
+                self.submission_window.destroy()
+        except tk.TclError:
+            pass
+        self.submission_window = None
+
+    def force_close(self):
+        """Close the timer window unconditionally when the manager is gone."""
+        self.active = False
+        self.close_submission_window()
+        try:
+            if self.root.winfo_exists():
+                self.root.destroy()
+        except tk.TclError:
+            pass
+
     def on_closing(self):
         if self.standalone_mode:
-            self.root.destroy()
+            self.force_close()
             return
         if self.finish_in_progress:
             self._focus_submission_window()
@@ -551,43 +570,50 @@ class SubmissionWindow(tk.Toplevel):
 
 def ipc_reader(app: ExamTimerGUI):
     """Read remaining times from stdin."""
-    for line in sys.stdin:
-        command, value = _parse_ipc_line(line.strip())
-        try:
-            if command == "SYNC":
-                app.root.after(0, app.set_remaining, int(value))
-            elif command == "PAUSE":
-                payload = json.loads(value) if value else {}
-                app.root.after(
-                    0,
-                    app.pause_timer,
-                    int(payload.get("remaining_seconds", 0) or 0),
-                    str(payload.get("reason", "") or ""),
-                )
-            elif command == "RESUME":
-                payload = json.loads(value) if value else {}
-                app.root.after(
-                    0,
-                    app.resume_timer,
-                    int(payload.get("remaining_seconds", 0) or 0),
-                    str(payload.get("reason", "") or ""),
-                )
-            elif command == "END":
-                app.root.after(0, app.set_remaining, -1)
-            elif command == "RESET":
-                app.root.after(0, app.reset_to_ready)
-            elif command == "ERROR":
-                app.root.after(0, app.show_error_popup, value)
-            elif command == "OPEN_FINISH":
-                app.root.after(0, app.prompt_finish_from_server, value)
-            elif command == "UPLOAD_OK":
-                app.root.after(0, app.handle_upload_success, value)
-            elif command == "UPLOAD_ERROR":
-                app.root.after(0, app.handle_upload_error, value)
-            elif command == "UPLOAD_STEP":
-                app.root.after(0, app.handle_upload_step, value)
-        except Exception:
-            pass
+    try:
+        for line in sys.stdin:
+            command, value = _parse_ipc_line(line.strip())
+            try:
+                if command == "SYNC":
+                    app.root.after(0, app.set_remaining, int(value))
+                elif command == "PAUSE":
+                    payload = json.loads(value) if value else {}
+                    app.root.after(
+                        0,
+                        app.pause_timer,
+                        int(payload.get("remaining_seconds", 0) or 0),
+                        str(payload.get("reason", "") or ""),
+                    )
+                elif command == "RESUME":
+                    payload = json.loads(value) if value else {}
+                    app.root.after(
+                        0,
+                        app.resume_timer,
+                        int(payload.get("remaining_seconds", 0) or 0),
+                        str(payload.get("reason", "") or ""),
+                    )
+                elif command == "END":
+                    app.root.after(0, app.set_remaining, -1)
+                elif command == "RESET":
+                    app.root.after(0, app.reset_to_ready)
+                elif command == "ERROR":
+                    app.root.after(0, app.show_error_popup, value)
+                elif command == "OPEN_FINISH":
+                    app.root.after(0, app.prompt_finish_from_server, value)
+                elif command == "UPLOAD_OK":
+                    app.root.after(0, app.handle_upload_success, value)
+                elif command == "UPLOAD_ERROR":
+                    app.root.after(0, app.handle_upload_error, value)
+                elif command == "UPLOAD_STEP":
+                    app.root.after(0, app.handle_upload_step, value)
+            except Exception:
+                pass
+    finally:
+        if not app.standalone_mode:
+            try:
+                app.root.after(0, app.force_close)
+            except Exception:
+                pass
 
 
 def run() -> int:

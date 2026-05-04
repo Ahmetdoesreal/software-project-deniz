@@ -99,5 +99,8 @@ def apply_typography(widget: QWidget, role: str) -> None:
     size, weight, _ = TY.get(role, TY["body_large"])
     font = QFont("Inter")
     font.setPointSize(size)
-    font.setWeight(weight)
+    try:
+        font.setWeight(QFont.Weight(int(weight)))
+    except (AttributeError, TypeError, ValueError):
+        font.setWeight(int(weight))
     widget.setFont(font)

@@ -14,27 +14,11 @@ from __future__ import annotations
 import argparse
 import sys
 
+from server.ui.dashboard_table_helpers import PROCESS_DATABASE_FILTERS, process_row_matches_filter
 from server.ui.process_database_helpers import (
     build_process_decision_payload,
     process_row_google_search_url,
 )
-
-
-PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
-
-
-def process_row_matches_filter(row: dict, filter_name: str) -> bool:
-    filter_name = str(filter_name or "All").strip().lower()
-    status = str(row.get("status", "") or "").strip().lower()
-    if filter_name == "all":
-        return True
-    if filter_name == "warnings":
-        return status == "warning" or bool(row.get("warning"))
-    if filter_name == "active":
-        return bool(row.get("active"))
-    if filter_name == "resolved":
-        return bool(row.get("resolved")) and not bool(row.get("active"))
-    return status == filter_name
 
 
 def format_process_action_availability(row: dict) -> str:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.widgets import make_button, make_console, style_button
+from ui.widgets import make_button, make_console, monospace_font as strict_monospace_font, style_button
 from ui.theme import M
 
 
@@ -46,7 +46,7 @@ def install_close_guard(window: QWidget, handler: Callable[[], None]) -> None:
 
 
 def monospace_font() -> QFont:
-    return QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    return strict_monospace_font()
 
 
 class ConsoleWindow(QWidget):

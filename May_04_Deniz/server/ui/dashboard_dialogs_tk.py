@@ -54,6 +54,10 @@ def _client_detail_rows(client_id: str, data: dict) -> list[tuple[str, str]]:
         ("Latest Incident Artifact", str(data.get("latest_incident_artifact_path") or "-")),
         ("Applied Policy Version", str(data.get("applied_policy_version") or "-")),
         ("Last Action", str(data.get("last_action") or "-")),
+        ("Current Window Title", str(data.get("last_focus_window") or "-")),
+        ("Current Window Process", str(data.get("last_focus_process") or "-")),
+        ("Current Window At", str(data.get("last_focus_event_at") or "-")),
+        ("Current Window Severity", str(data.get("last_focus_severity") or "-")),
         ("IP Address", str(data.get("ip") or "-")),
         ("Submission", str(data.get("submission_name") or "-")),
         ("Submission Size", _format_bytes(int(data.get("submission_size_bytes", 0)))),
@@ -316,15 +320,15 @@ class DashboardPopupMixin:
             show="headings",
             style="Monospace.Treeview",
         )
-        for column, text, width in (
-            ("student", "Student", 140),
-            ("status", "Session", 120),
-            ("pid", "PID", 80),
-            ("active", "Active", 70),
-            ("actions", "Action State", 560),
+        for column, text, width, minwidth in (
+            ("student", "Student", 140, 100),
+            ("status", "Session", 120, 95),
+            ("pid", "PID", 80, 65),
+            ("active", "Active", 70, 65),
+            ("actions", "Action State", 560, 180),
         ):
             students_tree.heading(column, text=text)
-            students_tree.column(column, width=width, anchor=tk.W)
+            students_tree.column(column, width=width, minwidth=minwidth, anchor=tk.W)
         students_scroll = ttk.Scrollbar(students_frame, orient=tk.VERTICAL, command=students_tree.yview)
         students_tree.configure(yscrollcommand=students_scroll.set)
         students_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -351,15 +355,15 @@ class DashboardPopupMixin:
             show="headings",
             style="Monospace.Treeview",
         )
-        for column, text, width in (
-            ("status", "Status", 90),
-            ("scope", "Scope", 90),
-            ("path", "Path / Directory", 430),
-            ("actions", "Actions", 180),
-            ("decided", "Decided", 150),
+        for column, text, width, minwidth in (
+            ("status", "Status", 90, 80),
+            ("scope", "Scope", 90, 70),
+            ("path", "Path / Directory", 430, 180),
+            ("actions", "Actions", 180, 110),
+            ("decided", "Decided", 150, 110),
         ):
             previous_tree.heading(column, text=text)
-            previous_tree.column(column, width=width, anchor=tk.W)
+            previous_tree.column(column, width=width, minwidth=minwidth, anchor=tk.W)
         previous_scroll = ttk.Scrollbar(previous_frame, orient=tk.VERTICAL, command=previous_tree.yview)
         previous_tree.configure(yscrollcommand=previous_scroll.set)
         previous_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -446,8 +450,8 @@ class DashboardPopupMixin:
         )
         details.heading("field", text="Field")
         details.heading("value", text="Value")
-        details.column("field", width=220, stretch=False, anchor=tk.W)
-        details.column("value", width=520, stretch=True, anchor=tk.W)
+        details.column("field", width=220, minwidth=130, stretch=False, anchor=tk.W)
+        details.column("value", width=520, minwidth=180, stretch=True, anchor=tk.W)
 
         detail_scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=details.yview)
         detail_x_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=details.xview)

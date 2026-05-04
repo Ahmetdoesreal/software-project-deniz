@@ -16,7 +16,7 @@ Usage pattern
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCursor, QFontDatabase
+from PySide6.QtGui import QCursor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -136,6 +136,7 @@ def make_console(parent: QWidget | None = None) -> QPlainTextEdit:
     widget = QPlainTextEdit(parent)
     widget.setReadOnly(True)
     widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+    widget.setFont(monospace_font())
     widget.setStyleSheet(
         f"background: {M['surface_container_lowest']}; "
         f"color: {M['on_surface']}; "
@@ -147,6 +148,25 @@ def make_console(parent: QWidget | None = None) -> QPlainTextEdit:
     return widget
 
 
-def monospace_font():
-    """Return the system monospace font (convenience re-export)."""
-    return QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+def monospace_font() -> QFont:
+    """Return a strict monospace font for technical values and logs."""
+    preferred_families = (
+        "Cascadia Mono",
+        "Cascadia Code",
+        "JetBrains Mono",
+        "Fira Code",
+        "Consolas",
+    )
+    available = {family.lower(): family for family in QFontDatabase.families()}
+    for family in preferred_families:
+        resolved = available.get(family.lower())
+        if resolved:
+            font = QFont(resolved)
+            font.setStyleHint(QFont.StyleHint.Monospace)
+            font.setFixedPitch(True)
+            return font
+
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    font.setFixedPitch(True)
+    return font

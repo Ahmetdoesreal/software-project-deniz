@@ -31,12 +31,11 @@ def _missing_pyside6_message() -> str:
 
 try:
     from PySide6.QtCore import Qt, QObject, QTimer, Signal
-    from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase
+    from PySide6.QtGui import QBrush, QColor, QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
         QCheckBox,
-        QComboBox,
         QDialog,
         QDialogButtonBox,
         QFileDialog,
@@ -67,19 +66,69 @@ except ImportError:  # pragma: no cover - import guard
 
 from common.runtime_logging import setup_runtime_logging
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
+from server.ui.dashboard_table_helpers import (
+    CLIENT_COLUMNS,
+    CLIENT_FILTERS,
+    INCIDENT_FILTERS,
+    PROCESS_COLUMNS,
+    PROCESS_DATABASE_FILTERS,
+    active_filter_names,
+    affected_students_display,
+    client_window_title,
+    process_path_display,
+    sorted_client_items,
+    sorted_incidents,
+    sorted_process_rows,
+)
 from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
     build_process_decision_payload,
     process_row_google_search_url,
 )
-from ui.widgets import apply_glass_theme, make_button, style_button
+from ui.widgets import apply_glass_theme, make_button, monospace_font, style_button
 from ui.theme import M, STATE_COLORS
 from ui.styles import state_badge_style
 from ui.background import StarfieldBackground
 
 
+CLIENT_COLUMN_WIDTHS = {
+    "login_id": (130, 90),
+    "status": (130, 100),
+    "remaining": (105, 85),
+    "window_title": (300, 160),
+    "ip": (145, 110),
+    "uuid": (280, 160),
+}
+
+INCIDENT_COLUMN_WIDTHS = {
+    "incident_id": (0, 0),
+    "time": (165, 120),
+    "user": (120, 90),
+    "severity": (100, 80),
+    "rule": (170, 120),
+    "source": (120, 90),
+    "process": (150, 100),
+    "pid": (90, 70),
+    "auto_action": (130, 100),
+    "status": (120, 90),
+}
+
+PROCESS_COLUMN_WIDTHS = {
+    "process_key": (0, 0),
+    "executable": (170, 110),
+    "status": (100, 80),
+    "path": (360, 180),
+    "scope": (100, 80),
+    "matches": (90, 70),
+    "students": (180, 120),
+    "last_seen": (165, 120),
+    "actions": (155, 110),
+    "availability": (245, 150),
+}
+
+
 def _monospace_font() -> QFont:
-    return QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    return monospace_font()
 
 
 def _format_bytes(size_bytes: int) -> str:
@@ -127,6 +176,10 @@ def _detail_lines(client_id: str, data: dict) -> list[tuple[str, str]]:
         ("Latest Incident Artifact", str(data.get("latest_incident_artifact_path") or "-")),
         ("Applied Policy Version", str(data.get("applied_policy_version") or "-")),
         ("Last Action", str(data.get("last_action") or "-")),
+        ("Current Window Title", str(data.get("last_focus_window") or "-")),
+        ("Current Window Process", str(data.get("last_focus_process") or "-")),
+        ("Current Window At", str(data.get("last_focus_event_at") or "-")),
+        ("Current Window Severity", str(data.get("last_focus_severity") or "-")),
         ("IP Address", str(data.get("ip") or "-")),
         ("Submission", str(data.get("submission_name") or "-")),
         ("Submission Size", _format_bytes(int(data.get("submission_size_bytes", 0)))),
@@ -241,23 +294,6 @@ def _emit_command(payload: dict) -> None:
     print(json.dumps(payload), flush=True)
 
 
-PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
-
-
-def process_row_matches_filter(row: dict, filter_name: str) -> bool:
-    filter_name = str(filter_name or "All").strip().lower()
-    status = str(row.get("status", "") or "").strip().lower()
-    if filter_name == "all":
-        return True
-    if filter_name == "warnings":
-        return status == "warning" or bool(row.get("warning"))
-    if filter_name == "active":
-        return bool(row.get("active"))
-    if filter_name == "resolved":
-        return bool(row.get("resolved")) and not bool(row.get("active"))
-    return status == filter_name
-
-
 def format_process_action_availability(row: dict) -> str:
     availability = row.get("action_availability", {})
     if not isinstance(availability, dict):
@@ -271,6 +307,41 @@ def format_process_action_availability(row: dict) -> str:
         if possible or applied or blocked:
             parts.append(f"{action.replace('_', ' ')} {possible}/{applied}/{blocked}")
     return "; ".join(parts) if parts else "-"
+
+
+def _configure_table_columns(widget, columns, widths: dict[str, tuple[int, int]]) -> None:
+    header = widget.horizontalHeader() if hasattr(widget, "horizontalHeader") else widget.header()
+    header.setSectionsMovable(False)
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(70)
+    minimums: dict[int, int] = {}
+    for index, (column, _label) in enumerate(columns):
+        width, minimum = widths.get(column, (140, 80))
+        hidden = width <= 0 or minimum <= 0
+        widget.setColumnHidden(index, hidden)
+        header.setSectionResizeMode(index, QHeaderView.Fixed if hidden else QHeaderView.Interactive)
+        if hidden:
+            header.resizeSection(index, 0)
+            continue
+        minimums[index] = minimum
+        header.resizeSection(index, max(width, minimum))
+
+    def _clamp_section(index: int, _old_size: int, new_size: int) -> None:
+        minimum = minimums.get(index)
+        if minimum is None or new_size >= minimum:
+            return
+        header.blockSignals(True)
+        try:
+            header.resizeSection(index, minimum)
+        finally:
+            header.blockSignals(False)
+
+    header.sectionResized.connect(_clamp_section)
+
+
+def _plain(value) -> str:
+    text = str(value or "").strip()
+    return text or "-"
 
 
 class _IPCSignals(QObject):
@@ -290,8 +361,12 @@ class _DetailsDialog(QDialog):
         table.verticalHeader().setVisible(False)
         table.setFont(_monospace_font())
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(90)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.resizeSection(0, 190)
+        header.resizeSection(1, 340)
         for row, (field, value) in enumerate(rows):
             table.setItem(row, 0, QTableWidgetItem(field))
             table.setItem(row, 1, QTableWidgetItem(value))
@@ -407,6 +482,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.server_info: dict = {}
         self.settings_snapshot: dict = {}
         self._open_dialogs: dict[tuple[str, str], QDialog] = {}
+        self.filter_checks: dict[str, dict[str, QCheckBox]] = {}
+        self.sort_state: dict[str, tuple[str, bool]] = {
+            "clients": ("login_id", False),
+            "incidents": ("time", True),
+            "processes": ("executable", False),
+        }
         self._mono = _monospace_font()
         self._allow_close = False
         self._incident_tree_refreshing = False
@@ -542,19 +623,89 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
         parent_layout.addWidget(info_box)
 
+    def _build_filter_bar(self, parent_layout, table_name: str, filters: tuple[str, ...], rebuild_callback) -> None:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Filters:"))
+        table_checks: dict[str, QCheckBox] = {}
+        self.filter_checks[table_name] = table_checks
+        for filter_name in filters:
+            check = QCheckBox(filter_name)
+            check.setChecked(filter_name == "All")
+            check.stateChanged.connect(
+                lambda _state, name=filter_name: self._on_filter_toggled(table_name, name, rebuild_callback)
+            )
+            table_checks[filter_name] = check
+            row.addWidget(check)
+        row.addStretch(1)
+        parent_layout.addLayout(row)
+
+    def _on_filter_toggled(self, table_name: str, filter_name: str, rebuild_callback) -> None:
+        checks = self.filter_checks.get(table_name, {})
+        if not checks:
+            return
+        if filter_name == "All" and checks["All"].isChecked():
+            for name, check in checks.items():
+                if name == "All":
+                    continue
+                check.blockSignals(True)
+                check.setChecked(False)
+                check.blockSignals(False)
+        elif filter_name != "All" and checks[filter_name].isChecked():
+            checks["All"].blockSignals(True)
+            checks["All"].setChecked(False)
+            checks["All"].blockSignals(False)
+        if not any(check.isChecked() for check in checks.values()):
+            checks["All"].blockSignals(True)
+            checks["All"].setChecked(True)
+            checks["All"].blockSignals(False)
+        rebuild_callback()
+
+    def _active_filters(self, table_name: str) -> set[str]:
+        return active_filter_names(
+            {name: check.isChecked() for name, check in self.filter_checks.get(table_name, {}).items()}
+        )
+
+    def _set_sort(self, table_name: str, column: str, rebuild_callback) -> None:
+        current_column, descending = self.sort_state.get(table_name, (column, False))
+        if current_column == column:
+            descending = not descending
+        else:
+            current_column = column
+            descending = False
+        self.sort_state[table_name] = (current_column, descending)
+        rebuild_callback()
+
+    def _heading_text(self, table_name: str, column: str, label: str) -> str:
+        current_column, descending = self.sort_state.get(table_name, ("", False))
+        if current_column != column:
+            return label
+        return f"{label} {'v' if descending else '^'}"
+
+    def _client_headers(self) -> list[str]:
+        return [self._heading_text("clients", column, label) for column, label in CLIENT_COLUMNS]
+
+    def _incident_headers(self) -> list[str]:
+        return [self._heading_text("incidents", column, label) for column, label in self.INCIDENT_COLUMNS]
+
+    def _refresh_process_headers(self) -> None:
+        header_item = self.process_tree.headerItem()
+        for index, (column, label) in enumerate(PROCESS_COLUMNS):
+            header_item.setText(index, self._heading_text("processes", column, label))
+
     def _build_client_tree_area(self, parent_layout: QVBoxLayout) -> None:
-        self.client_table = QTableWidget(0, 4)
-        self.client_table.setHorizontalHeaderLabels(["Login ID", "Status", "Remaining Time", "UUID"])
+        self._build_filter_bar(parent_layout, "clients", CLIENT_FILTERS, self._rebuild_client_table)
+        self.client_table = QTableWidget(0, len(CLIENT_COLUMNS))
+        self.client_table.setHorizontalHeaderLabels(self._client_headers())
         self.client_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.client_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.client_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.client_table.verticalHeader().setVisible(False)
         self.client_table.setFont(self._mono)
-        header = self.client_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        _configure_table_columns(self.client_table, CLIENT_COLUMNS, CLIENT_COLUMN_WIDTHS)
+        self.client_table.horizontalHeader().sectionClicked.connect(
+            lambda index: self._set_sort("clients", CLIENT_COLUMNS[index][0], self._rebuild_client_table)
+        )
+        self.client_table.itemSelectionChanged.connect(self._update_selected_client_panel)
         parent_layout.addWidget(self.client_table, stretch=1)
 
     def _build_log_area(self, parent_layout: QVBoxLayout) -> None:
@@ -570,14 +721,122 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
     def _build_action_panel(self, layout: QHBoxLayout) -> None:
         action_box = QGroupBox("Selected User")
         action_layout = QVBoxLayout(action_box)
-        info_btn = make_button("Show Info", "tonal")
-        info_btn.clicked.connect(self.show_info)
-        action_layout.addWidget(info_btn)
-        options_btn = make_button("Options", "filled")
-        options_btn.clicked.connect(self.show_options)
-        action_layout.addWidget(options_btn)
+        action_layout.setSpacing(10)
+        action_box.setMinimumWidth(320)
+
+        header = QWidget()
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(4, 2, 4, 6)
+        header_layout.setSpacing(6)
+        title_row = QHBoxLayout()
+        self.selected_client_title = QLabel("No client selected")
+        self.selected_client_title.setStyleSheet(
+            f"color: {M['on_surface']}; font-size: 15px; font-weight: 700;"
+        )
+        title_row.addWidget(self.selected_client_title, stretch=1)
+        self.selected_state_badge = QLabel("Idle")
+        self.selected_state_badge.setAlignment(Qt.AlignCenter)
+        self.selected_state_badge.setStyleSheet(state_badge_style("waiting"))
+        title_row.addWidget(self.selected_state_badge)
+        header_layout.addLayout(title_row)
+        self.selected_client_subtitle = QLabel("Select a client row to view status and actions.")
+        self.selected_client_subtitle.setWordWrap(True)
+        self.selected_client_subtitle.setStyleSheet(
+            f"color: {M['on_surface_variant']}; font-size: 12px;"
+        )
+        header_layout.addWidget(self.selected_client_subtitle)
+        action_layout.addWidget(header)
+
+        self.selected_field_labels: dict[str, QLabel] = {}
+        self._add_selected_section(
+            action_layout,
+            "Session",
+            (
+                ("connection", "Connection", False),
+                ("exam", "Exam", False),
+                ("remaining", "Remaining", True),
+                ("status", "Status", False),
+            ),
+        )
+        self._add_selected_section(
+            action_layout,
+            "Machine",
+            (
+                ("ip", "IP", True),
+                ("computer", "Computer", True),
+                ("uuid", "UUID", True),
+            ),
+        )
+        self._add_selected_section(
+            action_layout,
+            "Current Window",
+            (
+                ("window", "Title", False),
+                ("process", "Process", True),
+                ("window_at", "Seen At", True),
+                ("window_severity", "Severity", False),
+            ),
+        )
+        self._add_selected_section(
+            action_layout,
+            "Latest Incident",
+            (
+                ("incident_summary", "Summary", False),
+                ("incident_rule", "Rule", True),
+                ("incident_severity", "Severity", False),
+                ("incident_status", "Status", False),
+            ),
+        )
+
         action_layout.addStretch(1)
+
+        actions_box = QGroupBox("Actions")
+        actions_layout = QVBoxLayout(actions_box)
+        self.selected_details_button = make_button("Details", "tonal")
+        self.selected_details_button.setEnabled(False)
+        self.selected_details_button.clicked.connect(self.show_info)
+        actions_layout.addWidget(self.selected_details_button)
+        self.selected_actions_button = make_button("Actions", "filled")
+        self.selected_actions_button.setEnabled(False)
+        self.selected_actions_button.clicked.connect(self.show_options)
+        actions_layout.addWidget(self.selected_actions_button)
+        action_layout.addWidget(actions_box)
         layout.addWidget(action_box)
+
+    def _add_selected_section(
+        self,
+        parent_layout: QVBoxLayout,
+        title: str,
+        rows: tuple[tuple[str, str, bool], ...],
+    ) -> None:
+        section = QWidget()
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(4, 0, 4, 0)
+        section_layout.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"color: {M['on_surface_variant']}; font-size: 11px; font-weight: 700;"
+        )
+        section_layout.addWidget(title_label)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(1, 1)
+        for row, (key, label, technical) in enumerate(rows):
+            name = QLabel(label)
+            name.setStyleSheet(f"color: {M['on_surface_variant']}; font-size: 11px;")
+            value = QLabel("-")
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            if technical:
+                value.setFont(self._mono)
+            value.setStyleSheet(f"color: {M['on_surface']}; font-size: 12px;")
+            grid.addWidget(name, row, 0, Qt.AlignTop)
+            grid.addWidget(value, row, 1)
+            self.selected_field_labels[key] = value
+        section_layout.addLayout(grid)
+        parent_layout.addWidget(section)
 
     def _build_rule_breakings_tab(self) -> None:
         layout = QHBoxLayout(self.rules_tab)
@@ -601,17 +860,19 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
         history_box = QGroupBox("Incident History")
         history_layout = QVBoxLayout(history_box)
+        self._build_filter_bar(history_layout, "incidents", INCIDENT_FILTERS, self._rebuild_incident_table)
         self.incident_table = QTableWidget(0, len(self.INCIDENT_COLUMNS))
-        self.incident_table.setHorizontalHeaderLabels([label for _, label in self.INCIDENT_COLUMNS])
+        self.incident_table.setHorizontalHeaderLabels(self._incident_headers())
         self.incident_table.setColumnHidden(0, True)
         self.incident_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.incident_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.incident_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.incident_table.verticalHeader().setVisible(False)
         self.incident_table.setFont(self._mono)
-        header = self.incident_table.horizontalHeader()
-        for index in range(1, len(self.INCIDENT_COLUMNS)):
-            header.setSectionResizeMode(index, QHeaderView.ResizeToContents)
+        _configure_table_columns(self.incident_table, self.INCIDENT_COLUMNS, INCIDENT_COLUMN_WIDTHS)
+        self.incident_table.horizontalHeader().sectionClicked.connect(
+            lambda index: self._set_sort("incidents", self.INCIDENT_COLUMNS[index][0], self._rebuild_incident_table)
+        )
         self.incident_table.itemSelectionChanged.connect(self._update_incident_detail)
         history_layout.addWidget(self.incident_table)
         center_layout.addWidget(history_box, stretch=1)
@@ -624,9 +885,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.incident_detail_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.incident_detail_table.verticalHeader().setVisible(False)
         self.incident_detail_table.setFont(self._mono)
-        detail_header = self.incident_detail_table.horizontalHeader()
-        detail_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        detail_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        _configure_table_columns(
+            self.incident_detail_table,
+            (("field", "Field"), ("value", "Value")),
+            {"field": (220, 130), "value": (700, 180)},
+        )
         details_layout.addWidget(self.incident_detail_table)
         center_layout.addWidget(details_box, stretch=1)
 
@@ -641,24 +904,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         layout = QVBoxLayout(self.process_database_tab)
         layout.setContentsMargins(10, 10, 10, 10)
 
+        self._build_filter_bar(layout, "processes", PROCESS_DATABASE_FILTERS, self._rebuild_process_database_tree)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Filter:"))
-        self.process_filter_combo = QComboBox()
-        self.process_filter_combo.setEditable(False)
-        self.process_filter_combo.setInsertPolicy(QComboBox.NoInsert)
-        for f in PROCESS_DATABASE_FILTERS:
-            self.process_filter_combo.addItem(f)
-        self.process_filter_combo.setFixedWidth(170)
-        self.process_filter_combo.setMinimumHeight(32)
-        self.process_filter_combo.setStyleSheet(
-            "QComboBox { "
-            f"background-color: {M['surface_container']}; color: {M['on_surface']}; "
-            "padding: 4px 10px; } QComboBox::drop-down { width: 26px; }"
-        )
-        self.process_filter_combo.currentTextChanged.connect(lambda _text: self._rebuild_process_database_tree())
-        toolbar.addWidget(self.process_filter_combo)
-        toolbar.addSpacing(10)
-
         self.process_options_button = make_button("Options", "tonal")
         self.process_options_button.setEnabled(False)
         self.process_options_button.clicked.connect(self._on_process_options_clicked)
@@ -675,37 +922,19 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         process_box = QGroupBox("Process Definitions And Evidence")
         process_box_layout = QVBoxLayout(process_box)
 
-        PROCESS_COLUMNS = [
-            ("process_key", "Process Key"),
-            ("executable", "Executable"),
-            ("status", "Status"),
-            ("path", "Path / Directory"),
-            ("scope", "Scope"),
-            ("matches", "Matches"),
-            ("students", "Affected Students"),
-            ("last_seen", "Last Seen"),
-            ("actions", "Saved Actions"),
-            ("availability", "Action Availability"),
-        ]
         self.process_tree = QTreeWidget()
         self.process_tree.setColumnCount(len(PROCESS_COLUMNS))
-        self.process_tree.setHeaderLabels([label for _, label in PROCESS_COLUMNS])
+        self.process_tree.setHeaderLabels([label for _column, label in PROCESS_COLUMNS])
         self.process_tree.setColumnHidden(0, True)
         self.process_tree.setFont(self._mono)
         self.process_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.process_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.process_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.process_tree.setRootIsDecorated(False)
-        header = self.process_tree.header()
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # executable
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # status
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # path
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # scope
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # matches
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # students
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # last_seen
-        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # actions
-        header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # availability
+        _configure_table_columns(self.process_tree, PROCESS_COLUMNS, PROCESS_COLUMN_WIDTHS)
+        self.process_tree.header().sectionClicked.connect(
+            lambda index: self._set_sort("processes", PROCESS_COLUMNS[index][0], self._rebuild_process_database_tree)
+        )
         self.process_tree.itemSelectionChanged.connect(self._sync_process_buttons)
         self.process_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_process_options_clicked())
 
@@ -761,35 +990,36 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.process_google_button.setEnabled(has_selection)
 
     def _rebuild_process_database_tree(self) -> None:
+        selected_row = self._selected_process_row()
+        selected_key = str((selected_row or {}).get("process_key", "") or "")
         self.process_tree.clear()
-        current_filter = self.process_filter_combo.currentText()
-        for row in self.process_database_data:
-            if not process_row_matches_filter(row, current_filter):
-                continue
+        self._refresh_process_headers()
+        restored_item = None
+        sort_column, descending = self.sort_state.get("processes", ("executable", False))
+        for row in sorted_process_rows(
+            self.process_database_data,
+            self._active_filters("processes"),
+            sort_column,
+            descending,
+        ):
             process_key = str(row.get("process_key", "") or "")
-            path_display = (
-                row.get("process_path")
-                or row.get("process_dir")
-                or row.get("normalized_process_path")
-                or row.get("normalized_process_dir")
-                or "-"
-            )
-            students = ", ".join(row.get("affected_students", [])[:4])
-            if len(row.get("affected_students", [])) > 4:
-                students += " ..."
             item = QTreeWidgetItem([
                 process_key,
                 row.get("process_name") or row.get("normalized_process_name") or "",
                 row.get("status", ""),
-                path_display,
+                process_path_display(row),
                 row.get("match_scope", ""),
                 str(row.get("match_count", 0)),
-                students or "-",
+                affected_students_display(row),
                 row.get("last_seen", ""),
                 row.get("saved_action_labels", ""),
                 format_process_action_availability(row),
             ])
             self.process_tree.addTopLevelItem(item)
+            if selected_key and process_key == selected_key:
+                restored_item = item
+        if restored_item is not None:
+            self.process_tree.setCurrentItem(restored_item)
         self._sync_process_buttons()
 
     # ------------------------------------------------------------------ selection
@@ -797,7 +1027,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         rows = self.client_table.selectionModel().selectedRows()
         if not rows:
             return None
-        item = self.client_table.item(rows[0].row(), 3)
+        item = self.client_table.item(rows[0].row(), 5)
         return item.text() if item else None
 
     def _selected_client_data(self) -> tuple[Optional[str], Optional[dict]]:
@@ -805,6 +1035,52 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         if not client_id:
             return None, None
         return client_id, self.clients_data.get(client_id)
+
+    def _update_selected_client_panel(self) -> None:
+        client_id, data = self._selected_client_data()
+        if not client_id or not data:
+            self.selected_client_title.setText("No client selected")
+            self.selected_client_subtitle.setText("Select a client row to view status and actions.")
+            self.selected_state_badge.setText("Idle")
+            self.selected_state_badge.setStyleSheet(state_badge_style("waiting"))
+            for label in self.selected_field_labels.values():
+                label.setText("-")
+            self.selected_details_button.setEnabled(False)
+            self.selected_actions_button.setEnabled(False)
+            return
+
+        connected = data.get("connection_status") == "Connected"
+        exam_state = _plain(data.get("exam_state"))
+        status_label = _plain(data.get("status_label"))
+        login_id = _plain(data.get("login_id"))
+        self.selected_client_title.setText(login_id)
+        self.selected_client_subtitle.setText(
+            f"{_plain(data.get('computer_name'))} | {_plain(data.get('ip'))}"
+        )
+        self.selected_state_badge.setText(status_label)
+        self.selected_state_badge.setStyleSheet(state_badge_style(str(data.get("exam_state") or "")))
+        values = {
+            "connection": _plain(data.get("connection_status")),
+            "exam": exam_state,
+            "remaining": _format_remaining(data.get("remaining", 0)),
+            "status": status_label,
+            "ip": _plain(data.get("ip")),
+            "computer": _plain(data.get("computer_name")),
+            "uuid": _plain(client_id),
+            "window": _plain(data.get("last_focus_window")),
+            "process": _plain(data.get("last_focus_process")),
+            "window_at": _plain(data.get("last_focus_event_at")),
+            "window_severity": _plain(data.get("last_focus_severity")),
+            "incident_summary": _plain(data.get("latest_incident_summary")),
+            "incident_rule": _plain(data.get("latest_incident_rule_id")),
+            "incident_severity": _plain(data.get("latest_incident_severity")),
+            "incident_status": _plain(data.get("latest_incident_status")),
+        }
+        for key, value in values.items():
+            if key in self.selected_field_labels:
+                self.selected_field_labels[key].setText(value)
+        self.selected_details_button.setEnabled(True)
+        self.selected_actions_button.setEnabled(bool(connected or data))
 
     def _selected_incident_ids(self) -> list[str]:
         ids: list[str] = []
@@ -852,12 +1128,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     # ------------------------------------------------------------------ ticking
     def _tick_running_timers(self) -> None:
-        for row in range(self.client_table.rowCount()):
-            uuid_item = self.client_table.item(row, 3)
-            remaining_item = self.client_table.item(row, 2)
-            if not uuid_item or not remaining_item:
-                continue
-            data = self.clients_data.get(uuid_item.text())
+        changed = False
+        for data in self.clients_data.values():
             if not data:
                 continue
             if data.get("exam_state") != "Running":
@@ -865,7 +1137,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             if data.get("remaining", 0) <= 0:
                 continue
             data["remaining"] -= 1
-            remaining_item.setText(_format_remaining(data["remaining"]))
+            changed = True
+        if changed:
+            self._rebuild_client_table()
 
     # ------------------------------------------------------------------ details
     def show_info(self) -> None:
@@ -1283,7 +1557,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     def _rebuild_client_table(self) -> None:
         selected_id = self._selected_client_id()
-        ordered = sorted(self.clients_data.items(), key=lambda item: item[1].get("login_id", ""))
+        sort_column, descending = self.sort_state.get("clients", ("login_id", False))
+        ordered = sorted_client_items(
+            self.clients_data,
+            self._active_filters("clients"),
+            sort_column,
+            descending,
+        )
+        self.client_table.setHorizontalHeaderLabels(self._client_headers())
         self.client_table.setRowCount(len(ordered))
         new_row = -1
         for row, (client_id, data) in enumerate(ordered):
@@ -1294,19 +1575,32 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             status_item.setForeground(QBrush(QColor(fg)))
             self.client_table.setItem(row, 1, status_item)
             self.client_table.setItem(row, 2, QTableWidgetItem(_format_remaining(data.get("remaining", 0))))
-            self.client_table.setItem(row, 3, QTableWidgetItem(str(client_id)))
+            self.client_table.setItem(row, 3, QTableWidgetItem(client_window_title(data)))
+            self.client_table.setItem(row, 4, QTableWidgetItem(str(data.get("ip") or "")))
+            self.client_table.setItem(row, 5, QTableWidgetItem(str(client_id)))
             if client_id == selected_id:
                 new_row = row
         if new_row >= 0:
             self.client_table.selectRow(new_row)
+        else:
+            self.client_table.clearSelection()
+        self._update_selected_client_panel()
 
     def _rebuild_incident_table(self) -> None:
         selected_ids = set(self._selected_incident_ids())
+        sort_column, descending = self.sort_state.get("incidents", ("time", True))
+        rows = sorted_incidents(
+            self.incidents_data,
+            self._active_filters("incidents"),
+            sort_column,
+            descending,
+        )
+        self.incident_table.setHorizontalHeaderLabels(self._incident_headers())
         self._incident_tree_refreshing = True
         try:
-            self.incident_table.setRowCount(len(self.incidents_data))
+            self.incident_table.setRowCount(len(rows))
             restored_rows: list[int] = []
-            for row, incident in enumerate(self.incidents_data):
+            for row, incident in enumerate(rows):
                 incident_id = str(incident.get("incident_id", "") or "")
                 status_text = str(incident.get("status", "") or "")
                 if incident.get("active"):

@@ -29,7 +29,7 @@ def _missing_pyside6_message() -> str:
 
 try:
     from PySide6.QtCore import Qt, QObject, QTimer, Signal
-    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtGui import QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover - import guard
 
 from client.submission import build_file_preview, format_bytes
 from common.runtime_logging import setup_runtime_logging
-from ui.widgets import apply_theme, make_button, style_button
+from ui.widgets import apply_theme, make_button, monospace_font, style_button
 from ui.theme import M, TY, apply_typography
 
 
@@ -74,7 +74,7 @@ def _format_time(seconds: int) -> str:
 
 
 def _monospace_font() -> QFont:
-    return QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    return monospace_font()
 
 
 class _IPCSignals(QObject):
@@ -160,9 +160,12 @@ class SubmissionWindow(QMainWindow):
         self.preview_tree.setHeaderLabels(["Name", "Size", "Last Modified"])
         self.preview_tree.setFont(self._mono)
         header = self.preview_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionsMovable(False)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(80)
+        for index, width in enumerate((380, 120, 190)):
+            header.setSectionResizeMode(index, QHeaderView.Interactive)
+            header.resizeSection(index, width)
         self.preview_stack.addWidget(self.preview_tree)
 
         self.preview_text = QPlainTextEdit()

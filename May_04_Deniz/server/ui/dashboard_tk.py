@@ -16,6 +16,20 @@ if str(PROJECT_DIR) not in sys.path:
 from common.manager_support import install_close_guard
 from common.runtime_logging import setup_runtime_logging
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
+from server.ui.dashboard_table_helpers import (
+    CLIENT_COLUMNS,
+    CLIENT_FILTERS,
+    INCIDENT_FILTERS,
+    PROCESS_COLUMNS,
+    PROCESS_DATABASE_FILTERS,
+    active_filter_names,
+    affected_students_display,
+    client_window_title,
+    process_path_display,
+    sorted_client_items,
+    sorted_incidents,
+    sorted_process_rows,
+)
 from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
     build_process_decision_payload,
@@ -26,6 +40,26 @@ from server.ui.process_database_helpers import (
 def _format_remaining(seconds: int) -> str:
     minutes, remaining_seconds = divmod(int(max(0, seconds)), 60)
     return f"{minutes:02d}:{remaining_seconds:02d}"
+
+
+def _plain(value) -> str:
+    text = str(value or "").strip()
+    return text or "-"
+
+
+def _tk_badge_colors(state: str) -> tuple[str, str]:
+    state = str(state or "").strip().lower()
+    if state in {"running", "connected"}:
+        return "#b1c5ff", "#00296b"
+    if state in {"violation_paused", "violation", "warning"}:
+        return "#b1c5ff", "#444650"
+    if state in {"admin_paused", "paused", "disconnected_paused"}:
+        return "#dce2f4", "#232a37"
+    if state in {"submitted", "finished", "awaiting_submission"}:
+        return "#abb4d4", "#3c4661"
+    if state == "banned":
+        return "#ffffff", "#444650"
+    return "#e0e0e0", "#19202c"
 
 
 def _incident_detail_lines(incident: dict) -> list[tuple[str, str]]:
@@ -61,23 +95,6 @@ def _format_counter(values: list[str]) -> str:
     if not counts:
         return "-"
     return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
-
-
-PROCESS_DATABASE_FILTERS = ("All", "Unknown", "Whitelist", "Blacklist", "Warnings", "Active", "Resolved")
-
-def process_row_matches_filter(row: dict, filter_name: str) -> bool:
-    filter_name = str(filter_name or "All").strip().lower()
-    status = str(row.get("status", "") or "").strip().lower()
-    if filter_name == "all":
-        return True
-    if filter_name == "warnings":
-        return status == "warning" or bool(row.get("warning"))
-    if filter_name == "active":
-        return bool(row.get("active"))
-    if filter_name == "resolved":
-        return bool(row.get("resolved")) and not bool(row.get("active"))
-    return status == filter_name
-
 
 def format_process_action_availability(row: dict) -> str:
     availability = row.get("action_availability", {})
@@ -144,7 +161,17 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
-        self.process_filter_var = tk.StringVar(value="All")
+        self.filter_vars: dict[str, dict[str, tk.BooleanVar]] = {}
+        self.sort_state: dict[str, tuple[str, bool]] = {
+            "clients": ("login_id", False),
+            "incidents": ("time", True),
+            "processes": ("executable", False),
+        }
+        self.selected_client_info_var = tk.StringVar(value="Select a client to see basic details.")
+        self.selected_client_title_var = tk.StringVar(value="No client selected")
+        self.selected_client_subtitle_var = tk.StringVar(value="Select a client row to view status and actions.")
+        self.selected_client_badge_var = tk.StringVar(value="Idle")
+        self.selected_client_fields: dict[str, tk.StringVar] = {}
         self._init_policy_settings()
         self._incident_tree_refreshing = False
         self._process_tree_refreshing = False
@@ -153,6 +180,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.geometry("1200x760")
         self.minsize(1000, 680)
         self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        self.header_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.header_font.configure(weight="bold")
         self.tree_style = ttk.Style(self)
         self.tree_style.configure("Monospace.Treeview", font=self.mono_font)
         self.tree_style.configure("Mono.TLabel", font=self.mono_font)
@@ -260,11 +289,72 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         info_label.pack(fill=tk.X)
 
+    def _build_filter_bar(self, parent, table_name: str, filters: tuple[str, ...], rebuild_callback):
+        bar = ttk.Frame(parent)
+        bar.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(bar, text="Filters:").pack(side=tk.LEFT, padx=(0, 6))
+        table_vars: dict[str, tk.BooleanVar] = {}
+        self.filter_vars[table_name] = table_vars
+        for filter_name in filters:
+            var = tk.BooleanVar(value=filter_name == "All")
+            table_vars[filter_name] = var
+            ttk.Checkbutton(
+                bar,
+                text=filter_name,
+                variable=var,
+                command=lambda name=filter_name: self._on_filter_toggled(table_name, name, rebuild_callback),
+            ).pack(side=tk.LEFT, padx=(0, 8))
+        return bar
+
+    def _on_filter_toggled(self, table_name: str, filter_name: str, rebuild_callback):
+        table_vars = self.filter_vars.get(table_name, {})
+        if not table_vars:
+            return
+        if filter_name == "All" and table_vars["All"].get():
+            for name, var in table_vars.items():
+                if name != "All":
+                    var.set(False)
+        elif filter_name != "All" and filter_name in table_vars and table_vars[filter_name].get():
+            table_vars["All"].set(False)
+        if not any(var.get() for var in table_vars.values()):
+            table_vars["All"].set(True)
+        rebuild_callback()
+
+    def _active_filters(self, table_name: str) -> set[str]:
+        return active_filter_names(
+            {name: var.get() for name, var in self.filter_vars.get(table_name, {}).items()}
+        )
+
+    def _set_sort(self, table_name: str, column: str, rebuild_callback):
+        current_column, descending = self.sort_state.get(table_name, (column, False))
+        if current_column == column:
+            descending = not descending
+        else:
+            current_column = column
+            descending = False
+        self.sort_state[table_name] = (current_column, descending)
+        rebuild_callback()
+
+    def _heading_text(self, table_name: str, column: str, label: str) -> str:
+        current_column, descending = self.sort_state.get(table_name, ("", False))
+        if current_column != column:
+            return label
+        return f"{label} {'v' if descending else '^'}"
+
+    def _configure_sort_headings(self, tree, table_name: str, columns: tuple[tuple[str, str], ...], rebuild_callback):
+        for column, label in columns:
+            tree.heading(
+                column,
+                text=self._heading_text(table_name, column, label),
+                command=lambda col=column: self._set_sort(table_name, col, rebuild_callback),
+            )
+
     def _build_client_tree_area(self, parent):
         tree_frame = ttk.Frame(parent)
         tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._build_filter_bar(tree_frame, "clients", CLIENT_FILTERS, self._rebuild_client_tree)
 
-        columns = ("login_id", "status", "remaining", "uuid")
+        columns = tuple(column for column, _label in CLIENT_COLUMNS)
         self.tree = ttk.Treeview(
             tree_frame,
             columns=columns,
@@ -272,15 +362,15 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             selectmode="browse",
             style="Monospace.Treeview",
         )
-        self.tree.heading("login_id", text="Login ID", anchor=tk.W)
-        self.tree.heading("status", text="Status", anchor=tk.CENTER)
-        self.tree.heading("remaining", text="Remaining Time", anchor=tk.CENTER)
-        self.tree.heading("uuid", text="UUID", anchor=tk.W)
+        self._configure_sort_headings(self.tree, "clients", CLIENT_COLUMNS, self._rebuild_client_tree)
 
-        self.tree.column("login_id", width=150)
-        self.tree.column("status", width=120, anchor=tk.CENTER)
-        self.tree.column("remaining", width=120, anchor=tk.CENTER)
-        self.tree.column("uuid", width=320)
+        self.tree.column("login_id", width=130, minwidth=90, stretch=True)
+        self.tree.column("status", width=120, minwidth=100, anchor=tk.CENTER, stretch=True)
+        self.tree.column("remaining", width=100, minwidth=85, anchor=tk.CENTER, stretch=False)
+        self.tree.column("window_title", width=260, minwidth=160, stretch=True)
+        self.tree.column("ip", width=120, minwidth=110, stretch=True)
+        self.tree.column("uuid", width=280, minwidth=160, stretch=True)
+        self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_selected_client_panel())
 
         y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -320,9 +410,113 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def _build_action_panel(self, parent):
         action_frame = ttk.LabelFrame(parent, text="Selected User")
         action_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        action_frame.configure(width=320)
 
-        ttk.Button(action_frame, text="Show Info", command=self.show_info).pack(fill=tk.X, padx=10, pady=(10, 5))
-        ttk.Button(action_frame, text="Options", command=self.show_options).pack(fill=tk.X, padx=10, pady=(5, 10))
+        header = ttk.Frame(action_frame, padding=(10, 8, 10, 4))
+        header.pack(fill=tk.X)
+        title_row = ttk.Frame(header)
+        title_row.pack(fill=tk.X)
+        ttk.Label(
+            title_row,
+            textvariable=self.selected_client_title_var,
+            font=self.header_font,
+            anchor=tk.W,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.selected_client_badge = tk.Label(
+            title_row,
+            textvariable=self.selected_client_badge_var,
+            padx=8,
+            pady=2,
+            bg="#444650",
+            fg="#dce2f4",
+        )
+        self.selected_client_badge.pack(side=tk.RIGHT)
+        ttk.Label(
+            header,
+            textvariable=self.selected_client_subtitle_var,
+            justify=tk.LEFT,
+            anchor=tk.W,
+            wraplength=280,
+        ).pack(fill=tk.X, pady=(6, 0))
+
+        body = ttk.Frame(action_frame, padding=(10, 2, 10, 8))
+        body.pack(fill=tk.BOTH, expand=True)
+        self._add_selected_section(
+            body,
+            "Session",
+            (
+                ("connection", "Connection", False),
+                ("exam", "Exam", False),
+                ("remaining", "Remaining", True),
+                ("status", "Status", False),
+            ),
+        )
+        self._add_selected_section(
+            body,
+            "Machine",
+            (
+                ("ip", "IP", True),
+                ("computer", "Computer", True),
+                ("uuid", "UUID", True),
+            ),
+        )
+        self._add_selected_section(
+            body,
+            "Current Window",
+            (
+                ("window", "Title", False),
+                ("process", "Process", True),
+                ("window_at", "Seen At", True),
+                ("window_severity", "Severity", False),
+            ),
+        )
+        self._add_selected_section(
+            body,
+            "Latest Incident",
+            (
+                ("incident_summary", "Summary", False),
+                ("incident_rule", "Rule", True),
+                ("incident_severity", "Severity", False),
+                ("incident_status", "Status", False),
+            ),
+        )
+
+        actions = ttk.LabelFrame(action_frame, text="Actions", padding=8)
+        actions.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.selected_details_button = ttk.Button(
+            actions,
+            text="Details",
+            command=self.show_info,
+            state=tk.DISABLED,
+        )
+        self.selected_details_button.pack(fill=tk.X, pady=(0, 6))
+        self.selected_actions_button = ttk.Button(
+            actions,
+            text="Actions",
+            command=self.show_options,
+            state=tk.DISABLED,
+        )
+        self.selected_actions_button.pack(fill=tk.X)
+
+    def _add_selected_section(self, parent, title: str, rows: tuple[tuple[str, str, bool], ...]):
+        section = ttk.Frame(parent)
+        section.pack(fill=tk.X, pady=(8, 4))
+        ttk.Label(section, text=title, font=self.header_font).pack(anchor=tk.W, pady=(0, 3))
+        for key, label, technical in rows:
+            var = tk.StringVar(value="-")
+            self.selected_client_fields[key] = var
+            row = ttk.Frame(section)
+            row.pack(fill=tk.X, pady=1)
+            ttk.Label(row, text=f"{label}:", width=11, anchor=tk.W).pack(side=tk.LEFT, anchor=tk.N)
+            label_options = {"style": "Mono.TLabel"} if technical else {}
+            ttk.Label(
+                row,
+                textvariable=var,
+                justify=tk.LEFT,
+                anchor=tk.W,
+                wraplength=185,
+                **label_options,
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _build_rule_breakings_tab(self):
         container = ttk.Frame(self.rules_tab, padding=10)
@@ -359,6 +553,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
         tree_frame = ttk.LabelFrame(middle, text="Incident History")
         tree_frame.pack(fill=tk.BOTH, expand=True)
+        self._build_filter_bar(tree_frame, "incidents", INCIDENT_FILTERS, self._rebuild_incident_tree)
 
         columns = ("incident_id", "time", "user", "severity", "rule", "source", "process", "pid", "auto_action", "status")
         self.incident_tree = ttk.Treeview(
@@ -368,26 +563,29 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             selectmode="extended",
             style="Monospace.Treeview",
         )
-        self.incident_tree.heading("incident_id", text="Incident ID")
-        self.incident_tree.heading("time", text="Time")
-        self.incident_tree.heading("user", text="User")
-        self.incident_tree.heading("severity", text="Severity")
-        self.incident_tree.heading("rule", text="Rule")
-        self.incident_tree.heading("source", text="Source")
-        self.incident_tree.heading("process", text="Process")
-        self.incident_tree.heading("pid", text="PID")
-        self.incident_tree.heading("auto_action", text="Auto Action")
-        self.incident_tree.heading("status", text="Status")
-        self.incident_tree.column("incident_id", width=0, stretch=False)
-        self.incident_tree.column("time", width=150)
-        self.incident_tree.column("user", width=110)
-        self.incident_tree.column("severity", width=90, anchor=tk.CENTER)
-        self.incident_tree.column("rule", width=150)
-        self.incident_tree.column("source", width=110)
-        self.incident_tree.column("process", width=140)
-        self.incident_tree.column("pid", width=80, anchor=tk.CENTER)
-        self.incident_tree.column("auto_action", width=115, anchor=tk.CENTER)
-        self.incident_tree.column("status", width=100, anchor=tk.CENTER)
+        self.incident_columns = tuple((column, label) for column, label in (
+            ("incident_id", "Incident ID"),
+            ("time", "Time"),
+            ("user", "User"),
+            ("severity", "Severity"),
+            ("rule", "Rule"),
+            ("source", "Source"),
+            ("process", "Process"),
+            ("pid", "PID"),
+            ("auto_action", "Auto Action"),
+            ("status", "Status"),
+        ))
+        self._configure_sort_headings(self.incident_tree, "incidents", self.incident_columns, self._rebuild_incident_tree)
+        self.incident_tree.column("incident_id", width=0, minwidth=0, stretch=False)
+        self.incident_tree.column("time", width=150, minwidth=120, stretch=True)
+        self.incident_tree.column("user", width=110, minwidth=90, stretch=True)
+        self.incident_tree.column("severity", width=90, minwidth=80, anchor=tk.CENTER, stretch=False)
+        self.incident_tree.column("rule", width=150, minwidth=120, stretch=True)
+        self.incident_tree.column("source", width=110, minwidth=90, stretch=True)
+        self.incident_tree.column("process", width=140, minwidth=100, stretch=True)
+        self.incident_tree.column("pid", width=80, minwidth=70, anchor=tk.CENTER, stretch=False)
+        self.incident_tree.column("auto_action", width=115, minwidth=100, anchor=tk.CENTER, stretch=True)
+        self.incident_tree.column("status", width=100, minwidth=90, anchor=tk.CENTER, stretch=True)
         self.incident_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_incident_detail())
 
         incident_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.incident_tree.yview)
@@ -431,20 +629,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def _build_process_database_tab(self):
         container = ttk.Frame(self.process_database_tab, padding=10)
         container.pack(fill=tk.BOTH, expand=True)
+        self._build_filter_bar(container, "processes", PROCESS_DATABASE_FILTERS, self._rebuild_process_database_tree)
 
         toolbar = ttk.Frame(container)
         toolbar.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Label(toolbar, text="Filter:").pack(side=tk.LEFT)
-        filter_box = ttk.Combobox(
-            toolbar,
-            textvariable=self.process_filter_var,
-            values=PROCESS_DATABASE_FILTERS,
-            state="readonly",
-            width=18,
-        )
-        filter_box.pack(side=tk.LEFT, padx=(6, 10))
-        filter_box.bind("<<ComboboxSelected>>", lambda _event: self._rebuild_process_database_tree())
 
         self.process_options_button = ttk.Button(
             toolbar,
@@ -465,18 +653,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         tree_frame = ttk.LabelFrame(container, text="Process Definitions And Evidence")
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = (
-            "process_key",
-            "executable",
-            "status",
-            "path",
-            "scope",
-            "matches",
-            "students",
-            "last_seen",
-            "actions",
-            "availability",
-        )
+        columns = tuple(column for column, _label in PROCESS_COLUMNS)
         self.process_tree = ttk.Treeview(
             tree_frame,
             columns=columns,
@@ -484,26 +661,17 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             selectmode="browse",
             style="Monospace.Treeview",
         )
-        self.process_tree.heading("process_key", text="Process Key")
-        self.process_tree.heading("executable", text="Executable")
-        self.process_tree.heading("status", text="Status")
-        self.process_tree.heading("path", text="Path / Directory")
-        self.process_tree.heading("scope", text="Scope")
-        self.process_tree.heading("matches", text="Matches")
-        self.process_tree.heading("students", text="Affected Students")
-        self.process_tree.heading("last_seen", text="Last Seen")
-        self.process_tree.heading("actions", text="Saved Actions")
-        self.process_tree.heading("availability", text="Action Availability")
-        self.process_tree.column("process_key", width=0, stretch=False)
-        self.process_tree.column("executable", width=150)
-        self.process_tree.column("status", width=90, anchor=tk.CENTER)
-        self.process_tree.column("path", width=330)
-        self.process_tree.column("scope", width=90, anchor=tk.CENTER)
-        self.process_tree.column("matches", width=80, anchor=tk.CENTER)
-        self.process_tree.column("students", width=160)
-        self.process_tree.column("last_seen", width=150)
-        self.process_tree.column("actions", width=145)
-        self.process_tree.column("availability", width=220)
+        self._configure_sort_headings(self.process_tree, "processes", PROCESS_COLUMNS, self._rebuild_process_database_tree)
+        self.process_tree.column("process_key", width=0, minwidth=0, stretch=False)
+        self.process_tree.column("executable", width=150, minwidth=110, stretch=True)
+        self.process_tree.column("status", width=90, minwidth=80, anchor=tk.CENTER, stretch=False)
+        self.process_tree.column("path", width=330, minwidth=180, stretch=True)
+        self.process_tree.column("scope", width=90, minwidth=80, anchor=tk.CENTER, stretch=False)
+        self.process_tree.column("matches", width=80, minwidth=70, anchor=tk.CENTER, stretch=False)
+        self.process_tree.column("students", width=160, minwidth=120, stretch=True)
+        self.process_tree.column("last_seen", width=150, minwidth=120, stretch=True)
+        self.process_tree.column("actions", width=145, minwidth=110, stretch=True)
+        self.process_tree.column("availability", width=220, minwidth=150, stretch=True)
         self.process_tree.bind("<<TreeviewSelect>>", lambda _event: self._sync_process_buttons())
         self.process_tree.bind("<Double-1>", lambda _event: self.show_process_decision_window())
 
@@ -546,13 +714,64 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         if not selected:
             return None
         values = self.tree.item(selected[0], "values")
-        return values[3] if values else None
+        return values[5] if values and len(values) > 5 else None
 
     def _selected_client_data(self):
         client_id = self._selected_client_id()
         if not client_id:
             return None, None
         return client_id, self.clients_data.get(client_id)
+
+    def _update_selected_client_panel(self):
+        client_id, data = self._selected_client_data()
+        if not client_id or not data:
+            self.selected_client_info_var.set("Select a client to see basic details.")
+            self.selected_client_title_var.set("No client selected")
+            self.selected_client_subtitle_var.set("Select a client row to view status and actions.")
+            self.selected_client_badge_var.set("Idle")
+            if hasattr(self, "selected_client_badge"):
+                fg, bg = _tk_badge_colors("waiting")
+                self.selected_client_badge.config(fg=fg, bg=bg)
+            for var in self.selected_client_fields.values():
+                var.set("-")
+            self.selected_details_button.config(state=tk.DISABLED)
+            self.selected_actions_button.config(state=tk.DISABLED)
+            return
+
+        connected = data.get("connection_status") == "Connected"
+        exam_state = _plain(data.get("exam_state"))
+        status_label = _plain(data.get("status_label"))
+        self.selected_client_title_var.set(_plain(data.get("login_id")))
+        self.selected_client_subtitle_var.set(
+            f"{_plain(data.get('computer_name'))} | {_plain(data.get('ip'))}"
+        )
+        self.selected_client_badge_var.set(status_label)
+        if hasattr(self, "selected_client_badge"):
+            fg, bg = _tk_badge_colors(str(data.get("exam_state") or data.get("status_label") or ""))
+            self.selected_client_badge.config(fg=fg, bg=bg)
+        values = {
+            "connection": _plain(data.get("connection_status")),
+            "exam": exam_state,
+            "remaining": _format_remaining(data.get("remaining", 0)),
+            "status": status_label,
+            "ip": _plain(data.get("ip")),
+            "computer": _plain(data.get("computer_name")),
+            "uuid": _plain(client_id),
+            "window": _plain(data.get("last_focus_window")),
+            "process": _plain(data.get("last_focus_process")),
+            "window_at": _plain(data.get("last_focus_event_at")),
+            "window_severity": _plain(data.get("last_focus_severity")),
+            "incident_summary": _plain(data.get("latest_incident_summary")),
+            "incident_rule": _plain(data.get("latest_incident_rule_id")),
+            "incident_severity": _plain(data.get("latest_incident_severity")),
+            "incident_status": _plain(data.get("latest_incident_status")),
+        }
+        for key, value in values.items():
+            var = self.selected_client_fields.get(key)
+            if var is not None:
+                var.set(value)
+        self.selected_details_button.config(state=tk.NORMAL)
+        self.selected_actions_button.config(state=tk.NORMAL if connected or data else tk.DISABLED)
 
     def _selected_incident(self):
         incidents = self._selected_incidents()
@@ -619,13 +838,16 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         return f"{len(incidents)} selected {plural_label}"
 
     def update_timers(self):
+        changed = False
         for client_id, data in self.clients_data.items():
             if data.get("exam_state") != "Running":
                 continue
             if data.get("remaining", 0) <= 0:
                 continue
             data["remaining"] -= 1
-            self._upsert_tree_item(client_id, data)
+            changed = True
+        if changed:
+            self._rebuild_client_tree()
 
         self.after(1000, self.update_timers)
 
@@ -973,16 +1195,13 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             }
             if client.get("connection_status") == "Connected":
                 active_count += 1
-            self._upsert_tree_item(client_id, self.clients_data[client_id])
 
-        for client_id in list(self.tree_items.keys()):
+        for client_id in list(self.clients_data.keys()):
             if client_id in seen_client_ids:
                 continue
-            item_id = self.tree_items.pop(client_id)
-            if self.tree.exists(item_id):
-                self.tree.delete(item_id)
             self.clients_data.pop(client_id, None)
 
+        self._rebuild_client_tree()
         incidents = payload.get("incidents", [])
         self.incidents_data = incidents
         self._rebuild_incident_tree()
@@ -1035,20 +1254,55 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         self.server_info_var.set(text)
 
-    def _upsert_tree_item(self, client_id: str, data: dict):
-        values = (
-            data["login_id"],
-            data.get("status_label", "Unknown"),
-            _format_remaining(data.get("remaining", 0)),
-            client_id,
-        )
+    def _rebuild_client_tree(self):
+        selected_id = self._selected_client_id()
+        focus_item = self.tree.focus()
+        focus_values = self.tree.item(focus_item, "values") if focus_item else ()
+        focused_id = str(focus_values[5]) if focus_values and len(focus_values) > 5 else ""
+        yview = self.tree.yview()
+        restored_selection = ""
+        restored_focus = ""
+        sort_column, descending = self.sort_state.get("clients", ("login_id", False))
+        self._configure_sort_headings(self.tree, "clients", CLIENT_COLUMNS, self._rebuild_client_tree)
 
-        item_id = self.tree_items.get(client_id)
-        if item_id and self.tree.exists(item_id):
-            self.tree.item(item_id, values=values)
-            return
+        for item_id in self.tree.get_children():
+            self.tree.delete(item_id)
+        self.tree_items = {}
 
-        self.tree_items[client_id] = self.tree.insert("", tk.END, values=values)
+        for client_id, data in sorted_client_items(
+            self.clients_data,
+            self._active_filters("clients"),
+            sort_column,
+            descending,
+        ):
+            values = (
+                data.get("login_id", ""),
+                data.get("status_label", "Unknown"),
+                _format_remaining(data.get("remaining", 0)),
+                client_window_title(data),
+                data.get("ip") or "",
+                client_id,
+            )
+            item_id = self.tree.insert("", tk.END, values=values)
+            self.tree_items[client_id] = item_id
+            if selected_id and client_id == selected_id:
+                restored_selection = item_id
+            if focused_id and client_id == focused_id:
+                restored_focus = item_id
+
+        if restored_selection:
+            self.tree.selection_set(restored_selection)
+        else:
+            self.tree.selection_remove(self.tree.selection())
+
+        if restored_focus:
+            self.tree.focus(restored_focus)
+        elif restored_selection:
+            self.tree.focus(restored_selection)
+
+        if yview:
+            self.tree.yview_moveto(yview[0])
+        self._update_selected_client_panel()
 
     def _rebuild_incident_tree(self):
         selected_incidents = set(self._selected_incident_ids())
@@ -1058,6 +1312,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         yview = self.incident_tree.yview()
         restored_selection: list[str] = []
         restored_focus = ""
+        sort_column, descending = self.sort_state.get("incidents", ("time", True))
+        self._configure_sort_headings(self.incident_tree, "incidents", self.incident_columns, self._rebuild_incident_tree)
 
         self._incident_tree_refreshing = True
         try:
@@ -1065,7 +1321,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 self.incident_tree.delete(item_id)
             self.incident_items = {}
 
-            for incident in self.incidents_data:
+            for incident in sorted_incidents(
+                self.incidents_data,
+                self._active_filters("incidents"),
+                sort_column,
+                descending,
+            ):
                 incident_id = str(incident.get("incident_id", "") or "")
                 status_text = str(incident.get("status", "") or "")
                 if incident.get("active"):
@@ -1114,6 +1375,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         yview = self.process_tree.yview()
         restored_selection = ""
         restored_focus = ""
+        sort_column, descending = self.sort_state.get("processes", ("executable", False))
+        self._configure_sort_headings(self.process_tree, "processes", PROCESS_COLUMNS, self._rebuild_process_database_tree)
 
         self._process_tree_refreshing = True
         try:
@@ -1121,28 +1384,21 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 self.process_tree.delete(item_id)
             self.process_database_items = {}
 
-            for row in self.process_database_data:
-                if not process_row_matches_filter(row, self.process_filter_var.get()):
-                    continue
+            for row in sorted_process_rows(
+                self.process_database_data,
+                self._active_filters("processes"),
+                sort_column,
+                descending,
+            ):
                 process_key = str(row.get("process_key", "") or "")
-                path_display = (
-                    row.get("process_path")
-                    or row.get("process_dir")
-                    or row.get("normalized_process_path")
-                    or row.get("normalized_process_dir")
-                    or "-"
-                )
-                students = ", ".join(row.get("affected_students", [])[:4])
-                if len(row.get("affected_students", [])) > 4:
-                    students += " ..."
                 values = (
                     process_key,
                     row.get("process_name") or row.get("normalized_process_name") or "",
                     row.get("status", ""),
-                    path_display,
+                    process_path_display(row),
                     row.get("match_scope", ""),
                     row.get("match_count", 0),
-                    students or "-",
+                    affected_students_display(row),
                     row.get("last_seen", ""),
                     row.get("saved_action_labels", ""),
                     format_process_action_availability(row),
