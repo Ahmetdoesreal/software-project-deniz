@@ -2,9 +2,9 @@
 
 Selects the GUI backend at runtime via ``--ui {tk,qt}``.
 
-* ``--ui tk`` (default): the legacy Tkinter timer + submission GUI in
-  ``client/gui_tk.py``.
-* ``--ui qt``: the PySide6 reimplementation in ``client/gui_qt.py``.
+* ``--ui tk`` (default): the Tk timer + submission GUI in
+  ``client.ui.exam_tk``.
+* ``--ui qt``: the Qt timer + submission GUI in ``client.ui.exam_qt``.
 
 Run directly via ``python -m client.gui [--ui tk|qt]``. ``client/ws_client.py``
 spawns this entry point with ``--ui`` already set by the launcher.
@@ -33,10 +33,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if args.ui == "qt":
-        from client.gui_qt import run as run_qt
+        from client.ui.exam_qt import run as run_qt
         return run_qt()
 
-    from client.gui_tk import run as run_tk
+    from client.ui.exam_tk import run as run_tk
     return run_tk()
 
 

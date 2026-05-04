@@ -11,6 +11,7 @@ USERS_FILE = "data/server/server_users.json"
 ALLOWED_USERS_FILE = "allowed_users.json"
 PROCESS_BLACKLIST_FILE = "data/server/process_blacklist.txt"
 EXAM_POLICY_FILE = "data/server/exam_policy.json"
+PROCESS_DEFINITIONS_FILE = "data/server/process_definitions.json"
 INCIDENTS_FILE = "data/server/incidents.jsonl"
 AUDIT_FILE = "data/server/session_audit.jsonl"
 SETTINGS_EXPORT_SCHEMA_VERSION = 1
@@ -22,6 +23,8 @@ class ServerState:
         self.allowed_users: dict[str, str] = {}
         self.process_blacklist: list[str] = []
         self.process_blacklist_version: str = ""
+        self.process_definitions: list[dict] = []
+        self.process_definitions_version: str = ""
         self.exam_policy_config: dict = {}
         self.incidents: list[dict] = []
         self.active_incidents: dict[str, dict] = {}
@@ -48,6 +51,7 @@ class ServerState:
 
         self.load_process_blacklist()
         self.load_exam_policy()
+        self.load_process_definitions()
         self.load_incidents()
 
     def save_users(self):
@@ -113,9 +117,52 @@ class ServerState:
         os.makedirs(os.path.dirname(EXAM_POLICY_FILE), exist_ok=True)
         try:
             with open(EXAM_POLICY_FILE, "w", encoding="utf-8") as policy_file:
-                json.dump(self.exam_policy_config, policy_file, indent=2)
+                json.dump(self._policy_without_process_definitions(), policy_file, indent=2)
         except Exception as e:
             print(f"[!] Failed to save {EXAM_POLICY_FILE}: {e}")
+
+    def ensure_process_definitions_file(self):
+        os.makedirs(os.path.dirname(PROCESS_DEFINITIONS_FILE), exist_ok=True)
+        if os.path.exists(PROCESS_DEFINITIONS_FILE):
+            return
+
+        try:
+            with open(PROCESS_DEFINITIONS_FILE, "w", encoding="utf-8") as definitions_file:
+                json.dump([], definitions_file, indent=2)
+        except Exception as e:
+            print(f"[!] Failed to initialize {PROCESS_DEFINITIONS_FILE}: {e}")
+
+    def load_process_definitions(self):
+        embedded_definitions = self._embedded_process_definitions()
+        if embedded_definitions and not os.path.exists(PROCESS_DEFINITIONS_FILE):
+            self.process_definitions = embedded_definitions
+            self.save_process_definitions()
+            self._remove_embedded_process_definitions()
+            self.save_exam_policy()
+            return
+
+        self.ensure_process_definitions_file()
+        try:
+            with open(PROCESS_DEFINITIONS_FILE, "r", encoding="utf-8") as definitions_file:
+                loaded = json.load(definitions_file)
+            if isinstance(loaded, dict):
+                loaded = loaded.get("entries", [])
+            self.process_definitions = normalize_definitions(loaded)
+            self.process_definitions_version = self._process_definitions_version_stamp()
+            self._remove_embedded_process_definitions()
+        except Exception as e:
+            print(f"[!] Failed to load {PROCESS_DEFINITIONS_FILE}: {e}")
+            self.process_definitions = []
+            self.process_definitions_version = self._process_definitions_version_stamp()
+
+    def save_process_definitions(self):
+        self.ensure_process_definitions_file()
+        try:
+            with open(PROCESS_DEFINITIONS_FILE, "w", encoding="utf-8") as definitions_file:
+                json.dump(normalize_definitions(self.process_definitions), definitions_file, indent=2)
+            self.process_definitions_version = self._process_definitions_version_stamp()
+        except Exception as e:
+            print(f"[!] Failed to save {PROCESS_DEFINITIONS_FILE}: {e}")
 
     def load_incidents(self):
         self.incidents = []
@@ -244,7 +291,9 @@ class ServerState:
         if rule_id == "process_blacklist":
             return dict(self.exam_policy_config.get("rules", {}).get("process_blacklist", {}))
         if rule_id == "process_definitions":
-            return dict(self.exam_policy_config.get("rules", {}).get("process_definitions", {}))
+            config = dict(self.exam_policy_config.get("rules", {}).get("process_definitions", {}))
+            config["definitions"] = self._current_process_definitions()
+            return config
         if rule_id == "process_path_clarification":
             return dict(self.exam_policy_config.get("rules", {}).get("process_path_clarification", {}))
         if rule_id == "focused_window_policy":
@@ -261,7 +310,7 @@ class ServerState:
         focused_window = rules_config.get("focused_window", {})
         rapid_switching = rules_config.get("rapid_application_switching", {})
         unexpected_process = rules_config.get("unexpected_process", {})
-        process_definitions = rules_config.get("process_definitions", {})
+        process_definitions = self.rule_config("process_definitions")
         process_path_clarification = rules_config.get("process_path_clarification", {})
         payload = {
             "policy_version": "",
@@ -405,10 +454,14 @@ class ServerState:
     def settings_bundle(self) -> dict:
         bundle = {
             "schema_version": SETTINGS_EXPORT_SCHEMA_VERSION,
-            "exam_policy": self.exam_policy_config,
+            "exam_policy": self._policy_without_process_definitions(),
             "process_blacklist": {
                 "entries": list(self.process_blacklist),
                 "version": self.process_blacklist_version,
+            },
+            "process_definitions": {
+                "entries": self._current_process_definitions(),
+                "version": self.process_definitions_version,
             },
             "operator_defaults": dict(self.exam_policy_config.get("operator_defaults", {})),
         }
@@ -436,6 +489,15 @@ class ServerState:
             )
         self.exam_policy_config = normalized
 
+        definitions_payload = bundle.get("process_definitions")
+        if isinstance(definitions_payload, dict):
+            self.process_definitions = normalize_definitions(definitions_payload.get("entries", []))
+        elif isinstance(definitions_payload, list):
+            self.process_definitions = normalize_definitions(definitions_payload)
+        else:
+            self.process_definitions = self._embedded_process_definitions(normalized)
+        self._remove_embedded_process_definitions()
+
         blacklist = bundle.get("process_blacklist", {})
         if isinstance(blacklist, dict):
             self.process_blacklist = self._parse_process_blacklist_lines(
@@ -448,6 +510,7 @@ class ServerState:
 
         self.save_exam_policy()
         self.save_process_blacklist()
+        self.save_process_definitions()
 
     def _parse_process_blacklist_lines(self, lines: Iterable[str]) -> list[str]:
         entries = []
@@ -468,6 +531,44 @@ class ServerState:
             return str(os.stat(PROCESS_BLACKLIST_FILE).st_mtime_ns)
         except OSError:
             return "0"
+
+    def _process_definitions_version_stamp(self) -> str:
+        try:
+            return str(os.stat(PROCESS_DEFINITIONS_FILE).st_mtime_ns)
+        except OSError:
+            return "0"
+
+    def _embedded_process_definitions(self, policy: dict | None = None) -> list[dict]:
+        source = policy if isinstance(policy, dict) else self.exam_policy_config
+        return normalize_definitions(
+            source.get("rules", {})
+            .get("process_definitions", {})
+            .get("definitions", [])
+        )
+
+    def _current_process_definitions(self) -> list[dict]:
+        embedded_definitions = self._embedded_process_definitions()
+        if embedded_definitions:
+            return embedded_definitions
+        return normalize_definitions(self.process_definitions)
+
+    def _remove_embedded_process_definitions(self):
+        rules = self.exam_policy_config.get("rules", {})
+        if not isinstance(rules, dict):
+            return
+        process_definitions = rules.get("process_definitions", {})
+        if isinstance(process_definitions, dict):
+            process_definitions.pop("definitions", None)
+
+    def _policy_without_process_definitions(self, policy: dict | None = None) -> dict:
+        source = policy if isinstance(policy, dict) else self.exam_policy_config
+        policy_copy = json.loads(json.dumps(source))
+        rules = policy_copy.get("rules", {})
+        if isinstance(rules, dict):
+            process_definitions = rules.get("process_definitions", {})
+            if isinstance(process_definitions, dict):
+                process_definitions.pop("definitions", None)
+        return policy_copy
 
     def _default_exam_policy_config(self) -> dict:
         return {
@@ -515,7 +616,6 @@ class ServerState:
                 "process_definitions": {
                     "enabled": True,
                     "severity": "violation",
-                    "definitions": [],
                     "detect_unknown_processes": True,
                     "unknown_severity": "warning",
                     "baseline_existing_processes": True,
@@ -692,9 +792,9 @@ class ServerState:
                     normalized["rules"]["process_definitions"]["severity"],
                 )
             )
-            normalized["rules"]["process_definitions"]["definitions"] = normalize_definitions(
-                process_definitions.get("definitions", [])
-            )
+            definitions = normalize_definitions(process_definitions.get("definitions", []))
+            if definitions:
+                normalized["rules"]["process_definitions"]["definitions"] = definitions
             normalized["rules"]["process_definitions"]["detect_unknown_processes"] = bool(
                 process_definitions.get("detect_unknown_processes", True)
             )

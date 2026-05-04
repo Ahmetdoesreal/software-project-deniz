@@ -39,11 +39,12 @@ class SettingsResult:
 def get_settings_snapshot(state, app=None) -> dict:
     policy = state.current_exam_policy()
     snapshot = {
-        "exam_policy": copy.deepcopy(state.exam_policy_config),
+        "exam_policy": copy.deepcopy(state._policy_without_process_definitions()),
         "current_exam_policy": policy,
         "policy_version": policy.get("policy_version", ""),
         "process_blacklist": list(state.process_blacklist),
         "process_blacklist_version": state.process_blacklist_version,
+        "process_definitions_version": state.process_definitions_version,
         "operator_defaults": state.operator_defaults(),
         "session": state.session_policy(),
     }
@@ -63,7 +64,30 @@ def update_exam_policy(state, patch: dict, *, actor="admin", _audit_action="upda
     before_version = state.current_exam_policy().get("policy_version", "")
     merged = _deep_merge(copy.deepcopy(before_config), patch)
     normalized = state._normalize_exam_policy_config(merged)
+    merged_rules = merged.get("rules", {}) if isinstance(merged.get("rules"), dict) else {}
+    merged_process_definitions = (
+        merged_rules.get("process_definitions", {})
+        if isinstance(merged_rules.get("process_definitions"), dict)
+        else {}
+    )
+    has_definition_payload = "definitions" in merged_process_definitions
+    next_definitions = process_definitions(state)
+    definitions_changed = False
+    if has_definition_payload:
+        before_definitions = process_definitions(state)
+        next_definitions = normalize_definitions(merged_process_definitions.get("definitions", []))
+        definitions_changed = before_definitions != next_definitions
+        normalized_rules = normalized.get("rules", {}) if isinstance(normalized.get("rules"), dict) else {}
+        normalized_process_definitions = (
+            normalized_rules.get("process_definitions", {})
+            if isinstance(normalized_rules.get("process_definitions"), dict)
+            else {}
+        )
+        normalized_process_definitions.pop("definitions", None)
+
     changed_paths = _changed_paths(before_config, normalized)
+    if definitions_changed and "process_definitions" not in changed_paths:
+        changed_paths.append("process_definitions")
 
     if not changed_paths:
         return SettingsResult(
@@ -76,6 +100,9 @@ def update_exam_policy(state, patch: dict, *, actor="admin", _audit_action="upda
         )
 
     state.exam_policy_config = normalized
+    if has_definition_payload:
+        state.process_definitions = next_definitions
+        state.save_process_definitions()
     state.save_exam_policy()
     after_version = state.current_exam_policy().get("policy_version", "")
     _append_audit(
@@ -208,10 +235,57 @@ def apply_incident_policy_action(state, incident: dict, action: str, *, actor="a
 
 
 def process_definitions(state) -> list[dict]:
-    return normalize_definitions(
-        state.exam_policy_config.get("rules", {})
-        .get("process_definitions", {})
-        .get("definitions", [])
+    return normalize_definitions(state.rule_config("process_definitions").get("definitions", []))
+
+
+def update_process_definitions(
+    state,
+    definitions: list[dict],
+    *,
+    actor="admin",
+    _audit_action="update_process_definitions",
+) -> SettingsResult:
+    if not isinstance(definitions, list):
+        return _error_result("Process definitions must be a JSON list.", state)
+
+    before_entries = process_definitions(state)
+    before_version = state.process_definitions_version
+    before_policy_version = state.current_exam_policy().get("policy_version", "")
+    next_entries = normalize_definitions(definitions)
+
+    if before_entries == next_entries:
+        return SettingsResult(
+            ok=True,
+            changed=False,
+            message="No process definition changes.",
+            settings=get_settings_snapshot(state),
+            changed_paths=[],
+            errors=[],
+        )
+
+    state.process_definitions = next_entries
+    state.save_process_definitions()
+    _append_audit(
+        state,
+        actor=actor,
+        action=_audit_action,
+        changed_paths=["process_definitions"],
+        before={
+            "process_definitions_version": before_version,
+            "policy_version": before_policy_version,
+        },
+        after={
+            "process_definitions_version": state.process_definitions_version,
+            "policy_version": state.current_exam_policy().get("policy_version", ""),
+        },
+    )
+    return SettingsResult(
+        ok=True,
+        changed=True,
+        message="Process definitions updated.",
+        settings=get_settings_snapshot(state),
+        changed_paths=["process_definitions"],
+        errors=[],
     )
 
 
@@ -239,9 +313,9 @@ def upsert_process_definition(state, definition: dict, *, actor="admin") -> Sett
     if not replaced:
         updated.append(normalized)
 
-    return update_exam_policy(
+    return update_process_definitions(
         state,
-        {"rules": {"process_definitions": {"definitions": updated}}},
+        updated,
         actor=actor,
         _audit_action="upsert_process_definition",
     )

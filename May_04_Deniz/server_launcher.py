@@ -22,11 +22,11 @@ def main() -> int:
 
     if args.ui == "qt":
         try:
-            from server_launcher_qt import run
+            from launcher_ui.server_manager_qt import run
         except ImportError as exc:
             print(f"PySide6 is required for Qt mode: {exc}", file=sys.stderr)
             print("Falling back to Tk.", file=sys.stderr)
-            from server_launcher_tk import ServerManager
+            from launcher_ui.server_manager_tk import ServerManager
             from common.manager_support import apply_dpi_awareness
 
             apply_dpi_awareness()
@@ -37,7 +37,7 @@ def main() -> int:
 
     # Default: Tk
     from common.manager_support import apply_dpi_awareness
-    from server_launcher_tk import ServerManager
+    from launcher_ui.server_manager_tk import ServerManager
 
     apply_dpi_awareness()
     app = ServerManager()

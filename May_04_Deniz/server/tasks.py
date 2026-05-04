@@ -11,7 +11,7 @@ from aiohttp import web
 
 from common.discovery import ServerAnnouncer
 from common import events, protocol, security
-from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, state
+from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
 from .settings_service import (
     apply_process_decision,
@@ -19,6 +19,7 @@ from .settings_service import (
     get_settings_snapshot,
     update_exam_policy,
     update_process_blacklist,
+    update_process_definitions,
     update_runtime_settings,
 )
 
@@ -237,9 +238,14 @@ def _build_server_info(app: web.Application) -> dict:
     advertised_host = app["host"]
     if advertised_host in {"0.0.0.0", "::", ""}:
         advertised_host = ServerAnnouncer._get_local_ip()
+    known_hosts = [str(host) for host in sorted(app.get("server_identity_hosts") or []) if str(host).strip()]
+    if advertised_host and advertised_host not in known_hosts:
+        known_hosts.insert(0, advertised_host)
     return {
         "server_id": app["server_id"],
         "host": advertised_host,
+        "all_host_ips": known_hosts,
+        "bind_host": app["host"],
         "port": app["port"],
         "broadcast_interval": app["broadcast_interval"],
         "announce_interval": app["announce_interval"],
@@ -252,6 +258,8 @@ def _build_server_info(app: web.Application) -> dict:
         "process_definition_count": len(state.rule_config("process_definitions").get("definitions", [])),
         "process_blacklist_file": PROCESS_BLACKLIST_FILE,
         "process_blacklist_version": state.process_blacklist_version,
+        "process_definitions_file": PROCESS_DEFINITIONS_FILE,
+        "process_definitions_version": state.process_definitions_version,
         "policy_file": EXAM_POLICY_FILE,
         "policy_version": state.current_exam_policy().get("policy_version", ""),
         "operator_defaults": state.operator_defaults(),
@@ -435,6 +443,27 @@ async def _handle_edit_policy():
         print(f"[CMD] Opened exam policy file: {os.path.abspath(EXAM_POLICY_FILE)}")
 
 
+async def _handle_apply_process_definitions():
+    previous_version = state.current_exam_policy().get("policy_version", "")
+    previous_definition_version = state.process_definitions_version
+    previous_count = len(state.rule_config("process_definitions").get("definitions", []))
+    state.load_process_definitions()
+    sent_count = await _broadcast_exam_policy(update=True)
+    print(
+        f"[CMD] Applied process definitions from {PROCESS_DEFINITIONS_FILE}. "
+        f"{previous_count} -> {len(state.rule_config('process_definitions').get('definitions', []))} definition(s), "
+        f"definitions version {previous_definition_version} -> {state.process_definitions_version}, "
+        f"policy {previous_version} -> {state.current_exam_policy().get('policy_version', '')}. "
+        f"Updated {sent_count} connected client(s)."
+    )
+
+
+async def _handle_edit_process_definitions():
+    state.ensure_process_definitions_file()
+    if _open_text_file(PROCESS_DEFINITIONS_FILE):
+        print(f"[CMD] Opened process definitions file: {os.path.abspath(PROCESS_DEFINITIONS_FILE)}")
+
+
 async def _handle_export_settings(parts: list[str]):
     if len(parts) < 2:
         print("[CMD] Usage: /exportsettings <path>")
@@ -473,6 +502,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
     changed_paths: list[str] = []
     policy_changed = False
     blacklist_changed = False
+    definitions_changed = False
 
     try:
         if "runtime" in request:
@@ -512,6 +542,18 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
             errors.extend(blacklist_result.errors)
             blacklist_changed = bool(blacklist_result.changed)
 
+        if "process_definitions" in request:
+            definitions_payload = request.get("process_definitions", {})
+            if isinstance(definitions_payload, dict):
+                definitions = definitions_payload.get("entries", [])
+            else:
+                definitions = definitions_payload
+            definitions_result = update_process_definitions(state, definitions, actor="gui")
+            messages.append(definitions_result.message)
+            changed_paths.extend(definitions_result.changed_paths)
+            errors.extend(definitions_result.errors)
+            definitions_changed = bool(definitions_result.changed)
+
         if errors:
             _write_to_gui(
                 {
@@ -527,7 +569,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
 
         policy_sent = 0
         blacklist_sent = 0
-        if policy_changed or blacklist_changed:
+        if policy_changed or blacklist_changed or definitions_changed:
             blacklist_sent = await _broadcast_process_blacklist()
             policy_sent = await _broadcast_exam_policy(update=True)
 
@@ -549,6 +591,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
                 "changed_paths": sorted(set(changed_paths)),
                 "policy_version": state.current_exam_policy().get("policy_version", ""),
                 "process_blacklist_version": state.process_blacklist_version,
+                "process_definitions_version": state.process_definitions_version,
                 "details": [msg for msg in messages if msg],
             }
         )
@@ -1277,6 +1320,14 @@ async def handle_admin_command(line: str, app: web.Application):
         await _handle_apply_policy()
         return
 
+    if command == "/editdefinitions":
+        await _handle_edit_process_definitions()
+        return
+
+    if command == "/applydefinitions":
+        await _handle_apply_process_definitions()
+        return
+
     if command == "/exportsettings":
         await _handle_export_settings(parts)
         return
@@ -1320,6 +1371,8 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /applyblacklist       - Reload and broadcast the process blacklist")
         print("  /editpolicy           - Open the exam policy file for editing")
         print("  /applypolicy          - Reload and broadcast the exam policy")
+        print("  /editdefinitions      - Open the process definitions file for editing")
+        print("  /applydefinitions     - Reload and broadcast process definitions")
         print("  /exportsettings <p>   - Export blacklist + policy settings bundle")
         print("  /importsettings <p>   - Import blacklist + policy settings bundle")
         print("  /remembersettings on|off - Toggle remembered policy settings")
@@ -1394,6 +1447,20 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "apply_policy":
         asyncio.run_coroutine_threadsafe(
             handle_admin_command("/applypolicy", app),
+            loop,
+        )
+        return
+
+    if command == "edit_process_definitions":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/editdefinitions", app),
+            loop,
+        )
+        return
+
+    if command == "apply_process_definitions":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/applydefinitions", app),
             loop,
         )
         return

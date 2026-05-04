@@ -2,8 +2,8 @@
 
 Selects the GUI backend at runtime via ``--ui {tk,qt}``.
 
-* ``--ui tk`` (default): the legacy Tkinter dashboard in ``server/gui_tk.py``.
-* ``--ui qt``: the PySide6 reimplementation in ``server/gui_qt.py``.
+* ``--ui tk`` (default): the Tk dashboard in ``server.ui.dashboard_tk``.
+* ``--ui qt``: the Qt dashboard in ``server.ui.dashboard_qt``.
 
 Run directly via ``python -m server.gui [--ui tk|qt]``. ``server/tasks.py``
 spawns this entry point with ``--ui`` already set by the launcher.
@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from server.dashboard_popups import (
+from server.ui.process_database_helpers import (
     build_process_decision_payload,
     process_row_google_search_url,
 )
@@ -69,10 +69,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if args.ui == "qt":
-        from server.gui_qt import run as run_qt
+        from server.ui.dashboard_qt import run as run_qt
         return run_qt()
 
-    from server.gui_tk import run as run_tk
+    from server.ui.dashboard_tk import run as run_tk
     return run_tk()
 
 
