@@ -12,10 +12,15 @@ from common.process_definitions import PROCESS_DEFINITIONS_RULE_ID, normalize_ac
 from .state import state
 from .submissions import build_artifact_path, build_submission_path, safe_relative_path
 from . import session_state
+from . import ip_guard
 
 
-def _json_error(message: str, status: int) -> web.Response:
-    return web.json_response({"error": message}, status=status)
+def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
+    return web.Response(
+        status=status,
+        content_type="application/json",
+        text=json.dumps({"error": message, "code": code}),
+    )
 
 
 def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
@@ -676,6 +681,12 @@ async def login_handler(request: web.Request) -> web.Response:
     if user["uuid"] in state.clients:
         return _json_error("This login is already active on another client.", 409)
 
+    ip = _client_ip(request)
+    block_reason = ip_guard.check_login(ip, login_id, state.clients, state.users_db)
+    if block_reason:
+        print(f"[ip_guard] Login blocked for {login_id} from {ip}: {block_reason}")
+        return _json_error("Authentication failed.", 403, code="AUTH_REJECTED")
+
     return web.json_response({"status": "ok", "uuid": user["uuid"]})
 
 
@@ -891,6 +902,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         "computer_name": user.get("computer_name", "") if user else "",
         "security": security.build_session_context(client_id, str(user.get("password", "") or "")) if user else None,
     }
+    if user:
+        login_id_for_client, _ = state.find_user_by_uuid(client_id)
+        if login_id_for_client:
+            ip_guard.register_ip(login_id_for_client, ip, state.clients, client_id, state.users_db, state.save_users)
     print(f"[+] Client connected: {client_id} (short: {short_id}, ip: {ip})")
 
     # Send welcome with their ID

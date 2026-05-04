@@ -13,6 +13,7 @@ from common.discovery import ServerAnnouncer
 from common import events, protocol, security
 from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
+from . import ip_guard
 from .settings_service import (
     apply_process_decision,
     build_process_database,
@@ -1361,6 +1362,10 @@ async def handle_admin_command(line: str, app: web.Application):
         await _handle_forgive_violation(parts, app)
         return
 
+    if command == "/security":
+        print(ip_guard.handle_security_command(parts[1:], state.users_db))
+        return
+
     if command == "/help":
         print("  /clients              - List connected clients")
         print("  /savescreen <id>      - Save replay on a specific client")
@@ -1387,6 +1392,7 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /forgiveviolation <id> [incident] - Clear a violation hold")
         print("  /exam                 - Show overall exam status")
         print("  /help                 - Show this help")
+        print(ip_guard.security_help())
         return
 
     print(f"[CMD] Unknown command: {command}  (type /help)")
