@@ -29,6 +29,7 @@ class ServerState:
         self.incidents: list[dict] = []
         self.active_incidents: dict[str, dict] = {}
         self.gui_process = None
+        self.gui_ipc = None
 
     def load_users(self):
         if os.path.exists(USERS_FILE):
@@ -237,6 +238,12 @@ class ServerState:
         process = self.gui_process
         if process and process.poll() is None:
             return process
+        return None
+
+    def get_gui_ipc(self):
+        ipc = self.gui_ipc
+        if ipc is not None and not getattr(ipc, "closed", True):
+            return ipc
         return None
 
     def resolve_user(self, target: str):

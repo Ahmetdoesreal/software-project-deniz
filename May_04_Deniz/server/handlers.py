@@ -25,18 +25,16 @@ def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
 
 
 def _relay_client_message_to_gui(client_id: str, message: dict):
-    gui_process = state.get_gui_process()
-    if not gui_process:
+    if not state.get_gui_process():
         return
 
-    try:
-        payload = json.dumps(
-            {"type": "client_message", "uuid": client_id, "text": message}
-        )
-        gui_process.stdin.write(payload + "\n")
-        gui_process.stdin.flush()
-    except Exception:
-        pass
+    gui_ipc = state.get_gui_ipc()
+    if not gui_ipc:
+        return
+
+    gui_ipc.send_text_nowait(
+        json.dumps({"type": "client_message", "uuid": client_id, "text": message})
+    )
 
 
 def _relay_text_to_gui(client_id: str, text: str):

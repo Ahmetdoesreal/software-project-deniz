@@ -12,7 +12,6 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
 from typing import Optional
 
 
@@ -65,6 +64,7 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from common.runtime_logging import setup_runtime_logging
+from common.local_ipc import LoopbackWebSocketIPCClient, local_ipc_env_configured
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
 from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
@@ -86,6 +86,8 @@ from server.ui.process_database_helpers import (
     process_row_google_search_url,
 )
 from ui.widgets import apply_glass_theme, make_button, monospace_font, style_button
+
+IPC_CLIENT: LoopbackWebSocketIPCClient | None = None
 from ui.theme import M, STATE_COLORS
 from ui.styles import state_badge_style
 from ui.background import StarfieldBackground
@@ -291,7 +293,10 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
 
 
 def _emit_command(payload: dict) -> None:
-    print(json.dumps(payload), flush=True)
+    text = json.dumps(payload)
+    if IPC_CLIENT is not None and IPC_CLIENT.send_text(text):
+        return
+    print(text, flush=True)
 
 
 def format_process_action_availability(row: dict) -> str:
@@ -505,6 +510,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._tick_timer.start()
 
     # ------------------------------------------------------------------ tk compat shims
+    def _emit_command(self, payload: dict) -> None:
+        _emit_command(payload)
+
     def after(self, delay_ms: int, func, *args) -> None:
         """Compatibility shim: mirrors tk.Tk.after() for mixin code."""
         QTimer.singleShot(delay_ms, lambda: func(*args))
@@ -532,7 +540,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.show()
 
     def _on_settings_saved(self, payload: dict):
-        print(json.dumps(payload), flush=True)
+        _emit_command(payload)
         self._append_log("[ADMIN] Saving GUI settings")
 
     # ------------------------------------------------------------------ layout
@@ -957,7 +965,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.show()
 
     def _on_decision_applied(self, payload: dict):
-        print(json.dumps(payload), flush=True)
+        _emit_command(payload)
         self._append_log(
             f"[ADMIN] Applied process decision for {payload.get('definition', {}).get('process_name') or 'Unknown'}"
         )
@@ -1684,24 +1692,20 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         )
 
 
-def _ipc_reader(q: queue.Queue) -> None:
+def _queue_ipc_text(q: queue.Queue, text: str) -> None:
+    text = str(text or "").strip()
+    if not text:
+        return
     try:
-        for line in iter(sys.stdin.readline, ""):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(f"[DEBUG] GUI IPC Error: {exc}", file=sys.stderr)
-                continue
-            q.put(msg)
-    except (OSError, ValueError):
-        pass
-    q.put(None)  # sentinel → parent closed
+        msg = json.loads(text)
+    except json.JSONDecodeError as exc:
+        print(f"[DEBUG] GUI IPC Error: {exc}", file=sys.stderr)
+        return
+    q.put(msg)
 
 
 def run() -> int:
+    global IPC_CLIENT
     log_dir = PROJECT_DIR / "data" / "logs" / "server"
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_runtime_logging("server_gui", log_dir)
@@ -1709,7 +1713,7 @@ def run() -> int:
     faulthandler.enable(file=_crash_log.open("w", encoding="utf-8"), all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
     apply_glass_theme(app)
-    standalone = sys.stdin.isatty()
+    standalone = not local_ipc_env_configured()
     gui = ServerGUI(standalone_mode=standalone)
     gui.show()
 
@@ -1742,8 +1746,13 @@ def run() -> int:
     poll_timer.timeout.connect(_poll_ipc)
     poll_timer.start()
 
-    reader_thread = Thread(target=_ipc_reader, args=(ipc_queue,), daemon=True)
-    reader_thread.start()
+    if not standalone:
+        IPC_CLIENT = LoopbackWebSocketIPCClient(
+            lambda text: _queue_ipc_text(ipc_queue, text),
+            on_close=lambda: ipc_queue.put(None),
+            name="server-dashboard-qt-ipc-client",
+        )
+        IPC_CLIENT.start()
 
     return app.exec()
 

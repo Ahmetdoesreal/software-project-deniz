@@ -3,7 +3,6 @@ import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
-from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 
 
@@ -12,13 +11,19 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from common.manager_support import install_close_guard
+from common.local_ipc import LoopbackWebSocketIPCClient, local_ipc_env_configured
 from client.submission import build_file_preview, format_bytes
 
 from common.runtime_logging import setup_runtime_logging
 
+IPC_CLIENT: LoopbackWebSocketIPCClient | None = None
+
 
 def _emit_command(payload: dict):
-    print(json.dumps(payload), flush=True)
+    text = json.dumps(payload)
+    if IPC_CLIENT is not None and IPC_CLIENT.send_text(text):
+        return
+    print(text, flush=True)
 
 
 def _parse_ipc_line(line: str):
@@ -568,64 +573,57 @@ class SubmissionWindow(tk.Toplevel):
         self.text_container.grid(row=0, column=0, sticky=tk.NSEW)
 
 
-def ipc_reader(app: ExamTimerGUI):
-    """Read remaining times from stdin."""
+def handle_ipc_text(app: ExamTimerGUI, text: str):
+    command, value = _parse_ipc_line(str(text or "").strip())
     try:
-        for line in sys.stdin:
-            command, value = _parse_ipc_line(line.strip())
-            try:
-                if command == "SYNC":
-                    app.root.after(0, app.set_remaining, int(value))
-                elif command == "PAUSE":
-                    payload = json.loads(value) if value else {}
-                    app.root.after(
-                        0,
-                        app.pause_timer,
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "RESUME":
-                    payload = json.loads(value) if value else {}
-                    app.root.after(
-                        0,
-                        app.resume_timer,
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "END":
-                    app.root.after(0, app.set_remaining, -1)
-                elif command == "RESET":
-                    app.root.after(0, app.reset_to_ready)
-                elif command == "ERROR":
-                    app.root.after(0, app.show_error_popup, value)
-                elif command == "OPEN_FINISH":
-                    app.root.after(0, app.prompt_finish_from_server, value)
-                elif command == "UPLOAD_OK":
-                    app.root.after(0, app.handle_upload_success, value)
-                elif command == "UPLOAD_ERROR":
-                    app.root.after(0, app.handle_upload_error, value)
-                elif command == "UPLOAD_STEP":
-                    app.root.after(0, app.handle_upload_step, value)
-            except Exception:
-                pass
-    finally:
-        if not app.standalone_mode:
-            try:
-                app.root.after(0, app.force_close)
-            except Exception:
-                pass
+        if command == "SYNC":
+            app.set_remaining(int(value))
+        elif command == "PAUSE":
+            payload = json.loads(value) if value else {}
+            app.pause_timer(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "RESUME":
+            payload = json.loads(value) if value else {}
+            app.resume_timer(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "END":
+            app.set_remaining(-1)
+        elif command == "RESET":
+            app.reset_to_ready()
+        elif command == "ERROR":
+            app.show_error_popup(value)
+        elif command == "OPEN_FINISH":
+            app.prompt_finish_from_server(value)
+        elif command == "UPLOAD_OK":
+            app.handle_upload_success(value)
+        elif command == "UPLOAD_ERROR":
+            app.handle_upload_error(value)
+        elif command == "UPLOAD_STEP":
+            app.handle_upload_step(value)
+    except Exception:
+        pass
 
 
 def run() -> int:
+    global IPC_CLIENT
     setup_runtime_logging(
         "client_gui",
         PROJECT_DIR / "data" / "logs" / "client",
     )
     root = tk.Tk()
-    app = ExamTimerGUI(root, standalone_mode=sys.stdin.isatty())
-
-    reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)
-    reader_thread.start()
+    standalone = not local_ipc_env_configured()
+    app = ExamTimerGUI(root, standalone_mode=standalone)
+    if not standalone:
+        IPC_CLIENT = LoopbackWebSocketIPCClient(
+            lambda text: root.after(0, handle_ipc_text, app, text),
+            on_close=lambda: root.after(0, app.force_close),
+            name="client-timer-tk-ipc-client",
+        )
+        IPC_CLIENT.start()
 
     root.mainloop()
     return 0

@@ -10,7 +10,6 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
 from typing import Optional
 
 
@@ -54,13 +53,19 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from client.submission import build_file_preview, format_bytes
+from common.local_ipc import LoopbackWebSocketIPCClient, local_ipc_env_configured
 from common.runtime_logging import setup_runtime_logging
 from ui.widgets import apply_theme, make_button, monospace_font, style_button
 from ui.theme import M, TY, apply_typography
 
+IPC_CLIENT: LoopbackWebSocketIPCClient | None = None
+
 
 def _emit_command(payload: dict) -> None:
-    print(json.dumps(payload), flush=True)
+    text = json.dumps(payload)
+    if IPC_CLIENT is not None and IPC_CLIENT.send_text(text):
+        return
+    print(text, flush=True)
 
 
 def _parse_ipc_line(line: str) -> tuple[str, str]:
@@ -568,47 +573,43 @@ class ExamTimerGUI(QMainWindow):
         self.submission_window.activateWindow()
 
 
-def _ipc_reader(signals: _IPCSignals) -> None:
+def _handle_ipc_text(signals: _IPCSignals, text: str) -> None:
+    command, value = _parse_ipc_line(str(text or "").strip())
     try:
-        for line in iter(sys.stdin.readline, ""):
-            command, value = _parse_ipc_line(line.strip())
-            try:
-                if command == "SYNC":
-                    signals.sync.emit(int(value))
-                elif command == "PAUSE":
-                    payload = json.loads(value) if value else {}
-                    signals.pause.emit(
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "RESUME":
-                    payload = json.loads(value) if value else {}
-                    signals.resume.emit(
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "END":
-                    signals.end.emit()
-                elif command == "RESET":
-                    signals.reset.emit()
-                elif command == "ERROR":
-                    signals.error.emit(value)
-                elif command == "OPEN_FINISH":
-                    signals.open_finish.emit(value)
-                elif command == "UPLOAD_OK":
-                    signals.upload_ok.emit(value)
-                elif command == "UPLOAD_ERROR":
-                    signals.upload_error.emit(value)
-                elif command == "UPLOAD_STEP":
-                    signals.upload_step.emit(value)
-            except Exception:
-                pass
-    except (OSError, ValueError):
+        if command == "SYNC":
+            signals.sync.emit(int(value))
+        elif command == "PAUSE":
+            payload = json.loads(value) if value else {}
+            signals.pause.emit(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "RESUME":
+            payload = json.loads(value) if value else {}
+            signals.resume.emit(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "END":
+            signals.end.emit()
+        elif command == "RESET":
+            signals.reset.emit()
+        elif command == "ERROR":
+            signals.error.emit(value)
+        elif command == "OPEN_FINISH":
+            signals.open_finish.emit(value)
+        elif command == "UPLOAD_OK":
+            signals.upload_ok.emit(value)
+        elif command == "UPLOAD_ERROR":
+            signals.upload_error.emit(value)
+        elif command == "UPLOAD_STEP":
+            signals.upload_step.emit(value)
+    except Exception:
         pass
-    signals.parent_closed.emit()
 
 
 def run() -> int:
+    global IPC_CLIENT
     log_dir = PROJECT_DIR / "data" / "logs" / "client"
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_runtime_logging("client_gui", log_dir)
@@ -616,7 +617,7 @@ def run() -> int:
     faulthandler.enable(file=_crash_log.open("w", encoding="utf-8"), all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
     apply_theme(app)
-    standalone = sys.stdin.isatty()
+    standalone = not local_ipc_env_configured()
     gui = ExamTimerGUI(standalone_mode=standalone)
     gui.show()
 
@@ -634,8 +635,13 @@ def run() -> int:
     if not standalone:
         signals.parent_closed.connect(gui.force_close)
 
-    reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
-    reader_thread.start()
+    if not standalone:
+        IPC_CLIENT = LoopbackWebSocketIPCClient(
+            lambda text: _handle_ipc_text(signals, text),
+            on_close=signals.parent_closed.emit,
+            name="client-timer-qt-ipc-client",
+        )
+        IPC_CLIENT.start()
 
     return app.exec()
 

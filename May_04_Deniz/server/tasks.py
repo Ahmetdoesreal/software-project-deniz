@@ -11,6 +11,7 @@ from aiohttp import web
 
 from common.discovery import ServerAnnouncer
 from common import events, protocol, security
+from common.local_ipc import ThreadedLoopbackWebSocketIPCServer
 from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
 from .settings_service import (
@@ -45,6 +46,10 @@ def _gui_process():
     return state.get_gui_process()
 
 
+def _gui_ipc():
+    return state.get_gui_ipc()
+
+
 def _protect_payload(client_data: dict, payload: str) -> str:
     return security.protect_wire_message(payload, client_data.get("security"))
 
@@ -68,15 +73,15 @@ def _queue_stdin_line(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
 
 
 def _write_to_gui(payload: dict):
-    gui_process = _gui_process()
-    if not gui_process:
+    if not _gui_process():
         return
 
-    try:
-        gui_process.stdin.write(json.dumps(payload) + "\n")
-        gui_process.stdin.flush()
-    except Exception as e:
-        print(f"[GUI IPC] Warning: Failed to write to GUI: {e}")
+    ipc = _gui_ipc()
+    if not ipc:
+        return
+
+    if not ipc.send_text_nowait(json.dumps(payload)):
+        print("[GUI IPC] Warning: Failed to queue message for GUI.")
 
 
 def _push_gui_state(app: web.Application):
@@ -97,6 +102,10 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
     if _gui_process():
         print("[GUI] Server monitor UI is already open.")
         return "already_open"
+    existing_ipc = _gui_ipc()
+    if existing_ipc:
+        existing_ipc.close()
+        state.gui_ipc = None
 
     gui_module = app.get("gui_module", "server.gui")
     project_dir = app.get("project_dir")
@@ -113,21 +122,31 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
         gui_ui = "tk"
 
     try:
+        gui_ipc = ThreadedLoopbackWebSocketIPCServer(
+            lambda text: _handle_gui_ipc_text(loop, app, text),
+            name="server-dashboard-ipc",
+        ).start()
+    except Exception as exc:
+        print(f"[GUI] Failed to start local IPC websocket: {exc}")
+        return "failed"
+
+    gui_env.update(gui_ipc.child_env())
+
+    try:
         gui_process = subprocess.Popen(
             [python_executable, "-m", str(gui_module), "--ui", gui_ui],
             cwd=str(project_dir),
             env=gui_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            stdin=subprocess.DEVNULL,
         )
     except Exception as exc:
+        gui_ipc.close()
         print(f"[GUI] Failed to launch gui: {exc}")
         return "failed"
 
     state.gui_process = gui_process
-    Thread(target=_gui_reader_thread, args=(loop, app, gui_process), daemon=True).start()
+    state.gui_ipc = gui_ipc
+    Thread(target=_gui_process_watcher, args=(loop, gui_process, gui_ipc), daemon=True).start()
     print("[GUI] Server monitor UI launched. Use /gui to reopen it if you close the window.")
     _push_gui_state(app)
     return "opened"
@@ -1588,25 +1607,37 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
         return
 
 
-def _gui_reader_thread(loop, app, gui_process):
-    """Read stdout from the Tkinter GUI and forward actions into the event loop."""
+def _handle_gui_ipc_text(loop, app, text: str):
+    text = str(text or "").strip()
+    if not text:
+        return
     try:
-        for line in iter(gui_process.stdout.readline, ""):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                _dispatch_gui_request(loop, app, json.loads(line))
-            except Exception:
-                pass
-    finally:
-        try:
-            gui_process.stdout.close()
-        except Exception:
-            pass
+        _dispatch_gui_request(loop, app, json.loads(text))
+    except json.JSONDecodeError as exc:
+        print(f"[GUI IPC] Ignoring invalid GUI JSON: {exc}")
+    except Exception as exc:
+        print(f"[GUI IPC] Failed to dispatch GUI request: {exc}")
+
+
+def _gui_process_watcher(loop, gui_process, gui_ipc):
+    """Clear server-side GUI state when the dashboard subprocess exits."""
+    try:
+        gui_process.wait()
+    except Exception:
+        pass
+
+    def _clear_state():
         if state.gui_process is gui_process:
             state.gui_process = None
-            print("[GUI] Server monitor UI closed. Type /gui to reopen it.")
+        if state.gui_ipc is gui_ipc:
+            state.gui_ipc = None
+        print("[GUI] Server monitor UI closed. Type /gui to reopen it.")
+
+    try:
+        loop.call_soon_threadsafe(_clear_state)
+    except RuntimeError:
+        _clear_state()
+    gui_ipc.close()
 
 
 async def console_reader(app: web.Application):
@@ -1619,11 +1650,6 @@ async def console_reader(app: web.Application):
         daemon=True,
     )
     stdin_thread.start()
-
-    gui_process = _gui_process()
-    if gui_process:
-        thread = Thread(target=_gui_reader_thread, args=(loop, app, gui_process), daemon=True)
-        thread.start()
 
     try:
         while True:

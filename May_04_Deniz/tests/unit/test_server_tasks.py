@@ -1,11 +1,19 @@
 import asyncio
 import io
+import json
 import unittest
 from unittest.mock import patch
 
 from common import events, protocol
 from server.state import state
-from server.tasks import _exam_state, _handle_finish_exam_global, _queue_stdin_line, _sync_running_exams
+from server.tasks import (
+    _dispatch_gui_request,
+    _exam_state,
+    _handle_finish_exam_global,
+    _queue_stdin_line,
+    _sync_running_exams,
+    _write_to_gui,
+)
 
 
 class _ImmediateLoop:
@@ -27,6 +35,22 @@ class _FakeWS:
 
     async def send_str(self, payload: str):
         self.messages.append(protocol.decode(payload))
+
+
+class _FakeProcess:
+    def poll(self):
+        return None
+
+
+class _FakeGUIIPC:
+    closed = False
+
+    def __init__(self):
+        self.messages = []
+
+    def send_text_nowait(self, text: str) -> bool:
+        self.messages.append(text)
+        return True
 
 
 class ServerTaskTests(unittest.TestCase):
@@ -71,6 +95,36 @@ class ServerTaskTests(unittest.TestCase):
             "exam_finished": False,
         }
         self.assertEqual(_exam_state(user, 120), "Violation Paused")
+
+    def test_write_to_gui_sends_existing_json_payload_over_ipc(self):
+        original_process = state.gui_process
+        original_ipc = state.gui_ipc
+        fake_ipc = _FakeGUIIPC()
+        try:
+            state.gui_process = _FakeProcess()
+            state.gui_ipc = fake_ipc
+
+            _write_to_gui({"type": "state_update", "clients": []})
+
+            self.assertEqual(json.loads(fake_ipc.messages[0]), {"type": "state_update", "clients": []})
+        finally:
+            state.gui_process = original_process
+            state.gui_ipc = original_ipc
+
+    def test_dispatch_gui_console_command_uses_existing_command_json(self):
+        app = {}
+        loop = object()
+        calls = []
+
+        def fake_handle(command, target_app):
+            calls.append((command, target_app))
+            return "coroutine"
+
+        with patch("server.tasks.handle_admin_command", new=fake_handle), patch("asyncio.run_coroutine_threadsafe") as run_mock:
+            _dispatch_gui_request(loop, app, {"type": "console_command", "command": "/help"})
+
+        self.assertEqual(calls, [("/help", app)])
+        run_mock.assert_called_once_with("coroutine", loop)
 
 
 class ServerTaskAsyncTests(unittest.IsolatedAsyncioTestCase):

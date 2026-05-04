@@ -12,6 +12,7 @@ import aiohttp
 import psutil
 
 from common import events, protocol, security
+from common.local_ipc import ThreadedLoopbackWebSocketIPCServer
 from .exam_state import ExamStateLogger
 from .incidents import ClientIncidentEngine
 from .submission import validate_submission_file
@@ -125,37 +126,54 @@ class ClientGUIBridge:
         self.loop = loop
         self.input_queue = input_queue
         self.process = None
+        self.ipc = None
         self._ui = ui if ui in {"tk", "qt"} else "tk"
 
     def ensure_started(self):
         if self.process is not None and self.process.poll() is None:
             return
+        if self.ipc is not None:
+            self.ipc.close()
+            self.ipc = None
 
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "client.gui", "--ui", self._ui],
-            cwd=_project_dir(),
-            env=_child_env(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        Thread(target=self._stdout_reader, daemon=True).start()
+        self.ipc = ThreadedLoopbackWebSocketIPCServer(
+            self._handle_ipc_text,
+            name="client-timer-ipc",
+        ).start()
 
-    def _stdout_reader(self):
-        process = self.process
-        if process is None or process.stdout is None:
-            return
+        env = _child_env()
+        env.update(self.ipc.child_env())
 
-        for line in iter(process.stdout.readline, ""):
-            command = self._parse_gui_command(line)
-            if command is None:
-                continue
-            _run_in_background(self.loop, self.input_queue.put_nowait, command)
         try:
-            process.stdout.close()
+            self.process = subprocess.Popen(
+                [sys.executable, "-m", "client.gui", "--ui", self._ui],
+                cwd=_project_dir(),
+                env=env,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception:
+            self.ipc.close()
+            self.ipc = None
+            raise
+
+        Thread(target=self._process_watcher, args=(self.process, self.ipc), daemon=True).start()
+
+    def _handle_ipc_text(self, text: str):
+        command = self._parse_gui_command(text)
+        if command is None:
+            return
+        _run_in_background(self.loop, self.input_queue.put_nowait, command)
+
+    def _process_watcher(self, process, ipc):
+        try:
+            process.wait()
         except Exception:
             pass
+        if self.process is process:
+            self.process = None
+        if self.ipc is ipc:
+            self.ipc = None
+        ipc.close()
 
     def send_sync(self, remaining_seconds: int):
         self._write(f"SYNC:{remaining_seconds}\n")
@@ -189,7 +207,11 @@ class ClientGUIBridge:
 
     def close(self):
         process = self.process
+        ipc = self.ipc
         self.process = None
+        self.ipc = None
+        if ipc is not None:
+            ipc.close()
         if process and process.poll() is None:
             process.kill()
 
@@ -220,14 +242,10 @@ class ClientGUIBridge:
         return None
 
     def _write(self, message: str):
-        if not self.process or self.process.poll() is not None:
+        if not self.ipc:
             return
 
-        try:
-            self.process.stdin.write(message)
-            self.process.stdin.flush()
-        except Exception:
-            pass
+        self.ipc.send_text_nowait(message)
 
 
 @dataclass

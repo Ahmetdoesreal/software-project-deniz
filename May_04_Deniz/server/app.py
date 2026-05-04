@@ -94,7 +94,12 @@ async def cleanup_background_tasks(app: web.Application):
             pass
 
     await app["announcer"].stop()
-    
+
+    gui_ipc = state.get_gui_ipc()
+    if gui_ipc:
+        gui_ipc.close()
+        state.gui_ipc = None
+
     if state.gui_process and state.gui_process.poll() is None:
         state.gui_process.kill()
 

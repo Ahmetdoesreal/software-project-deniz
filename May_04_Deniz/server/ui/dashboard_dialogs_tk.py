@@ -399,19 +399,19 @@ class DashboardPopupMixin:
             actions=actions,
             save_policy=save_policy,
         )
-        print(json.dumps(payload), flush=True)
+        self._emit_command(payload)
         window.destroy()
         self._append_log(
             f"[ADMIN] Applied process decision for {row.get('process_name') or row.get('normalized_process_name')}"
         )
 
     def _send_client_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
+        self._emit_command({"cmd": command, "uuid": client_id})
         window.destroy()
         self._append_log(f"[ADMIN] Sent {command} to {client_id}")
 
     def _send_window_command(self, window, command: str, client_id: str):
-        print(json.dumps({"cmd": command, "uuid": client_id}), flush=True)
+        self._emit_command({"cmd": command, "uuid": client_id})
         window.destroy()
         self._append_log(f"[ADMIN] Sent {command} to {client_id}")
 
@@ -421,10 +421,7 @@ class DashboardPopupMixin:
             messagebox.showwarning("Add Time", "Enter a number of minutes first.")
             return
 
-        print(
-            json.dumps({"type": "console_command", "command": f"/addtime {client_id} {minutes_text}"}),
-            flush=True,
-        )
+        self._emit_command({"type": "console_command", "command": f"/addtime {client_id} {minutes_text}"})
         window.destroy()
         self._append_log(f"[ADMIN] Added {minutes_text} minute(s) to {client_id}")
 
