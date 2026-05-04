@@ -1,0 +1,10 @@
+# Core runtime
+aiohttp
+psutil
+
+# Protected websocket signing/encryption
+cryptography
+
+# Optional: Qt UI backend (selected via `--ui qt` on the launchers).
+# The legacy Tk UI (`--ui tk`, default) ships with Python and needs no extra deps.
+PySide6
