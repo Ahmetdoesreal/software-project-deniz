@@ -138,7 +138,7 @@ async def main_loop(args):
                     build_ws_url(host, port, session_uuid),
                     base_url,
                     session_uuid,
-                    args.password,
+                    getattr(args, "auth_secret", None) or "",
                     recorder_manager.recorder,
                     gui_ui=getattr(args, "ui", "tk") or "tk",
                     incident_buffer=incident_buffer,

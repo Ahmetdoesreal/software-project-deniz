@@ -20,7 +20,7 @@ class ServerState:
     def __init__(self):
         self.clients: dict[str, dict] = {}
         self.users_db: dict[str, dict] = {}
-        self.allowed_users: dict[str, str] = {}
+        self.allowed_users: set[str] = set()
         self.process_blacklist: list[str] = []
         self.process_blacklist_version: str = ""
         self.process_definitions: list[dict] = []
@@ -44,10 +44,17 @@ class ServerState:
         if os.path.exists(ALLOWED_USERS_FILE):
             try:
                 with open(ALLOWED_USERS_FILE, "r") as f:
-                    self.allowed_users = json.load(f)
+                    raw = json.load(f)
+                # Accept both a list ["id1","id2"] and the old dict {"id1":"pw",...}
+                if isinstance(raw, list):
+                    self.allowed_users = set(raw)
+                elif isinstance(raw, dict):
+                    self.allowed_users = set(raw.keys())
+                else:
+                    self.allowed_users = set()
             except Exception as e:
                 print(f"[!] Failed to load {ALLOWED_USERS_FILE}: {e}")
-                self.allowed_users = {}
+                self.allowed_users = set()
 
         self.load_process_blacklist()
         self.load_exam_policy()

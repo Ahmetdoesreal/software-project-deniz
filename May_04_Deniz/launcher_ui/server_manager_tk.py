@@ -20,6 +20,7 @@ from common.manager_support import (
     install_close_guard,
 )
 from common.server_ports import detect_port_conflict
+from client.preflight import load_auth_config
 
 
 def _extract_startup_failure(output: str) -> str | None:
@@ -54,6 +55,7 @@ class ServerManager(tk.Tk):
             send_command=self._send_server_command,
             empty_message="Start the server to begin capturing session output.",
         )
+        self._auth_config = load_auth_config(PROJECT_DIR)
         self._last_known_returncode = None
         self._startup_failure_reported = False
         self._server_prompt_status = "Server stopped."
@@ -189,8 +191,18 @@ class ServerManager(tk.Tk):
             variable=self.v_reset,
         ).grid(row=6, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(8, 4))
 
+        ttk.Label(self, text="Auth Secret:").grid(row=7, column=0, sticky=tk.W, padx=10, pady=8)
+        self.v_secret = tk.StringVar(value=self._auth_config.get("auth_secret", ""))
+        ttk.Entry(self, textvariable=self.v_secret, show="*").grid(
+            row=7,
+            column=1,
+            sticky=tk.EW,
+            padx=10,
+            pady=8,
+        )
+
         controls = ttk.LabelFrame(self, text="Controls")
-        controls.grid(row=7, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=10)
+        controls.grid(row=8, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=10)
         for column in range(4):
             controls.columnconfigure(column, weight=1)
         self.start_button = ttk.Button(
@@ -219,7 +231,7 @@ class ServerManager(tk.Tk):
         self.gui_button.grid(row=0, column=3, sticky=tk.EW, padx=8, pady=10)
 
         status_frame = ttk.LabelFrame(self, text="Session State")
-        status_frame.grid(row=8, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=10)
+        status_frame.grid(row=9, column=0, columnspan=2, sticky=tk.EW, padx=10, pady=10)
         ttk.Label(status_frame, textvariable=self.summary_var, wraplength=860).pack(
             anchor=tk.W,
             padx=10,
@@ -270,11 +282,11 @@ class ServerManager(tk.Tk):
             ),
             wraplength=860,
             foreground="#5c4d7d",
-        ).grid(row=9, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(0, 10))
+        ).grid(row=10, column=0, columnspan=2, sticky=tk.W, padx=10, pady=(0, 10))
         self._setup_widgets = [
             widget
             for widget in self.grid_slaves()
-            if 1 <= int(widget.grid_info().get("row", -1)) <= 6
+            if 1 <= int(widget.grid_info().get("row", -1)) <= 7
         ]
 
     def _host_options(self) -> list[str]:
@@ -344,6 +356,9 @@ class ServerManager(tk.Tk):
             command.extend(["--exam-files", exam_file])
         if self.v_reset.get():
             command.append("--reset")
+        secret = self.v_secret.get().strip()
+        if secret:
+            command.extend(["--auth-secret", secret])
         return command
 
     def _session_summary_text(self) -> str:
