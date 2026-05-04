@@ -121,17 +121,18 @@ class UserCommand:
 
 
 class ClientGUIBridge:
-    def __init__(self, loop: asyncio.AbstractEventLoop, input_queue: asyncio.Queue):
+    def __init__(self, loop: asyncio.AbstractEventLoop, input_queue: asyncio.Queue, *, ui: str = "tk"):
         self.loop = loop
         self.input_queue = input_queue
         self.process = None
+        self._ui = ui if ui in {"tk", "qt"} else "tk"
 
     def ensure_started(self):
         if self.process is not None and self.process.poll() is None:
             return
 
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "client.gui"],
+            [sys.executable, "-m", "client.gui", "--ui", self._ui],
             cwd=_project_dir(),
             env=_child_env(),
             stdin=subprocess.PIPE,
@@ -442,6 +443,8 @@ class WebSocketSession:
         password: str,
         ws,
         recorder: ReplayRecorder | None,
+        *,
+        gui_ui: str = "tk",
     ):
         self.ws_url = ws_url
         self.base_url = base_url
@@ -457,7 +460,7 @@ class WebSocketSession:
         )
         self.output_dir = os.path.join("data", "client", self.session_uuid)
         self.stdin = StdinBridge(self.loop)
-        self.gui = ClientGUIBridge(self.loop, self.stdin.queue)
+        self.gui = ClientGUIBridge(self.loop, self.stdin.queue, ui=gui_ui)
         self.exam_state_logger = ExamStateLogger(self.output_dir)
         self.incident_engine = ClientIncidentEngine()
         self._background_tasks: set[asyncio.Task] = set()
@@ -1283,6 +1286,51 @@ class WebSocketSession:
 
     def _print_remaining_time(self, remaining: int):
         last_remaining = self.state.last_printed_remaining
+
+    async def handle_kill_process(self, data: dict):
+        pid = int(data.get("pid", 0) or 0)
+        incident_id = str(data.get("incident_id", "") or "")
+        process_name = str(data.get("process_name", "") or "")
+        if pid <= 0:
+            await self._send_payload(
+                events.kill_process_result(
+                    pid,
+                    incident_id=incident_id,
+                    ok=False,
+                    process_name=process_name,
+                    message="invalid pid",
+                )
+            )
+            return
+
+        ok, message = await self.loop.run_in_executor(None, self._kill_local_process, pid)
+        await self._send_payload(
+            events.kill_process_result(
+                pid,
+                incident_id=incident_id,
+                ok=ok,
+                process_name=process_name,
+                message=message,
+            )
+        )
+
+    def _kill_local_process(self, pid: int) -> tuple[bool, str]:
+        try:
+            process = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.Error) as exc:
+            return False, str(exc)
+
+        try:
+            process.kill()
+            process.wait(timeout=3)
+            return True, f"terminated pid {pid}"
+        except psutil.TimeoutExpired:
+            return False, f"timed out waiting for pid {pid} to exit"
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.Error, OSError) as exc:
+            return False, str(exc)
+
+    def _print_remaining_time(self, remaining: int):
+        last_remaining = self.state.last_printed_remaining
         if last_remaining is None or remaining <= last_remaining - 10:
             self.state.last_printed_remaining = remaining
             print(f"[EXAM] Time remaining: {_time_text(remaining)}")
@@ -1294,8 +1342,13 @@ async def run_ws(
     session_uuid: str,
     password: str,
     recorder: ReplayRecorder | None,
+    *,
+    gui_ui: str = "tk",
 ):
     """Connect via WebSocket, handle exam flow and pings."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
-            return await WebSocketSession(ws_url, base_url, session_uuid, password, ws, recorder).run()
+            return await WebSocketSession(
+                ws_url, base_url, session_uuid, password, ws, recorder,
+                gui_ui=gui_ui,
+            ).run()

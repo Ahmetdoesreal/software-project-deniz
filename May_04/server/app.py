@@ -121,6 +121,10 @@ def create_app(args) -> web.Application:
     app["project_dir"] = getattr(args, "project_dir", None)
     app["python_executable"] = getattr(args, "python_executable", None)
     app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
+    gui_ui = str(getattr(args, "ui", "tk") or "tk").strip().lower()
+    if gui_ui not in {"tk", "qt"}:
+        gui_ui = "tk"
+    app["gui_ui"] = gui_ui
     
     app.router.add_get("/health", health)
     app.router.add_post("/login", login_handler)

@@ -4,3 +4,6 @@ psutil
 
 # Protected websocket signing/encryption
 cryptography
+
+# Qt UI (optional — required only for --ui qt mode)
+PySide6

@@ -107,9 +107,13 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
     gui_env["PYTHONPATH"] = str(project_dir) + os.pathsep + gui_env.get("PYTHONPATH", "")
     gui_env["PYTHONUNBUFFERED"] = "1"
 
+    gui_ui = str(app.get("gui_ui", "tk") or "tk")
+    if gui_ui not in {"tk", "qt"}:
+        gui_ui = "tk"
+
     try:
         gui_process = subprocess.Popen(
-            [python_executable, "-m", str(gui_module)],
+            [python_executable, "-m", str(gui_module), "--ui", gui_ui],
             cwd=str(project_dir),
             env=gui_env,
             stdin=subprocess.PIPE,
