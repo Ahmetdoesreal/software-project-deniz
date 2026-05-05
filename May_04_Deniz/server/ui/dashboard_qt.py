@@ -1200,6 +1200,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         existing = self._open_dialogs.get(key)
         if existing is dialog:
             self._open_dialogs.pop(key, None)
+        if key == ("policy_settings", "window") and getattr(self, "policy_dialog", None) is dialog:
+            self.policy_dialog = None
 
     def _focus_existing_dialog(self, key: tuple[str, str]) -> bool:
         dialog = self._open_dialogs.get(key)
@@ -1737,7 +1739,14 @@ def run() -> int:
                     gui.log_message(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
                 elif message_type == "settings_result":
                     if hasattr(gui, 'policy_dialog') and gui.policy_dialog:
-                        gui.policy_dialog.process_result(bool(msg.get("ok", False)), str(msg.get("message") or ""))
+                        gui.policy_dialog.process_result(
+                            bool(msg.get("ok", False)),
+                            str(msg.get("message") or ""),
+                            errors=msg.get("errors") or [],
+                            policy_version=str(msg.get("policy_version") or ""),
+                            blacklist_version=str(msg.get("process_blacklist_version") or ""),
+                            definitions_version=str(msg.get("process_definitions_version") or ""),
+                        )
         except queue.Empty:
             pass
 

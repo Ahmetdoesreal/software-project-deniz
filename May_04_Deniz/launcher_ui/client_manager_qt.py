@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover - import guard
     print(_missing_pyside6_message(), file=sys.stderr)
     raise
 
+from client.preflight import load_auth_config, run_preflight
 from common.manager_support import ManagedProcessSession
 from common.manager_support_qt import ConsoleWindow, install_close_guard, monospace_font
 from ui.widgets import apply_theme, make_button, make_divider
@@ -67,6 +68,7 @@ class ClientManager(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.project_dir = PROJECT_DIR
+        self._auth_config = load_auth_config(PROJECT_DIR)
         self.process_session = ManagedProcessSession(
             session_name="client_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "client" / "sessions",
@@ -246,6 +248,10 @@ class ClientManager(QMainWindow):
             "--password",
             self.password_entry.text().strip(),
         ]
+        ad_domain = self._auth_config.get("ad_domain", "")
+        auth_secret = self._auth_config.get("auth_secret", "")
+        if ad_domain and auth_secret:
+            command.extend(["--ad-domain", ad_domain, "--auth-secret", auth_secret])
         server_id = self.id_entry.text().strip()
         if server_id:
             command.extend(["--id", server_id])
@@ -317,6 +323,15 @@ class ClientManager(QMainWindow):
         thread.start()
 
     def _run_login_check(self) -> None:
+        login_id = self.login_entry.text().strip()
+        password = self.password_entry.text().strip()
+        ad_domain = self._auth_config.get("ad_domain", "")
+        auth_secret = self._auth_config.get("auth_secret", "")
+        preflight_ok, preflight_result = run_preflight(login_id, password, ad_domain, auth_secret)
+        if not preflight_ok:
+            self._signals.failed.emit(preflight_result)
+            return
+
         env = os.environ.copy()
         env["PYTHONPATH"] = str(self.project_dir) + os.pathsep + env.get("PYTHONPATH", "")
         env["PYTHONUNBUFFERED"] = "1"

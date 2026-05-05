@@ -508,6 +508,10 @@ class PolicySettingsDialog(QDialog):
         self._add_check(switching_options, "rules.process_path_clarification.auto_violation_pause", "Path clarification auto pause")
         self._add_check(switching_options, "rules.process_path_clarification.allow_remote_kill", "Path clarification remote kill")
         layout.addLayout(columns)
+        idle_group = self._add_group(layout, "Idle Monitor")
+        self._add_check(idle_group, "rules.idle_policy.enabled", "Enabled")
+        self._add_entry(idle_group, "rules.idle_policy.warn_threshold_seconds", "Warn Threshold (s):")
+        self._add_entry(idle_group, "rules.idle_policy.critical_threshold_seconds", "Critical Threshold (s):")
         self.tabs.addTab(tab, "Window Rules")
 
     def _build_definitions_tab(self):
@@ -661,6 +665,11 @@ class PolicySettingsDialog(QDialog):
             self.set_val("rules.process_path_clarification.auto_violation_pause", pc.get("auto_violation_pause", False))
             self.set_val("rules.process_path_clarification.allow_remote_kill", pc.get("allow_remote_kill", True))
 
+            ip = rules.get("idle_policy", {}) or {}
+            self.set_val("rules.idle_policy.enabled", ip.get("enabled", False))
+            self.set_val("rules.idle_policy.warn_threshold_seconds", ip.get("warn_threshold_seconds", 80))
+            self.set_val("rules.idle_policy.critical_threshold_seconds", ip.get("critical_threshold_seconds", 150))
+
             self.set_val("operator_defaults.confirm_kill_pid", op_def.get("confirm_kill_pid", True))
             self.set_val("operator_defaults.confirm_kick", op_def.get("confirm_kick", True))
             self.set_val("operator_defaults.confirm_ban", op_def.get("confirm_ban", True))
@@ -676,7 +685,7 @@ class PolicySettingsDialog(QDialog):
         except ValueError as e:
             QMessageBox.warning(self, "Settings Error", str(e))
             return
-            
+        self._dirty = False
         self.lbl_status.setText("Saving settings...")
         self.settings_saved.emit(payload)
 
@@ -754,18 +763,33 @@ class PolicySettingsDialog(QDialog):
                         "severity": self.get_str("rules.process_path_clarification.severity"),
                         "auto_violation_pause": self.get_bool("rules.process_path_clarification.auto_violation_pause"),
                         "allow_remote_kill": self.get_bool("rules.process_path_clarification.allow_remote_kill"),
-                    }
+                    },
+                    "idle_policy": {
+                        "enabled": self.get_bool("rules.idle_policy.enabled"),
+                        "warn_threshold_seconds": self.get_int("rules.idle_policy.warn_threshold_seconds", "Idle warn threshold"),
+                        "critical_threshold_seconds": self.get_int("rules.idle_policy.critical_threshold_seconds", "Idle critical threshold"),
+                    },
                 }
             }
         }
         return payload
 
-    def process_result(self, ok: bool, message: str):
+    def process_result(self, ok: bool, message: str, errors: list | None = None,
+                       policy_version: str = "", blacklist_version: str = "",
+                       definitions_version: str = ""):
         if ok:
+            if policy_version:
+                self.snapshot["policy_version"] = policy_version
+            if blacklist_version:
+                self.snapshot["process_blacklist_version"] = blacklist_version
+            if definitions_version:
+                self.snapshot["process_definitions_version"] = definitions_version
             self._dirty = False
             self._refresh_status(message)
         else:
-            QMessageBox.warning(self, "Settings Failed", message)
+            error_list = errors or []
+            error_text = "\n".join(str(e) for e in error_list) if error_list else message
+            QMessageBox.warning(self, "Settings Failed", error_text)
             self._refresh_status(f"Failed: {message}")
 
     def closeEvent(self, event):

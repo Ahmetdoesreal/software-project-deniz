@@ -211,6 +211,11 @@ class PolicySettingsMixin:
         self._settings_check(switching_options, "rules.process_path_clarification.auto_violation_pause", "Path clarification auto pause", 3, 0, columnspan=2)
         self._settings_check(switching_options, "rules.process_path_clarification.allow_remote_kill", "Path clarification remote kill", 4, 0, columnspan=2)
 
+        idle = self._settings_group(frame, "Idle Monitor", 1, column=0, columnspan=4)
+        self._settings_check(idle, "rules.idle_policy.enabled", "Enabled", 0, 0)
+        self._settings_entry(idle, "Warn Threshold (s)", "rules.idle_policy.warn_threshold_seconds", 1, 0, width=8)
+        self._settings_entry(idle, "Critical Threshold (s)", "rules.idle_policy.critical_threshold_seconds", 1, 2, width=8)
+
     def _build_process_definition_settings_section(self):
         frame = self._settings_section("Process Definitions")
         self._settings_combo(frame, "Severity", "rules.process_definitions.severity", 0, 0, SEVERITY_VALUES)
@@ -400,6 +405,7 @@ class PolicySettingsMixin:
             if isinstance(rules.get("process_path_clarification"), dict)
             else {}
         )
+        idle_policy = rules.get("idle_policy", {}) if isinstance(rules.get("idle_policy"), dict) else {}
 
         self._settings_loading = True
         try:
@@ -486,6 +492,10 @@ class PolicySettingsMixin:
                 "rules.process_path_clarification.allow_remote_kill",
                 path_clarification.get("allow_remote_kill", True),
             )
+
+            self._set_settings_var("rules.idle_policy.enabled", idle_policy.get("enabled", False))
+            self._set_settings_var("rules.idle_policy.warn_threshold_seconds", idle_policy.get("warn_threshold_seconds", 80))
+            self._set_settings_var("rules.idle_policy.critical_threshold_seconds", idle_policy.get("critical_threshold_seconds", 150))
 
             for key, default in (
                 ("confirm_kill_pid", True),
@@ -633,6 +643,11 @@ class PolicySettingsMixin:
                     "severity": str(self._settings_var_value("rules.process_path_clarification.severity") or "warning").strip(),
                     "auto_violation_pause": self._settings_bool("rules.process_path_clarification.auto_violation_pause"),
                     "allow_remote_kill": self._settings_bool("rules.process_path_clarification.allow_remote_kill"),
+                },
+                "idle_policy": {
+                    "enabled": self._settings_bool("rules.idle_policy.enabled"),
+                    "warn_threshold_seconds": self._positive_int_setting("rules.idle_policy.warn_threshold_seconds", "Idle warn threshold"),
+                    "critical_threshold_seconds": self._positive_int_setting("rules.idle_policy.critical_threshold_seconds", "Idle critical threshold"),
                 },
             },
             "operator_defaults": {

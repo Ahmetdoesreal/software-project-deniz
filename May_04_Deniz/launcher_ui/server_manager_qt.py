@@ -53,6 +53,7 @@ except ImportError:  # pragma: no cover - import guard
 from common.discovery import ServerAnnouncer, _candidate_ipv4_hosts
 from common.manager_support import ManagedProcessSession
 from common.manager_support_qt import ConsoleWindow, install_close_guard, monospace_font
+from client.preflight import load_auth_config
 from common.server_ports import detect_port_conflict
 from ui.widgets import apply_theme, make_button
 from ui.theme import M
@@ -77,6 +78,7 @@ class ServerManager(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.project_dir = PROJECT_DIR
+        self._auth_config = load_auth_config(PROJECT_DIR)
         self.process_session = ManagedProcessSession(
             session_name="server_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "server" / "sessions",
@@ -185,6 +187,15 @@ class ServerManager(QMainWindow):
         self.reset_check.setChecked(True)
         outer.addWidget(self.reset_check)
         self._setup_widgets.append(self.reset_check)
+
+        secret_widget = QWidget()
+        secret_layout = QFormLayout(secret_widget)
+        secret_layout.setContentsMargins(0, 0, 0, 0)
+        self.secret_entry = QLineEdit(self._auth_config.get("auth_secret", ""))
+        self.secret_entry.setEchoMode(QLineEdit.Password)
+        secret_layout.addRow("Auth Secret:", self.secret_entry)
+        outer.addWidget(secret_widget)
+        self._setup_widgets.append(secret_widget)
 
         controls_box = QGroupBox("Controls")
         controls_layout = QHBoxLayout(controls_box)
@@ -310,6 +321,9 @@ class ServerManager(QMainWindow):
             command.extend(["--exam-files", exam_file])
         if self.reset_check.isChecked():
             command.append("--reset")
+        secret = self.secret_entry.text().strip()
+        if secret:
+            command.extend(["--auth-secret", secret])
         return command
 
     def _session_summary_text(self) -> str:
