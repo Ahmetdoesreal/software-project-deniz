@@ -507,6 +507,14 @@ class PolicySettingsDialog(QDialog):
         self._add_check(switching_options, "rules.process_path_clarification.enabled", "Path clarification enabled")
         self._add_check(switching_options, "rules.process_path_clarification.auto_violation_pause", "Path clarification auto pause")
         self._add_check(switching_options, "rules.process_path_clarification.allow_remote_kill", "Path clarification remote kill")
+
+        idle = self._add_group(columns, "Idle Policy")
+        self._add_combo(idle, "rules.idle_policy.severity", "Severity:", list(SEVERITY_VALUES))
+        self._add_entry(idle, "rules.idle_policy.warn_threshold_seconds", "Warn After (sec):")
+        self._add_entry(idle, "rules.idle_policy.critical_threshold_seconds", "Critical After (sec):")
+        idle_options = self._add_group(idle, "Options")
+        self._add_check(idle_options, "rules.idle_policy.enabled", "Enabled")
+        self._add_check(idle_options, "rules.idle_policy.auto_violation_pause", "Auto pause on critical idle")
         layout.addLayout(columns)
         self.tabs.addTab(tab, "Window Rules")
 
@@ -638,6 +646,13 @@ class PolicySettingsDialog(QDialog):
             self.set_val("rules.rapid_application_switching.window_observations", rs.get("window_observations", 10))
             self.set_val("rules.rapid_application_switching.auto_violation_pause", rs.get("auto_violation_pause", False))
 
+            idle = rules.get("idle_policy", {}) or {}
+            self.set_val("rules.idle_policy.enabled", idle.get("enabled", False))
+            self.set_val("rules.idle_policy.severity", idle.get("severity", "warning"))
+            self.set_val("rules.idle_policy.warn_threshold_seconds", idle.get("warn_threshold_seconds", 80))
+            self.set_val("rules.idle_policy.critical_threshold_seconds", idle.get("critical_threshold_seconds", 150))
+            self.set_val("rules.idle_policy.auto_violation_pause", idle.get("auto_violation_pause", False))
+
             up = rules.get("unexpected_process", {}) or {}
             self.set_val("rules.unexpected_process.enabled", up.get("enabled", False))
             self.set_val("rules.unexpected_process.severity", up.get("severity", "warning"))
@@ -682,6 +697,10 @@ class PolicySettingsDialog(QDialog):
 
     def _collect_payload(self) -> dict:
         exam_files = self.get_str("runtime.exam_files").strip()
+        idle_warn_threshold = self.get_int("rules.idle_policy.warn_threshold_seconds", "Idle warning threshold")
+        idle_critical_threshold = self.get_int("rules.idle_policy.critical_threshold_seconds", "Idle critical threshold")
+        if idle_critical_threshold < idle_warn_threshold:
+            raise ValueError("Idle critical threshold must be greater than or equal to the warning threshold.")
         
         payload = {
             "cmd": "save_settings",
@@ -730,6 +749,13 @@ class PolicySettingsDialog(QDialog):
                         "window_seconds": self.get_int("rules.rapid_application_switching.window_seconds", "Rapid-switch window seconds"),
                         "window_observations": self.get_int("rules.rapid_application_switching.window_observations", "Rapid-switch window observations"),
                         "auto_violation_pause": self.get_bool("rules.rapid_application_switching.auto_violation_pause"),
+                    },
+                    "idle_policy": {
+                        "enabled": self.get_bool("rules.idle_policy.enabled"),
+                        "severity": self.get_str("rules.idle_policy.severity"),
+                        "warn_threshold_seconds": idle_warn_threshold,
+                        "critical_threshold_seconds": idle_critical_threshold,
+                        "auto_violation_pause": self.get_bool("rules.idle_policy.auto_violation_pause"),
                     },
                     "unexpected_process": {
                         "enabled": self.get_bool("rules.unexpected_process.enabled"),

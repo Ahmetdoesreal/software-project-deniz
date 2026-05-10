@@ -308,6 +308,8 @@ class ServerState:
             return dict(self.exam_policy_config.get("rules", {}).get("focused_window", {}))
         if rule_id == "rapid_application_switching":
             return dict(self.exam_policy_config.get("rules", {}).get("rapid_application_switching", {}))
+        if rule_id == "idle_policy":
+            return dict(self.exam_policy_config.get("rules", {}).get("idle_policy", {}))
         if rule_id == "unexpected_process":
             return dict(self.exam_policy_config.get("rules", {}).get("unexpected_process", {}))
         return {}
@@ -317,6 +319,7 @@ class ServerState:
         process_blacklist = rules_config.get("process_blacklist", {})
         focused_window = rules_config.get("focused_window", {})
         rapid_switching = rules_config.get("rapid_application_switching", {})
+        idle_policy = rules_config.get("idle_policy", {})
         unexpected_process = rules_config.get("unexpected_process", {})
         process_definitions = self.rule_config("process_definitions")
         process_path_clarification = rules_config.get("process_path_clarification", {})
@@ -362,6 +365,16 @@ class ServerState:
                     "window_seconds": int(float(rapid_switching.get("window_seconds", 60) or 60)),
                     "window_observations": int(rapid_switching.get("window_observations", 10)),
                     "auto_violation_pause": bool(rapid_switching.get("auto_violation_pause", False)),
+                },
+                {
+                    "rule_id": "idle_policy",
+                    "source": "idle_monitor",
+                    "type": "idle_policy",
+                    "enabled": bool(idle_policy.get("enabled", False)),
+                    "severity": str(idle_policy.get("severity", "warning")),
+                    "warn_threshold_seconds": int(float(idle_policy.get("warn_threshold_seconds", 80) or 80)),
+                    "critical_threshold_seconds": int(float(idle_policy.get("critical_threshold_seconds", 150) or 150)),
+                    "auto_violation_pause": bool(idle_policy.get("auto_violation_pause", False)),
                 },
                 {
                     "rule_id": "unexpected_process",
@@ -612,6 +625,13 @@ class ServerState:
                     "window_observations": 10,
                     "auto_violation_pause": False,
                 },
+                "idle_policy": {
+                    "enabled": False,
+                    "severity": "warning",
+                    "warn_threshold_seconds": 80,
+                    "critical_threshold_seconds": 150,
+                    "auto_violation_pause": False,
+                },
                 "unexpected_process": {
                     "enabled": False,
                     "severity": "warning",
@@ -701,12 +721,14 @@ class ServerState:
 
             focused_window = rules.get("focused_window", {})
             rapid_switching = rules.get("rapid_application_switching", {})
+            idle_policy = rules.get("idle_policy", {})
             unexpected_process = rules.get("unexpected_process", {})
             process_definitions = rules.get("process_definitions", {})
             process_path_clarification = rules.get("process_path_clarification", {})
         else:
             focused_window = {}
             rapid_switching = {}
+            idle_policy = {}
             unexpected_process = {}
             process_definitions = {}
             process_path_clarification = {}
@@ -767,6 +789,26 @@ class ServerState:
             )
             normalized["rules"]["rapid_application_switching"]["auto_violation_pause"] = bool(
                 rapid_switching.get("auto_violation_pause", False)
+            )
+        if isinstance(idle_policy, dict):
+            normalized["rules"]["idle_policy"]["enabled"] = bool(
+                idle_policy.get("enabled", False)
+            )
+            normalized["rules"]["idle_policy"]["severity"] = str(
+                idle_policy.get("severity", normalized["rules"]["idle_policy"]["severity"])
+            )
+            warn_threshold = max(
+                1,
+                int(float(idle_policy.get("warn_threshold_seconds", 80) or 80)),
+            )
+            critical_threshold = max(
+                warn_threshold,
+                int(float(idle_policy.get("critical_threshold_seconds", 150) or 150)),
+            )
+            normalized["rules"]["idle_policy"]["warn_threshold_seconds"] = warn_threshold
+            normalized["rules"]["idle_policy"]["critical_threshold_seconds"] = critical_threshold
+            normalized["rules"]["idle_policy"]["auto_violation_pause"] = bool(
+                idle_policy.get("auto_violation_pause", False)
             )
         if isinstance(unexpected_process, dict):
             normalized["rules"]["unexpected_process"]["enabled"] = bool(

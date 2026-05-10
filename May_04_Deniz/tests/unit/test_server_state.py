@@ -74,6 +74,38 @@ class ServerStatePolicyTests(unittest.TestCase):
             state.process_blacklist_version = original_blacklist_version
             state.exam_policy_config = original_policy_config
 
+    def test_idle_policy_normalizes_and_is_emitted_to_clients(self):
+        original_policy_config = state.exam_policy_config
+        try:
+            state.exam_policy_config = state._normalize_exam_policy_config(
+                {
+                    "rules": {
+                        "idle_policy": {
+                            "enabled": True,
+                            "severity": "warning",
+                            "warn_threshold_seconds": 45,
+                            "critical_threshold_seconds": 120,
+                            "auto_violation_pause": True,
+                        }
+                    }
+                }
+            )
+
+            config = state.rule_config("idle_policy")
+            self.assertTrue(config["enabled"])
+            self.assertEqual(config["warn_threshold_seconds"], 45)
+            self.assertEqual(config["critical_threshold_seconds"], 120)
+            self.assertTrue(config["auto_violation_pause"])
+
+            policy = state.current_exam_policy()
+            idle_rule = next(rule for rule in policy["rules"] if rule["rule_id"] == "idle_policy")
+            self.assertEqual(idle_rule["source"], "idle_monitor")
+            self.assertEqual(idle_rule["type"], "idle_policy")
+            self.assertEqual(idle_rule["warn_threshold_seconds"], 45)
+            self.assertEqual(idle_rule["critical_threshold_seconds"], 120)
+        finally:
+            state.exam_policy_config = original_policy_config
+
     def test_import_export_round_trip_preserves_policy_blacklist_and_operator_defaults(self):
         original_blacklist = state.process_blacklist
         original_blacklist_version = state.process_blacklist_version

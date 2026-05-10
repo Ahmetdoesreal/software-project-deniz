@@ -195,26 +195,39 @@ class TeeStream:
         self.original_stream = original_stream
         self.log_writer = log_writer
         self.stream_name = stream_name
-        self.encoding = getattr(original_stream, "encoding", "utf-8")
+        self.encoding = getattr(original_stream, "encoding", "utf-8") or "utf-8"
         self._line_buffer = ""
 
     def write(self, data):
         if not data:
             return 0
-        self.original_stream.write(data)
+        try:
+            if self.original_stream is not None:
+                self.original_stream.write(data)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
         self._line_buffer += data
         self._flush_complete_lines()
         return len(data)
 
     def flush(self):
         self._flush_remainder()
-        self.original_stream.flush()
+        try:
+            if self.original_stream is not None:
+                self.original_stream.flush()
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
         self.log_writer.flush()
 
     def isatty(self):
-        return getattr(self.original_stream, "isatty", lambda: False)()
+        try:
+            return bool(getattr(self.original_stream, "isatty", lambda: False)())
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
 
     def fileno(self):
+        if self.original_stream is None:
+            raise OSError("stream has no file descriptor")
         return self.original_stream.fileno()
 
     def _flush_complete_lines(self):

@@ -16,6 +16,7 @@ if str(PROJECT_DIR) not in sys.path:
 from common.manager_support import install_close_guard
 from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from common.runtime_logging import setup_runtime_logging
+from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_standalone, write_json_stdout, write_text_stderr
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
 from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
@@ -43,7 +44,7 @@ _IPC_CLIENT = None
 def _emit_command(payload: dict):
     if _IPC_CLIENT and _IPC_CLIENT.send("dashboard.command", payload):
         return
-    print(json.dumps(payload), flush=True)
+    write_json_stdout(payload)
 
 
 def _format_remaining(seconds: int) -> str:
@@ -1434,7 +1435,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
 
 def ipc_reader(app: ServerGUI):
-    for line in iter(sys.stdin.readline, ""):
+    for line in iter_stdin_lines():
         line = line.strip()
         if not line:
             continue
@@ -1442,7 +1443,7 @@ def ipc_reader(app: ServerGUI):
         try:
             msg = json.loads(line)
         except json.JSONDecodeError as e:
-            print(f"[DEBUG] GUI IPC Error: {e}", file=sys.stderr)
+            write_text_stderr(f"[DEBUG] GUI IPC Error: {e}")
             continue
 
         message_type = msg.get("type")
@@ -1483,16 +1484,20 @@ def run() -> int:
         "server_gui",
         PROJECT_DIR / "data" / "logs" / "server",
     )
-    app = ServerGUI(standalone_mode=sys.stdin.isatty())
-    if should_use_ws_ipc():
+    use_ws_ipc = should_use_ws_ipc()
+    app = ServerGUI(standalone_mode=stdin_is_standalone() and not use_ws_ipc)
+    if use_ws_ipc:
         _IPC_CLIENT = ThreadedIpcClient(
             role="dashboard_gui",
             on_message=lambda message: _ipc_message_handler(app, message),
         )
         if not _IPC_CLIENT.start():
             _IPC_CLIENT = None
-    reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)
-    reader_thread.start()
+            if not stdin_available():
+                app.standalone_mode = True
+    if stdin_available():
+        reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)
+        reader_thread.start()
     app.mainloop()
     if _IPC_CLIENT:
         _IPC_CLIENT.stop()

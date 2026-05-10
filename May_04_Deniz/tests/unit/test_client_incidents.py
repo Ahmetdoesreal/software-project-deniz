@@ -82,6 +82,38 @@ class ClientIncidentEngineTests(unittest.TestCase):
 
         self.assertEqual(incidents, [])
 
+    def test_idle_policy_opens_and_resolves_incidents(self):
+        engine = ClientIncidentEngine()
+        ok, reason = engine.apply_policy(
+            {
+                "policy_version": "policy-idle",
+                "rules": [
+                    {
+                        "rule_id": "idle_policy",
+                        "source": "idle_monitor",
+                        "type": "idle_policy",
+                        "enabled": True,
+                        "warn_threshold_seconds": 5,
+                        "critical_threshold_seconds": 10,
+                        "auto_violation_pause": True,
+                    }
+                ],
+            }
+        )
+        self.assertTrue(ok, reason)
+
+        opened = engine.observe_idle({"idle_seconds": 6})
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["rule_id"], "idle_policy")
+        self.assertEqual(opened[0]["event_type"], "idle_warn")
+
+        self.assertEqual(engine.observe_idle({"idle_seconds": 6}), [])
+
+        resolved = engine.observe_idle({"idle_seconds": 0})
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0]["status"], "resolved")
+        self.assertEqual(resolved[0]["event_type"], "idle_resolved")
+
     def test_focused_window_incident_uses_debounce_and_resolve_thresholds(self):
         engine = ClientIncidentEngine()
         ok, reason = engine.apply_policy(PROCESS_BLACKLIST_POLICY)

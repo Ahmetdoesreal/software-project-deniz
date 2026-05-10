@@ -211,6 +211,14 @@ class PolicySettingsMixin:
         self._settings_check(switching_options, "rules.process_path_clarification.auto_violation_pause", "Path clarification auto pause", 3, 0, columnspan=2)
         self._settings_check(switching_options, "rules.process_path_clarification.allow_remote_kill", "Path clarification remote kill", 4, 0, columnspan=2)
 
+        idle = self._settings_group(frame, "Idle Policy", 1, column=0, columnspan=4)
+        self._settings_combo(idle, "Severity", "rules.idle_policy.severity", 0, 0, SEVERITY_VALUES)
+        self._settings_entry(idle, "Warn After (sec)", "rules.idle_policy.warn_threshold_seconds", 0, 2, width=12)
+        self._settings_entry(idle, "Critical After (sec)", "rules.idle_policy.critical_threshold_seconds", 1, 0, width=12)
+        idle_options = self._settings_group(idle, "Options", 2)
+        self._settings_check(idle_options, "rules.idle_policy.enabled", "Enabled", 0, 0)
+        self._settings_check(idle_options, "rules.idle_policy.auto_violation_pause", "Auto pause on critical idle", 0, 1, columnspan=2)
+
     def _build_process_definition_settings_section(self):
         frame = self._settings_section("Process Definitions")
         self._settings_combo(frame, "Severity", "rules.process_definitions.severity", 0, 0, SEVERITY_VALUES)
@@ -393,6 +401,7 @@ class PolicySettingsMixin:
             if isinstance(rules.get("rapid_application_switching"), dict)
             else {}
         )
+        idle_policy = rules.get("idle_policy", {}) if isinstance(rules.get("idle_policy"), dict) else {}
         unexpected_process = rules.get("unexpected_process", {}) if isinstance(rules.get("unexpected_process"), dict) else {}
         process_definitions = rules.get("process_definitions", {}) if isinstance(rules.get("process_definitions"), dict) else {}
         path_clarification = (
@@ -449,6 +458,16 @@ class PolicySettingsMixin:
             self._set_settings_var(
                 "rules.rapid_application_switching.window_observations",
                 rapid_switching.get("window_observations", 10),
+            )
+
+            self._set_rule_common("rules.idle_policy", idle_policy, default_enabled=False, default_severity="warning")
+            self._set_settings_var(
+                "rules.idle_policy.warn_threshold_seconds",
+                idle_policy.get("warn_threshold_seconds", 80),
+            )
+            self._set_settings_var(
+                "rules.idle_policy.critical_threshold_seconds",
+                idle_policy.get("critical_threshold_seconds", 150),
             )
 
             self._set_rule_common("rules.unexpected_process", unexpected_process, default_enabled=False, default_severity="warning")
@@ -561,6 +580,16 @@ class PolicySettingsMixin:
         title_match_mode = str(self._settings_var_value("rules.focused_window.window_title_match_mode") or "contains").strip().lower()
         if title_match_mode not in WINDOW_TITLE_MATCH_MODES:
             raise ValueError("Titlebar match must be contains or exact.")
+        idle_warn_threshold = self._positive_int_setting(
+            "rules.idle_policy.warn_threshold_seconds",
+            "Idle warning threshold",
+        )
+        idle_critical_threshold = self._positive_int_setting(
+            "rules.idle_policy.critical_threshold_seconds",
+            "Idle critical threshold",
+        )
+        if idle_critical_threshold < idle_warn_threshold:
+            raise ValueError("Idle critical threshold must be greater than or equal to the warning threshold.")
 
         exam_policy = {
             "session": {
@@ -609,6 +638,13 @@ class PolicySettingsMixin:
                         "Rapid-switch window observations",
                     ),
                     "auto_violation_pause": self._settings_bool("rules.rapid_application_switching.auto_violation_pause"),
+                },
+                "idle_policy": {
+                    "enabled": self._settings_bool("rules.idle_policy.enabled"),
+                    "severity": str(self._settings_var_value("rules.idle_policy.severity") or "warning").strip(),
+                    "warn_threshold_seconds": idle_warn_threshold,
+                    "critical_threshold_seconds": idle_critical_threshold,
+                    "auto_violation_pause": self._settings_bool("rules.idle_policy.auto_violation_pause"),
                 },
                 "unexpected_process": {
                     "enabled": self._settings_bool("rules.unexpected_process.enabled"),

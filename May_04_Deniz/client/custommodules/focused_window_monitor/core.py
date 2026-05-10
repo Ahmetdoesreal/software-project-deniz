@@ -54,6 +54,14 @@ class FocusedWindowMonitor:
         print(f"[FOCUS] Monitor started. Logging to {self.log_file}")
 
     def stop(self):
+        try:
+            final_snapshot = self._current_snapshot()
+            timestamp = protocol.now_iso()
+            self._write_full_snapshot(final_snapshot, timestamp)
+            self._previous_snapshot = final_snapshot
+        except Exception as exc:
+            print(f"[FOCUS] Failed to write final focused window snapshot: {exc}")
+
         self.active = False
         if not self._task:
             return

@@ -27,6 +27,9 @@ def _missing_pyside6_message() -> str:
     )
 
 
+from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_standalone, write_json_stdout, write_text_stderr
+
+
 try:
     from PySide6.QtCore import Qt, QObject, QTimer, Signal
     from PySide6.QtGui import QFont
@@ -50,7 +53,7 @@ try:
         QWidget,
     )
 except ImportError:  # pragma: no cover - import guard
-    print(_missing_pyside6_message(), file=sys.stderr)
+    write_text_stderr(_missing_pyside6_message())
     raise
 
 from client.submission import build_file_preview, format_bytes
@@ -65,7 +68,7 @@ _IPC_CLIENT = None
 def _emit_command(payload: dict) -> None:
     if _IPC_CLIENT and _IPC_CLIENT.send("timer.command", payload):
         return
-    print(json.dumps(payload), flush=True)
+    write_json_stdout(payload)
 
 
 def _parse_ipc_line(line: str) -> tuple[str, str]:
@@ -618,7 +621,7 @@ def _handle_ipc_message(signals: _IPCSignals, message: dict) -> None:
 
 def _ipc_reader(signals: _IPCSignals) -> None:
     try:
-        for line in iter(sys.stdin.readline, ""):
+        for line in iter_stdin_lines():
             _handle_ipc_line(signals, line)
     except (OSError, ValueError):
         pass
@@ -631,10 +634,12 @@ def run() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_runtime_logging("client_gui", log_dir)
     _crash_log = log_dir / f"client_gui_crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    faulthandler.enable(file=_crash_log.open("w", encoding="utf-8"), all_threads=True)
+    crash_log_handle = _crash_log.open("w", encoding="utf-8")
+    faulthandler.enable(file=crash_log_handle, all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
     apply_theme(app)
-    standalone = sys.stdin.isatty()
+    use_ws_ipc = should_use_ws_ipc()
+    standalone = stdin_is_standalone() and not use_ws_ipc
     gui = ExamTimerGUI(standalone_mode=standalone)
     gui.show()
 
@@ -651,20 +656,31 @@ def run() -> int:
     signals.upload_step.connect(gui.handle_upload_step)
     if not standalone:
         signals.parent_closed.connect(gui.force_close)
-    if should_use_ws_ipc():
+    if use_ws_ipc:
         _IPC_CLIENT = ThreadedIpcClient(
             role="timer_gui",
             on_message=lambda message: _handle_ipc_message(signals, message),
         )
         if not _IPC_CLIENT.start():
             _IPC_CLIENT = None
+            if not stdin_available():
+                standalone = True
+                gui.standalone_mode = True
 
-    reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
-    reader_thread.start()
+    if stdin_available():
+        reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
+        reader_thread.start()
 
-    exit_code = app.exec()
-    if _IPC_CLIENT:
-        _IPC_CLIENT.stop()
+    try:
+        exit_code = app.exec()
+    finally:
+        if _IPC_CLIENT:
+            _IPC_CLIENT.stop()
+        try:
+            if faulthandler.is_enabled():
+                faulthandler.disable()
+        finally:
+            crash_log_handle.close()
     return exit_code
 
 
