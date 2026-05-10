@@ -54,8 +54,48 @@ class FocusedWindowMonitorTests(unittest.TestCase):
             self.assertEqual(payload["type"], "focused_window_snapshot")
             self.assertEqual(payload["window"]["window_title"], "Exam App")
 
+    def test_export_current_snapshot_sanitizes_invisible_browser_title_chars(self):
+        with _local_test_output_dir() as output_dir:
+            monitor = FocusedWindowMonitor(str(output_dir))
+            snapshot = {
+                **WINDOW_A,
+                "window_title": "Yandex\u200e\u00a0Microsoft\u2060 Edge",
+            }
+            with patch.object(monitor, "_current_snapshot", return_value=snapshot):
+                report_path = monitor.export_current_snapshot()
+
+            payload = json.loads(Path(report_path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["window"]["window_title"], "Yandex Microsoft Edge")
+            self.assertTrue(payload["window"]["window_title_sanitized"])
+
 
 class FocusedWindowMonitorAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_callback_error_does_not_stop_monitor_loop(self):
+        with _local_test_output_dir() as output_dir:
+            calls = []
+
+            def callback(snapshot):
+                calls.append(snapshot)
+                raise RuntimeError("callback failed on \u200e blank")
+
+            monitor = FocusedWindowMonitor(
+                str(output_dir),
+                interval_seconds=0.01,
+                snapshot_callback=callback,
+            )
+            with patch.object(monitor, "_current_snapshot", return_value=WINDOW_A):
+                monitor.start()
+                await asyncio.sleep(0.03)
+                self.assertTrue(monitor.active)
+                self.assertGreaterEqual(len(calls), 1)
+                monitor.stop()
+                await asyncio.sleep(0)
+
+            log_lines = Path(monitor.log_file).read_text(encoding="utf-8").splitlines()
+            self.assertTrue(
+                any(json.loads(line).get("type") == "focused_window_callback_error" for line in log_lines)
+            )
+
     async def test_change_only_mode_logs_initial_snapshot_and_changes(self):
         with _local_test_output_dir() as output_dir:
             monitor = FocusedWindowMonitor(

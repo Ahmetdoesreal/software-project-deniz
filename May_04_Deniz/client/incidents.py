@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from common import protocol
+from common.text_safety import normalize_display_text, normalize_for_match, sanitize_window_title
 from common.process_definitions import (
     PROCESS_DEFINITIONS_RULE_ID,
     PROCESS_PATH_CLARIFICATION_RULE_ID,
@@ -33,7 +34,7 @@ def _string_list(values) -> list[str]:
 
 
 def _normalize_name(value: str | None) -> str:
-    return str(value or "").strip().lower()
+    return normalize_for_match(value)
 
 
 def _normalize_process_name(value: str | None) -> str:
@@ -67,8 +68,8 @@ def _is_path_under_directory(process_path: str | None, directory_path: str | Non
 
 
 def _title_matches_any(window_title: str, entries: list[str], match_mode: str) -> bool:
-    title = _normalize_name(window_title)
-    clean_entries = [_normalize_name(entry) for entry in entries if _normalize_name(entry)]
+    title = normalize_for_match(window_title)
+    clean_entries = [normalize_for_match(entry) for entry in entries if normalize_for_match(entry)]
     if match_mode == "exact":
         return title in clean_entries
     return any(entry in title for entry in clean_entries)
@@ -711,8 +712,8 @@ class ClientIncidentEngine:
             window_seconds = RAPID_SWITCH_DEFAULT_WINDOW_SECONDS
 
         process_name = str(snapshot.get("process_name") or "")
-        window_title = str(snapshot.get("window_title") or "")
-        subject_key = (_normalize_name(process_name), _normalize_name(window_title))
+        window_title = sanitize_window_title(snapshot.get("window_title"))
+        subject_key = (_normalize_name(process_name), normalize_for_match(window_title))
         if not any(subject_key):
             return []
 
@@ -836,7 +837,8 @@ class ClientIncidentEngine:
             return incidents
 
         process_name = str(snapshot.get("process_name") or "unknown")
-        window_title = str(snapshot.get("window_title") or "unknown")
+        window_title = sanitize_window_title(snapshot.get("window_title")) or "unknown"
+        process_name = normalize_display_text(process_name) or "unknown"
         incident = self._new_incident(
             rule,
             status="opened",

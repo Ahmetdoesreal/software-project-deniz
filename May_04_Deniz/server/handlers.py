@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web, WSMsgType
 
 from common import protocol, events, security
+from common.text_safety import normalize_display_text, safe_console_text, sanitize_window_title
 from common.process_definitions import PROCESS_DEFINITIONS_RULE_ID, normalize_actions
 from .state import state
 from .submissions import build_artifact_path, build_submission_path, safe_relative_path
@@ -459,8 +460,8 @@ async def _handle_client_monitor_event(
     if source != "focused_window":
         return
 
-    process_name = str(window.get("process_name", "") or "")
-    window_title = str(window.get("window_title", "") or "")
+    process_name = normalize_display_text(window.get("process_name", "") or "")
+    window_title = sanitize_window_title(window.get("window_title", "") or "")
     focus_signature = f"{process_name}|{window_title}"
 
     client_data = state.clients.get(client_id, {})
@@ -469,7 +470,9 @@ async def _handle_client_monitor_event(
         if process_name or window_title:
             _relay_text_to_gui(
                 client_id,
-                f"[FOCUS] {event_type or 'status'} {severity}: {process_name or '-'} / {window_title or '-'}",
+                safe_console_text(
+                    f"[FOCUS] {event_type or 'status'} {severity}: {process_name or '-'} / {window_title or '-'}"
+                ),
             )
 
     user["last_focus_event_at"] = timestamp
@@ -539,9 +542,9 @@ async def _handle_incident_report_event(
             incident["process_auto_action_results"] = action_results
             state.save_incidents()
 
-    summary = str(incident.get("summary", "") or rule_id)
-    print(f"[INCIDENT] {login_id} ({client_id}) {status} {rule_id}: {summary}")
-    _relay_text_to_gui(client_id, f"[INCIDENT] {status} {rule_id}: {summary}")
+    summary = normalize_display_text(incident.get("summary", "") or rule_id)
+    print(safe_console_text(f"[INCIDENT] {login_id} ({client_id}) {status} {rule_id}: {summary}"))
+    _relay_text_to_gui(client_id, safe_console_text(f"[INCIDENT] {status} {rule_id}: {summary}"))
     if should_violation_pause and not getattr(ws, "closed", False):
         remaining = _session_remaining_seconds(request, user)
         await ws.send_str(_protect_payload(client_id, _session_state_payload(request, user)))

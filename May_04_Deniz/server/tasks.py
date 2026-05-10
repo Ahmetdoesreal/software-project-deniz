@@ -99,7 +99,7 @@ def _write_to_gui(payload: dict):
         return
 
     try:
-        gui_process.stdin.write(json.dumps(payload) + "\n")
+        gui_process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
         gui_process.stdin.flush()
     except Exception as e:
         print(f"[GUI IPC] Warning: Failed to write to GUI: {e}")

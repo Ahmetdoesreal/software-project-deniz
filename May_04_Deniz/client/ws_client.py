@@ -13,6 +13,7 @@ import psutil
 
 from common import events, protocol, security
 from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
+from common.text_safety import safe_console_text, sanitize_window_snapshot
 from .exam_state import ExamStateLogger
 from .incidents import ClientIncidentEngine
 from .submission import validate_submission_file
@@ -624,7 +625,19 @@ class WebSocketSession:
     def _schedule_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+
+        def _on_done(done_task: asyncio.Task):
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc:
+                print(f"[TASK] Background task failed: {safe_console_text(exc)}")
+
+        task.add_done_callback(_on_done)
         return task
 
     async def _send_payload(self, payload: str):
@@ -1203,7 +1216,13 @@ class WebSocketSession:
         self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_processes(processes)))
 
     def _queue_focused_window_snapshot(self, snapshot: dict):
-        self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_focused_window(snapshot)))
+        snapshot = sanitize_window_snapshot(snapshot)
+        try:
+            incidents = self.incident_engine.observe_focused_window(snapshot)
+        except Exception as exc:
+            print(f"[FOCUS] Failed to process focused window snapshot: {safe_console_text(exc)}")
+            incidents = []
+        self._schedule_background_task(self._process_local_incidents(incidents))
         now = self.loop.time()
         if now - self._last_focused_window_server_send < FOCUSED_WINDOW_SERVER_SEND_INTERVAL_SECONDS:
             return

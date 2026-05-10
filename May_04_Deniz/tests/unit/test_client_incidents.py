@@ -409,6 +409,42 @@ class ClientIncidentEngineTests(unittest.TestCase):
 
         self.assertEqual(incidents, [])
 
+    def test_focused_window_title_matching_ignores_invisible_browser_separators(self):
+        engine = ClientIncidentEngine()
+        ok, reason = engine.apply_policy(
+            {
+                "policy_version": "policy-title-safety",
+                "rules": [
+                    {
+                        "rule_id": "focused_window_policy",
+                        "source": "focused_window",
+                        "type": "focused_window",
+                        "enabled": True,
+                        "severity": "warning",
+                        "allowed_process_names": ["exam.exe"],
+                        "blocked_window_titles": ["Yandex Microsoft Edge"],
+                        "window_title_match_mode": "contains",
+                        "open_after_consecutive": 1,
+                        "resolve_after_consecutive": 1,
+                    }
+                ],
+            }
+        )
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {
+                "process_name": "exam.exe",
+                "window_title": "Yandex\u200e\u00a0Microsoft\u2060 Edge",
+                "process_id": 4321,
+            }
+        )
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["status"], "opened")
+        self.assertEqual(incidents[0]["window_title"], "Yandex Microsoft Edge")
+        self.assertIn("Yandex Microsoft Edge", incidents[0]["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

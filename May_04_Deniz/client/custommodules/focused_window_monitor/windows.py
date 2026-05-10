@@ -3,6 +3,8 @@ from ctypes import wintypes
 
 import psutil
 
+from common.text_safety import sanitize_window_snapshot, sanitize_window_title
+
 
 def get_focused_window_for_windows() -> dict:
     try:
@@ -17,7 +19,7 @@ def get_focused_window_for_windows() -> dict:
     process_id = _window_process_id(user32, hwnd)
     process_info = _process_info(process_id)
 
-    return {
+    return sanitize_window_snapshot({
         "platform": "windows",
         "available": True,
         "window_handle": hwnd,
@@ -27,7 +29,7 @@ def get_focused_window_for_windows() -> dict:
         "process_name": process_info.get("process_name"),
         "process_path": process_info.get("process_path"),
         "source": "user32",
-    }
+    })
 
 
 def _window_process_id(user32, hwnd: int) -> int | None:
@@ -46,7 +48,7 @@ def _window_text(user32, hwnd: int) -> str | None:
         user32.GetWindowTextW(wintypes.HWND(hwnd), buffer, len(buffer))
     except Exception:
         return None
-    return buffer.value or None
+    return sanitize_window_title(buffer.value) or None
 
 
 def _window_class_name(user32, hwnd: int) -> str | None:

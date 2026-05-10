@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable
 
 from common import protocol
+from common.text_safety import safe_console_text, sanitize_window_snapshot
 
 from .windows import get_focused_window_for_windows
 
@@ -42,25 +43,24 @@ class FocusedWindowMonitor:
 
         self.active = True
         self._ensure_log_file()
-        initial_snapshot = self._current_snapshot()
+        initial_snapshot = self._capture_snapshot()
         self._check_count = 0
         self._previous_snapshot = initial_snapshot
         timestamp = protocol.now_iso()
         self._write_log(self._snapshot_entry("focused_window_initial", initial_snapshot, timestamp, severity="info"))
         self._write_full_snapshot(initial_snapshot, timestamp)
-        if self.snapshot_callback:
-            self.snapshot_callback(self._snapshot_for_callback(initial_snapshot, timestamp))
+        self._emit_snapshot_callback(initial_snapshot, timestamp)
         self._task = asyncio.create_task(self._loop())
         print(f"[FOCUS] Monitor started. Logging to {self.log_file}")
 
     def stop(self):
         try:
-            final_snapshot = self._current_snapshot()
+            final_snapshot = self._capture_snapshot()
             timestamp = protocol.now_iso()
             self._write_full_snapshot(final_snapshot, timestamp)
             self._previous_snapshot = final_snapshot
         except Exception as exc:
-            print(f"[FOCUS] Failed to write final focused window snapshot: {exc}")
+            print(f"[FOCUS] Failed to write final focused window snapshot: {safe_console_text(exc)}")
 
         self.active = False
         if not self._task:
@@ -71,7 +71,7 @@ class FocusedWindowMonitor:
         print("[FOCUS] Monitor stopped.")
 
     def export_current_snapshot(self) -> str | None:
-        snapshot = self._current_snapshot()
+        snapshot = self._capture_snapshot()
         timestamp = protocol.now_iso()
         report_path = self._write_full_snapshot(snapshot, timestamp)
         if not report_path:
@@ -111,6 +111,18 @@ class FocusedWindowMonitor:
     def _current_snapshot(self) -> dict:
         return get_focused_window_for_windows()
 
+    def _capture_snapshot(self) -> dict:
+        try:
+            return sanitize_window_snapshot(self._current_snapshot())
+        except Exception as exc:
+            return {
+                "platform": "windows",
+                "available": False,
+                "reason": "focused_window_snapshot_failed",
+                "detail": safe_console_text(exc),
+                "source": "focused_window_monitor",
+            }
+
     def _snapshot_entry(self, entry_type: str, snapshot: dict, timestamp: str, *, severity: str = "info") -> dict:
         return {
             "timestamp": timestamp,
@@ -137,28 +149,44 @@ class FocusedWindowMonitor:
         payload["severity"] = "info"
         return payload
 
+    def _emit_snapshot_callback(self, snapshot: dict, timestamp: str):
+        if not self.snapshot_callback:
+            return
+        try:
+            self.snapshot_callback(self._snapshot_for_callback(snapshot, timestamp))
+        except Exception as exc:
+            self._write_log(
+                {
+                    "timestamp": timestamp,
+                    "type": "focused_window_callback_error",
+                    "event_type": "focused_window_callback_error",
+                    "severity": "warning",
+                    "error": safe_console_text(exc),
+                }
+            )
+
     def _ensure_log_file(self):
         try:
             with open(self.log_file, "a", encoding="utf-8"):
                 pass
         except Exception as exc:
-            print(f"[FOCUS] Failed to initialize focused window log: {exc}")
+            print(f"[FOCUS] Failed to initialize focused window log: {safe_console_text(exc)}")
 
     def _write_log(self, payload: dict):
         try:
             with open(self.log_file, "a", encoding="utf-8") as log_handle:
-                log_handle.write(json.dumps(payload) + "\n")
+                log_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
         except Exception as exc:
-            print(f"[FOCUS] Failed to write focused window log: {exc}")
+            print(f"[FOCUS] Failed to write focused window log: {safe_console_text(exc)}")
 
     def _write_full_snapshot(self, snapshot: dict, timestamp: str) -> str | None:
         payload = self._snapshot_entry("focused_window_snapshot", snapshot, timestamp, severity="info")
         try:
             with open(self.snapshot_file, "w", encoding="utf-8") as report_file:
-                json.dump(payload, report_file, indent=2)
+                json.dump(payload, report_file, indent=2, ensure_ascii=True)
             return self.snapshot_file
         except Exception as exc:
-            print(f"[FOCUS] Failed to write focused window snapshot: {exc}")
+            print(f"[FOCUS] Failed to write focused window snapshot: {safe_console_text(exc)}")
             return None
 
     async def _loop(self):
@@ -166,10 +194,9 @@ class FocusedWindowMonitor:
             while self.active:
                 await asyncio.sleep(self.interval_seconds)
                 self._check_count += 1
-                current_snapshot = self._current_snapshot()
+                current_snapshot = self._capture_snapshot()
                 timestamp = protocol.now_iso()
-                if self.snapshot_callback:
-                    self.snapshot_callback(self._snapshot_for_callback(current_snapshot, timestamp))
+                self._emit_snapshot_callback(current_snapshot, timestamp)
 
                 if self.emit_on_change_only:
                     if current_snapshot == self._previous_snapshot:
@@ -215,3 +242,15 @@ class FocusedWindowMonitor:
                 self._previous_snapshot = current_snapshot
         except asyncio.CancelledError:
             pass
+        except Exception as exc:
+            self._write_log(
+                {
+                    "timestamp": protocol.now_iso(),
+                    "type": "focused_window_monitor_error",
+                    "event_type": "focused_window_monitor_error",
+                    "severity": "warning",
+                    "error": safe_console_text(exc),
+                }
+            )
+            if self.active:
+                self._task = asyncio.create_task(self._loop())

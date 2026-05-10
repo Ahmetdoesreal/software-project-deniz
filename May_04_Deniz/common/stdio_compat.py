@@ -38,7 +38,7 @@ def write_json_stdout(payload: dict) -> bool:
     if stream is None or bool(getattr(stream, "closed", False)):
         return False
     try:
-        stream.write(json.dumps(payload) + "\n")
+        stream.write(json.dumps(payload, ensure_ascii=True) + "\n")
         stream.flush()
     except (AttributeError, OSError, TypeError, ValueError):
         return False
