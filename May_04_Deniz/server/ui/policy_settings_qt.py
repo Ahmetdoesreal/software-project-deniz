@@ -546,11 +546,11 @@ class PolicySettingsDialog(QDialog):
         if isinstance(w, QCheckBox):
             w.setChecked(bool(value))
         elif isinstance(w, QComboBox):
-            w.setCurrentText(str(value))
+            w.setCurrentText("" if value is None else str(value))
         elif isinstance(w, QLineEdit):
-            w.setText(str(value))
+            w.setText("" if value is None else str(value))
         elif isinstance(w, QPlainTextEdit):
-            w.setPlainText(str(value))
+            w.setPlainText("" if value is None else str(value))
 
     def get_bool(self, key: str) -> bool:
         w = self.vars.get(key)
@@ -691,7 +691,8 @@ class PolicySettingsDialog(QDialog):
         except ValueError as e:
             QMessageBox.warning(self, "Settings Error", str(e))
             return
-            
+
+        self._dirty = False
         self.lbl_status.setText("Saving settings...")
         self.settings_saved.emit(payload)
 
