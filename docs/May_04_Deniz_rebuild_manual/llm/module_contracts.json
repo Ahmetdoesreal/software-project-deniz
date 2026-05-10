@@ -1,0 +1,110 @@
+{
+  "project": "May_04_Deniz",
+  "snapshot_date": "2026-05-10",
+  "packages": {
+    "common": {
+      "purpose": "Shared contracts and utilities used by server, client, launchers, and GUIs.",
+      "modules": {
+        "protocol.py": {
+          "owns": ["LAN JSON event envelope", "checksum validation", "UTC timestamp helper"],
+          "must_provide": ["encode(event, data)", "decode(raw)", "now_iso()", "extract_client_uuid(ws_url)"]
+        },
+        "events.py": {
+          "owns": ["LAN event names", "event constructor functions"],
+          "server_to_client": ["welcome", "echo", "time", "error", "exam_policy", "policy_update", "savescreen", "sync_time", "session_state", "pause_exam", "resume_exam", "exam_end", "get_processes", "process_blacklist", "incident_received", "kill_process", "finish_exam"],
+          "client_to_server": ["ping", "client_info", "policy_applied", "start_exam", "process_catch", "client_monitor_event", "incident_report", "kill_process_result"]
+        },
+        "security.py": {
+          "owns": ["secured event payloads", "HMAC signatures", "optional Fernet encryption", "replay-window nonce checks"],
+          "secured_events": ["exam_policy", "policy_update", "session_state", "incident_report", "kill_process", "pause_exam", "resume_exam"]
+        },
+        "ipc_ws.py": {
+          "owns": ["loopback WebSocket IPC", "token validation", "transport selection", "threaded IPC wrappers"],
+          "env": ["EXAM_LOCAL_IPC_URL", "EXAM_LOCAL_IPC_TOKEN", "EXAM_LOCAL_IPC_ROLE", "EXAM_LOCAL_IPC_TRANSPORT"],
+          "channels": ["manager.console_command", "server.dashboard_state", "dashboard.command", "client.timer_state", "timer.command", "process.lifecycle"]
+        },
+        "process_definitions.py": {
+          "owns": ["process identity normalization", "definition normalization", "stable process keys", "definition matching"],
+          "statuses": ["unknown", "whitelist", "blacklist", "warning"],
+          "scopes": ["name", "path", "directory"],
+          "actions": ["ban", "kick", "pause_exam", "kill_pid"]
+        },
+        "runtime_logging.py": {
+          "owns": ["JSONL runtime logs", "stdout/stderr teeing", "exception hooks"],
+          "windows_windowed_requirement": "Tolerate missing stdout and stderr streams."
+        },
+        "stdio_compat.py": {
+          "owns": ["safe stdin/stdout/stderr helpers"],
+          "methods": ["stdin_available", "stdin_is_standalone", "iter_stdin_lines", "write_json_stdout", "write_text_stderr"]
+        }
+      }
+    },
+    "server": {
+      "purpose": "Authoritative exam state, HTTP routes, WebSocket runtime, policy, submissions, artifacts, dashboard support, and operator commands.",
+      "modules": {
+        "main.py": ["parse CLI", "validate args", "reset state", "run aiohttp"],
+        "app.py": ["create web app", "register routes", "startup tasks", "cleanup tasks"],
+        "state.py": ["persistent users", "policy normalization", "current policy", "blacklist", "definitions", "incidents", "settings bundles"],
+        "session_state.py": ["canonical session state machine"],
+        "handlers.py": ["HTTP routes", "WebSocket connect and dispatch", "submission upload", "artifact upload"],
+        "tasks.py": ["operator commands", "time broadcaster", "dashboard snapshots", "policy broadcasts", "GUI launch", "IPC command reader"],
+        "settings_service.py": ["settings validation", "policy patching", "blacklist updates", "process decisions", "audit entries"],
+        "shutdown.py": ["graceful client artifact requests before cleanup"],
+        "ui/dashboard_tk.py": ["Tk dashboard"],
+        "ui/dashboard_qt.py": ["Qt dashboard"],
+        "ui/policy_settings_tk.py": ["Tk policy settings including idle policy"],
+        "ui/policy_settings_qt.py": ["Qt policy settings including idle policy"]
+      },
+      "session_states": ["waiting", "running", "admin_paused", "disconnected_paused", "violation_paused", "awaiting_submission", "submitted", "banned"],
+      "routes": ["GET /health", "POST /login", "GET /exam/config", "GET /exam/files", "POST /exam/submission", "POST /client/artifact", "GET /ws"]
+    },
+    "client": {
+      "purpose": "Student runtime, authentication, discovery, WebSocket session, monitoring, incidents, replay, GUI timer/submission, and final upload.",
+      "modules": {
+        "main.py": ["discovery/login/prep/reconnect orchestration", "recorder lifetime"],
+        "auth.py": ["login and health HTTP calls"],
+        "exam.py": ["exam config and files fetch"],
+        "ws_client.py": ["WebSocket runtime", "GUI bridge", "monitor coordination", "incident reporting", "submission upload"],
+        "incidents.py": ["local policy rule evaluation"],
+        "incident_buffer.py": ["unacknowledged incident persistence"],
+        "transfers.py": ["submission bundle", "incident bundle", "multipart upload", "checksums"],
+        "submission.py": ["GUI file preview"],
+        "custommodules/process_monitor": ["process snapshots and reports"],
+        "custommodules/focused_window_monitor": ["foreground window snapshots and reports"],
+        "custommodules/hardware_monitor": ["hardware snapshots and changes"],
+        "custommodules/idle_monitor": ["idle seconds polling"],
+        "custommodules/replay_recorder": ["FFmpeg replay segments and saves"],
+        "ui/exam_tk.py": ["Tk timer/submission GUI"],
+        "ui/exam_qt.py": ["Qt timer/submission GUI"]
+      },
+      "policy_rules": ["process_blacklist", "focused_window_policy", "rapid_application_switching", "idle_policy", "unexpected_process", "process_definitions", "process_path_clarification"]
+    },
+    "launcher_ui": {
+      "purpose": "Manager windows that launch and supervise server/client runtime processes.",
+      "modules": {
+        "server_manager_tk.py": ["Tk server manager"],
+        "server_manager_qt.py": ["Qt server manager"],
+        "client_manager_tk.py": ["Tk client manager"],
+        "client_manager_qt.py": ["Qt client manager"]
+      }
+    },
+    "ui": {
+      "purpose": "Shared visual theme, widgets, styles, and assets for Qt/Tk surfaces."
+    }
+  },
+  "rebuild_order": [
+    "common protocol/events/security/ipc/logging",
+    "server state/session_state",
+    "server HTTP routes",
+    "server WebSocket route",
+    "server tasks/settings/shutdown",
+    "client auth/discovery/prep",
+    "client WebSocket runtime",
+    "client monitors/incidents",
+    "client transfers/replay/submission",
+    "Tk and Qt GUIs",
+    "manager launchers",
+    "tests and smoke validation"
+  ]
+}
+
