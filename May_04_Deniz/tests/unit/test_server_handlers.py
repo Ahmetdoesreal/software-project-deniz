@@ -1,16 +1,18 @@
 import unittest
 
-from common import protocol
-from server.handlers import _handle_incident_report_event
+from common import events, protocol, security
+from server.handlers import _handle_incident_report_event, _handle_process_catch_event
 from server import session_state
 from server.state import state
 
 
 class _FakeWS:
     def __init__(self):
+        self.raw_messages = []
         self.messages = []
 
     async def send_str(self, payload: str):
+        self.raw_messages.append(payload)
         self.messages.append(protocol.decode(payload))
 
 
@@ -108,6 +110,28 @@ class ServerHandlerIncidentTests(unittest.IsolatedAsyncioTestCase):
             state.incidents = original_incidents
             state.active_incidents = original_active_incidents
             state.exam_policy_config = original_policy_config
+
+    @unittest.skipUnless(security.encryption_available(), "cryptography is not installed")
+    async def test_invalid_process_catch_error_is_protected_when_security_requires_it(self):
+        original_clients = state.clients
+        ws = _FakeWS()
+        context = security.build_session_context("client-1", "secret")
+        context.secure_events.add(events.ERROR)
+        context.encrypt_events.add(events.ERROR)
+        try:
+            state.clients = {"client-1": {"ws": ws, "security": context}}
+
+            await _handle_process_catch_event(ws, "client-1", {"matches": "not-a-list"})
+
+            self.assertEqual(len(ws.raw_messages), 1)
+            event, data = security.decode_wire_message(ws.raw_messages[0], context)
+            self.assertEqual(event, events.ERROR)
+            self.assertEqual(data["reason"], "Invalid process catch payload.")
+            _, wire_data = protocol.decode(ws.raw_messages[0])
+            self.assertTrue(wire_data.get("_secured"))
+            self.assertTrue(wire_data.get("encrypted"))
+        finally:
+            state.clients = original_clients
 
 
 if __name__ == "__main__":

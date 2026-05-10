@@ -1,0 +1,239 @@
+diff --git a/May_04_Deniz/server/handlers.py b/May_04_Deniz/server/handlers.py
+--- a/May_04_Deniz/server/handlers.py
++++ b/May_04_Deniz/server/handlers.py
+@@
+ def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
+     return web.Response(
+         status=status,
+         content_type="application/json",
+         text=json.dumps({"error": message, "code": code}),
+     )
+ 
+ 
++def _safe_close_message(reason: str, max_bytes: int = 120) -> bytes:
++    # WebSocket close frame allows roughly 123 bytes of reason payload.
++    # Trim by character so the trailing UTF-8 sequence stays valid.
++    text = reason or ""
++    encoded = text.encode("utf-8", errors="replace")
++    while len(encoded) > max_bytes and text:
++        text = text[:-1]
++        encoded = text.encode("utf-8", errors="replace")
++    return encoded
++
++
+ def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
+     login_id = data.get("login_id")
+     password = data.get("password")
+     return login_id, password
+@@
+ 
+     if actions.get("ban") or actions.get("kick"):
++        close_reason = reason if actions.get("ban") else "kicked by process policy"
+         try:
+-            await ws.close(message=(reason if actions.get("ban") else "kicked by process policy").encode("utf-8"))
++            await ws.close(message=_safe_close_message(close_reason))
+         except Exception:
+             pass
+         state.clients.pop(client_id, None)
+@@
+ ):
+     matches = data.get("matches", [])
+     if not isinstance(matches, list):
+-        await ws.send_str(events.error("Invalid process catch payload."))
++        await ws.send_str(_protect_payload(client_id, events.error("Invalid process catch payload.")))
+         return
+ 
+     login_id, user = state.find_user_by_uuid(client_id)
+diff --git a/May_04_Deniz/server/tasks.py b/May_04_Deniz/server/tasks.py
+--- a/May_04_Deniz/server/tasks.py
++++ b/May_04_Deniz/server/tasks.py
+@@
+ from .settings_service import (
+     apply_process_decision,
+     build_process_database,
+     get_settings_snapshot,
+@@
+ )
+ 
+ 
++def _safe_close_message(reason: str, max_bytes: int = 120) -> bytes:
++    # WebSocket close frame allows roughly 123 bytes of reason payload.
++    # Trim by character so the trailing UTF-8 sequence stays valid.
++    text = reason or ""
++    encoded = text.encode("utf-8", errors="replace")
++    while len(encoded) > max_bytes and text:
++        text = text[:-1]
++        encoded = text.encode("utf-8", errors="replace")
++    return encoded
++
++
+ def _user_has_submission(user: dict) -> bool:
+     return bool(user.get("submitted_at"))
+@@
+ 
+     try:
+-        await data["ws"].close(message=reason.encode("utf-8"))
++        await data["ws"].close(message=_safe_close_message(reason))
+     except Exception:
+         pass
+     finally:
+@@
+ 
+     finished_count = 0
+     connected_count = 0
++    skipped_banned_count = 0
+     for login_id, user in state.users_db.items():
+         client_id = user["uuid"]
+         if _user_has_submission(user):
+             continue
++        if user.get("banned") or session_state.derive_state(user) == session_state.BANNED:
++            skipped_banned_count += 1
++            continue
+ 
+         session_state.set_state(
+             user,
+@@
+ 
+     state.save_users()
++    suffix = ""
++    if skipped_banned_count:
++        suffix = f" Skipped {skipped_banned_count} banned user(s)."
+     print(
+         f"[CMD] Finished the exam for {finished_count} user(s); "
+-        f"notified {connected_count} connected client(s)."
++        f"notified {connected_count} connected client(s).{suffix}"
+     )
+diff --git a/May_04_Deniz/tests/unit/test_server_tasks.py b/May_04_Deniz/tests/unit/test_server_tasks.py
+--- a/May_04_Deniz/tests/unit/test_server_tasks.py
++++ b/May_04_Deniz/tests/unit/test_server_tasks.py
+@@
+ from common import events, protocol
+ from server.state import state
+-from server.tasks import _exam_state, _handle_finish_exam_global, _queue_stdin_line, _sync_running_exams
++from server.tasks import (
++    _exam_state,
++    _handle_finish_exam_global,
++    _queue_stdin_line,
++    _safe_close_message,
++    _sync_running_exams,
++)
+@@
+     def test_exam_state_reports_violation_paused(self):
+         user = {
+             "session_state": "violation_paused",
+             "exam_started": True,
+             "exam_finished": False,
+         }
+         self.assertEqual(_exam_state(user, 120), "Violation Paused")
++
++    def test_safe_close_message_keeps_short_reason(self):
++        encoded = _safe_close_message("kicked by server")
++        self.assertEqual(encoded, b"kicked by server")
++
++    def test_safe_close_message_truncates_long_reason(self):
++        long_reason = "x" * 500
++        encoded = _safe_close_message(long_reason)
++        self.assertLessEqual(len(encoded), 120)
++        self.assertTrue(encoded.startswith(b"x"))
++
++    def test_safe_close_message_preserves_utf8_boundary(self):
++        reason = "\u015f" * 80
++        encoded = _safe_close_message(reason)
++        self.assertLessEqual(len(encoded), 120)
++        self.assertTrue(encoded.decode("utf-8"))
+@@
+         finally:
+             state.users_db = original_users
+             state.clients = original_clients
+ 
++    async def test_finish_exam_global_skips_banned_user(self):
++        original_users = state.users_db
++        original_clients = state.clients
++        app = {
++            "exam_phase": "running",
++            "exam_start_enabled": True,
++            "exam_duration": 30,
++        }
++        try:
++            state.users_db = {
++                "bob": {
++                    "uuid": "client-banned",
++                    "exam_started": True,
++                    "exam_finished": False,
++                    "time_spent_seconds": 5,
++                    "extra_time_seconds": 0,
++                    "session_state": "banned",
++                    "banned": True,
++                }
++            }
++            state.ensure_user_defaults(state.users_db["bob"])
++            state.clients = {}
++
++            await _handle_finish_exam_global(app)
++
++            user = state.users_db["bob"]
++            self.assertEqual(user["session_state"], "banned")
++            self.assertTrue(user["banned"])
++            self.assertNotEqual(user["session_state"], "awaiting_submission")
++            self.assertEqual(app["exam_phase"], "finished")
++        finally:
++            state.users_db = original_users
++            state.clients = original_clients
++
+     async def test_finish_exam_global_moves_waiting_user_to_awaiting_submission(self):
+         original_users = state.users_db
+         original_clients = state.clients
+diff --git a/May_04_Deniz/tests/unit/test_server_handlers.py b/May_04_Deniz/tests/unit/test_server_handlers.py
+--- a/May_04_Deniz/tests/unit/test_server_handlers.py
++++ b/May_04_Deniz/tests/unit/test_server_handlers.py
+@@
+ import unittest
+ 
+-from common import protocol
+-from server.handlers import _handle_incident_report_event
++from common import events, protocol, security
++from server.handlers import _handle_incident_report_event, _handle_process_catch_event
+ from server import session_state
+ from server.state import state
+@@
+ class _FakeWS:
+     def __init__(self):
++        self.raw_messages = []
+         self.messages = []
+ 
+     async def send_str(self, payload: str):
++        self.raw_messages.append(payload)
+         self.messages.append(protocol.decode(payload))
+@@
+         finally:
+             state.users_db = original_users
+             state.clients = original_clients
+             state.incidents = original_incidents
+             state.active_incidents = original_active_incidents
+             state.exam_policy_config = original_policy_config
++
++    @unittest.skipUnless(security.encryption_available(), "cryptography is not installed")
++    async def test_invalid_process_catch_error_is_protected_when_security_requires_it(self):
++        original_clients = state.clients
++        ws = _FakeWS()
++        context = security.build_session_context("client-1", "secret")
++        context.secure_events.add(events.ERROR)
++        context.encrypt_events.add(events.ERROR)
++        try:
++            state.clients = {"client-1": {"ws": ws, "security": context}}
++
++            await _handle_process_catch_event(ws, "client-1", {"matches": "not-a-list"})
++
++            self.assertEqual(len(ws.raw_messages), 1)
++            event, data = security.decode_wire_message(ws.raw_messages[0], context)
++            self.assertEqual(event, events.ERROR)
++            self.assertEqual(data["reason"], "Invalid process catch payload.")
++            _, wire_data = protocol.decode(ws.raw_messages[0])
++            self.assertTrue(wire_data.get("_secured"))
++            self.assertTrue(wire_data.get("encrypted"))
++        finally:
++            state.clients = original_clients
+ 
+ 
+ if __name__ == "__main__":
+     unittest.main()

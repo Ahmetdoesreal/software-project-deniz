@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 from common import events, protocol
 from server.state import state
-from server.tasks import _exam_state, _handle_finish_exam_global, _queue_stdin_line, _sync_running_exams
+from server.tasks import (
+    _exam_state,
+    _handle_finish_exam_global,
+    _queue_stdin_line,
+    _safe_close_message,
+    _sync_running_exams,
+)
 
 
 class _ImmediateLoop:
@@ -72,6 +78,22 @@ class ServerTaskTests(unittest.TestCase):
         }
         self.assertEqual(_exam_state(user, 120), "Violation Paused")
 
+    def test_safe_close_message_keeps_short_reason(self):
+        encoded = _safe_close_message("kicked by server")
+        self.assertEqual(encoded, b"kicked by server")
+
+    def test_safe_close_message_truncates_long_reason(self):
+        long_reason = "x" * 500
+        encoded = _safe_close_message(long_reason)
+        self.assertLessEqual(len(encoded), 120)
+        self.assertTrue(encoded.startswith(b"x"))
+
+    def test_safe_close_message_preserves_utf8_boundary(self):
+        reason = "\u015f" * 80
+        encoded = _safe_close_message(reason)
+        self.assertLessEqual(len(encoded), 120)
+        self.assertTrue(encoded.decode("utf-8"))
+
 
 class ServerTaskAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_sync_running_exams_keeps_admin_paused_user_frozen(self):
@@ -109,6 +131,40 @@ class ServerTaskAsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["remaining_seconds"], 42)
             self.assertEqual(data["timer_state"], "paused")
             self.assertEqual(data["pause_source"], "admin")
+        finally:
+            state.users_db = original_users
+            state.clients = original_clients
+
+    async def test_finish_exam_global_skips_banned_user(self):
+        original_users = state.users_db
+        original_clients = state.clients
+        app = {
+            "exam_phase": "running",
+            "exam_start_enabled": True,
+            "exam_duration": 30,
+        }
+        try:
+            state.users_db = {
+                "bob": {
+                    "uuid": "client-banned",
+                    "exam_started": True,
+                    "exam_finished": False,
+                    "time_spent_seconds": 5,
+                    "extra_time_seconds": 0,
+                    "session_state": "banned",
+                    "banned": True,
+                }
+            }
+            state.ensure_user_defaults(state.users_db["bob"])
+            state.clients = {}
+
+            await _handle_finish_exam_global(app)
+
+            user = state.users_db["bob"]
+            self.assertEqual(user["session_state"], "banned")
+            self.assertTrue(user["banned"])
+            self.assertNotEqual(user["session_state"], "awaiting_submission")
+            self.assertEqual(app["exam_phase"], "finished")
         finally:
             state.users_db = original_users
             state.clients = original_clients

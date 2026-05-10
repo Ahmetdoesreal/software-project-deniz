@@ -24,6 +24,17 @@ def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
     )
 
 
+def _safe_close_message(reason: str, max_bytes: int = 120) -> bytes:
+    # WebSocket close frame allows roughly 123 bytes of reason payload.
+    # Trim by character so the trailing UTF-8 sequence stays valid.
+    text = reason or ""
+    encoded = text.encode("utf-8", errors="replace")
+    while len(encoded) > max_bytes and text:
+        text = text[:-1]
+        encoded = text.encode("utf-8", errors="replace")
+    return encoded
+
+
 def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
     login_id = data.get("login_id")
     password = data.get("password")
@@ -201,8 +212,9 @@ async def _apply_configured_process_actions(
         state.save_users()
 
     if actions.get("ban") or actions.get("kick"):
+        close_reason = reason if actions.get("ban") else "kicked by process policy"
         try:
-            await ws.close(message=(reason if actions.get("ban") else "kicked by process policy").encode("utf-8"))
+            await ws.close(message=_safe_close_message(close_reason))
         except Exception:
             pass
         state.clients.pop(client_id, None)
@@ -377,7 +389,7 @@ async def _handle_process_catch_event(
 ):
     matches = data.get("matches", [])
     if not isinstance(matches, list):
-        await ws.send_str(events.error("Invalid process catch payload."))
+        await ws.send_str(_protect_payload(client_id, events.error("Invalid process catch payload.")))
         return
 
     login_id, user = state.find_user_by_uuid(client_id)

@@ -26,6 +26,17 @@ from .settings_service import (
 )
 
 
+def _safe_close_message(reason: str, max_bytes: int = 120) -> bytes:
+    # WebSocket close frame allows roughly 123 bytes of reason payload.
+    # Trim by character so the trailing UTF-8 sequence stays valid.
+    text = reason or ""
+    encoded = text.encode("utf-8", errors="replace")
+    while len(encoded) > max_bytes and text:
+        text = text[:-1]
+        encoded = text.encode("utf-8", errors="replace")
+    return encoded
+
+
 def _user_has_submission(user: dict) -> bool:
     return bool(user.get("submitted_at"))
 
@@ -1054,7 +1065,7 @@ async def _disconnect_client(target: str, reason: str) -> bool:
         return False
 
     try:
-        await data["ws"].close(message=reason.encode("utf-8"))
+        await data["ws"].close(message=_safe_close_message(reason))
     except Exception:
         pass
     finally:
@@ -1088,9 +1099,13 @@ async def _handle_finish_exam_global(app: web.Application):
 
     finished_count = 0
     connected_count = 0
+    skipped_banned_count = 0
     for login_id, user in state.users_db.items():
         client_id = user["uuid"]
         if _user_has_submission(user):
+            continue
+        if user.get("banned") or session_state.derive_state(user) == session_state.BANNED:
+            skipped_banned_count += 1
             continue
 
         session_state.set_state(
@@ -1117,9 +1132,12 @@ async def _handle_finish_exam_global(app: web.Application):
         print(f"[EXAM] Finish requested for {login_id} ({client_id}).")
 
     state.save_users()
+    suffix = ""
+    if skipped_banned_count:
+        suffix = f" Skipped {skipped_banned_count} banned user(s)."
     print(
         f"[CMD] Finished the exam for {finished_count} user(s); "
-        f"notified {connected_count} connected client(s)."
+        f"notified {connected_count} connected client(s).{suffix}"
     )
 
 
