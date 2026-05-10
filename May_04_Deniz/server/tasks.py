@@ -11,6 +11,7 @@ from aiohttp import web
 
 from common.discovery import ServerAnnouncer
 from common import events, protocol, security
+from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
 from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
 from . import ip_guard
@@ -68,7 +69,31 @@ def _queue_stdin_line(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
         _queue_input(loop, queue, None)
 
 
+async def _queue_manager_ipc(queue: asyncio.Queue, transport: str):
+    if not should_use_ws_ipc(transport):
+        return
+    ipc_client = LocalIpcClient(role="server_cli")
+    if not await ipc_client.connect():
+        return
+    try:
+        while True:
+            message = await ipc_client.incoming.get()
+            if message.get("channel") != "manager.console_command":
+                continue
+            command = str(message.get("data", {}).get("command", "") or "").strip()
+            if command:
+                await queue.put(command + "\n")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await ipc_client.close()
+
+
 def _write_to_gui(payload: dict):
+    gui_ipc = getattr(state, "gui_ipc_server", None)
+    if gui_ipc and gui_ipc.send("server.dashboard_state", payload):
+        return
+
     gui_process = _gui_process()
     if not gui_process:
         return
@@ -108,6 +133,23 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
     gui_env = os.environ.copy()
     gui_env["PYTHONPATH"] = str(project_dir) + os.pathsep + gui_env.get("PYTHONPATH", "")
     gui_env["PYTHONUNBUFFERED"] = "1"
+    try:
+        gui_ipc = ThreadedIpcServer(
+            role="server",
+            on_message=lambda message: _dispatch_gui_request(
+                loop,
+                app,
+                message.get("data", {}),
+            )
+            if message.get("channel") == "dashboard.command"
+            else None,
+        )
+        gui_ipc.start()
+        gui_env.update(gui_ipc.child_env("dashboard_gui", app.get("ipc_transport", "auto")))
+        state.gui_ipc_server = gui_ipc
+    except Exception as exc:
+        state.gui_ipc_server = None
+        print(f"[GUI IPC] Warning: Local WebSocket IPC unavailable: {exc}")
 
     gui_ui = str(app.get("gui_ui", "tk") or "tk")
     if gui_ui not in {"tk", "qt"}:
@@ -115,7 +157,15 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
 
     try:
         gui_process = subprocess.Popen(
-            [python_executable, "-m", str(gui_module), "--ui", gui_ui],
+            [
+                python_executable,
+                "-m",
+                str(gui_module),
+                "--ui",
+                gui_ui,
+                "--ipc-transport",
+                str(app.get("ipc_transport", "auto") or "auto"),
+            ],
             cwd=str(project_dir),
             env=gui_env,
             stdin=subprocess.PIPE,
@@ -124,6 +174,10 @@ def _launch_server_gui(loop: asyncio.AbstractEventLoop, app: web.Application) ->
             bufsize=1,
         )
     except Exception as exc:
+        gui_ipc = getattr(state, "gui_ipc_server", None)
+        if gui_ipc:
+            gui_ipc.stop()
+            state.gui_ipc_server = None
         print(f"[GUI] Failed to launch gui: {exc}")
         return "failed"
 
@@ -1612,6 +1666,10 @@ def _gui_reader_thread(loop, app, gui_process):
             pass
         if state.gui_process is gui_process:
             state.gui_process = None
+            gui_ipc = getattr(state, "gui_ipc_server", None)
+            if gui_ipc:
+                gui_ipc.stop()
+                state.gui_ipc_server = None
             print("[GUI] Server monitor UI closed. Type /gui to reopen it.")
 
 
@@ -1625,6 +1683,7 @@ async def console_reader(app: web.Application):
         daemon=True,
     )
     stdin_thread.start()
+    ipc_task = asyncio.create_task(_queue_manager_ipc(input_queue, app.get("ipc_transport", "auto")))
 
     gui_process = _gui_process()
     if gui_process:
@@ -1639,3 +1698,9 @@ async def console_reader(app: web.Application):
             await handle_admin_command(line, app)
     except asyncio.CancelledError:
         pass
+    finally:
+        ipc_task.cancel()
+        try:
+            await ipc_task
+        except asyncio.CancelledError:
+            pass

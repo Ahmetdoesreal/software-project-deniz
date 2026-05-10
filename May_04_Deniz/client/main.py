@@ -141,6 +141,7 @@ async def main_loop(args):
                     getattr(args, "auth_secret", None) or "",
                     recorder_manager.recorder,
                     gui_ui=getattr(args, "ui", "tk") or "tk",
+                    ipc_transport=getattr(args, "ipc_transport", "auto") or "auto",
                     incident_buffer=incident_buffer,
                 )
                 if submission_completed:
@@ -191,6 +192,7 @@ def main():
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
     parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
     parser.add_argument("--ui", choices=["tk", "qt"], default="tk", help="UI backend for GUI windows: tk (default) or qt")
+    parser.add_argument("--ipc-transport", choices=["auto", "stdio", "ws"], default="auto", help="Local manager/UI IPC transport: auto, stdio, or ws")
     parser.add_argument("--ad-domain", default=None, help="AD domain for local credential validation (enables AD auth mode)")
     parser.add_argument("--auth-secret", default=None, help="Shared auth secret matching the server --auth-secret")
     parser.set_defaults(record=True)

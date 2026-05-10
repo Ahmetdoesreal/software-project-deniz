@@ -1,0 +1,77 @@
+{
+  "snapshot": "May_04_Deniz",
+  "date": "2026-05-10",
+  "source_root": "May_04_Deniz",
+  "features": [
+    {
+      "id": "F01",
+      "name": "protocol_events_integrity",
+      "side": "shared",
+      "paths": ["common/protocol.py", "common/events.py"],
+      "summary": "JSON event envelope with checksum and shared event constructors."
+    },
+    {
+      "id": "F02",
+      "name": "server_http_ws_runtime",
+      "side": "server",
+      "paths": ["server/main.py", "server/app.py", "server/handlers.py", "server/tasks.py"],
+      "summary": "aiohttp routes, client WebSocket handling, background timers, admin commands, dashboard state."
+    },
+    {
+      "id": "F03",
+      "name": "client_login_discovery_ws_runtime",
+      "side": "client",
+      "paths": ["client/main.py", "client/auth.py", "client/exam.py", "client/ws_client.py"],
+      "summary": "Discovery/direct connect, login, exam prep, reconnecting WebSocket runtime."
+    },
+    {
+      "id": "F04",
+      "name": "discovery",
+      "side": "shared",
+      "paths": ["common/discovery.py", "common/discovery_v2.py"],
+      "summary": "UDP discovery beacon/listener, loopback fallback, duplicate-server detection."
+    },
+    {
+      "id": "F05",
+      "name": "wire_security",
+      "side": "shared",
+      "paths": ["common/security.py"],
+      "summary": "Protected event signing, optional Fernet encryption, nonce replay protection."
+    },
+    {
+      "id": "F06",
+      "name": "incident_policy_engine",
+      "side": "client_server",
+      "paths": ["client/incidents.py", "server/settings_service.py", "common/process_definitions.py"],
+      "summary": "Client-side incident detection plus server-side policy/process decision management."
+    },
+    {
+      "id": "F07",
+      "name": "monitoring_modules",
+      "side": "client",
+      "paths": ["client/custommodules/process_monitor", "client/custommodules/focused_window_monitor", "client/custommodules/hardware_monitor", "client/custommodules/idle_monitor", "client/custommodules/replay_recorder"],
+      "summary": "Process, focused-window, hardware, idle, and replay evidence collection."
+    },
+    {
+      "id": "F08",
+      "name": "transfers",
+      "side": "client_server",
+      "paths": ["client/transfers.py", "client/submission.py", "server/submissions.py", "server/handlers.py"],
+      "summary": "Runtime artifacts and final submission bundle staging, checksums, upload, storage."
+    },
+    {
+      "id": "F09",
+      "name": "operator_and_student_ui",
+      "side": "client_server",
+      "paths": ["launcher_ui", "server/ui", "client/ui", "common/manager_support.py"],
+      "summary": "Tk/Qt managers, server dashboard, client timer/submission windows."
+    },
+    {
+      "id": "F10",
+      "name": "local_loopback_ipc",
+      "side": "shared",
+      "paths": ["common/ipc_ws.py", "common/manager_support.py", "server/tasks.py", "client/ws_client.py", "server/ui/dashboard_tk.py", "server/ui/dashboard_qt.py", "client/ui/exam_tk.py", "client/ui/exam_qt.py"],
+      "summary": "Authenticated loopback WebSocket IPC for app-owned parent/child process channels with stdio fallback."
+    }
+  ]
+}

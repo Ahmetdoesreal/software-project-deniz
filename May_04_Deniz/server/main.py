@@ -74,6 +74,7 @@ def main():
         help="Seconds to keep the server alive for client shutdown reports/replays (default: 60)",
     )
     parser.add_argument("--ui", choices=["tk", "qt"], default="tk", help="UI backend for GUI windows: tk (default) or qt")
+    parser.add_argument("--ipc-transport", choices=["auto", "stdio", "ws"], default="auto", help="Local manager IPC transport: auto, stdio, or ws")
     parser.add_argument("--gui", action="store_true", help="Launch the server companion GUI monitor")
     parser.add_argument("--reset", action="store_true", help="Reset the server state (clear used IDs/timers) on startup")
     parser.add_argument("--auth-secret", default=None, help="Shared secret for HMAC token verification (matches auth_config.json on clients)")

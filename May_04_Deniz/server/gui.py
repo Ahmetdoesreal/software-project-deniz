@@ -47,6 +47,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="tk",
         help="GUI backend: 'tk' (legacy Tkinter), 'qt' (PySide6).",
     )
+    parser.add_argument(
+        "--ipc-transport",
+        choices=("auto", "stdio", "ws"),
+        default="auto",
+        help="Local parent-process IPC transport.",
+    )
     return parser.parse_args(argv)
 
 

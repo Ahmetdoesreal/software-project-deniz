@@ -29,6 +29,7 @@ class ServerState:
         self.incidents: list[dict] = []
         self.active_incidents: dict[str, dict] = {}
         self.gui_process = None
+        self.gui_ipc_server = None
 
     def load_users(self):
         if os.path.exists(USERS_FILE):

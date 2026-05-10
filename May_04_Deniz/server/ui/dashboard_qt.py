@@ -65,6 +65,7 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from common.runtime_logging import setup_runtime_logging
+from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
 from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
@@ -125,6 +126,8 @@ PROCESS_COLUMN_WIDTHS = {
     "actions": (155, 110),
     "availability": (245, 150),
 }
+
+_IPC_CLIENT = None
 
 
 def _monospace_font() -> QFont:
@@ -291,6 +294,8 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
 
 
 def _emit_command(payload: dict) -> None:
+    if _IPC_CLIENT and _IPC_CLIENT.send("dashboard.command", payload):
+        return
     print(json.dumps(payload), flush=True)
 
 
@@ -532,7 +537,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.show()
 
     def _on_settings_saved(self, payload: dict):
-        print(json.dumps(payload), flush=True)
+        _emit_command(payload)
         self._append_log("[ADMIN] Saving GUI settings")
 
     # ------------------------------------------------------------------ layout
@@ -957,7 +962,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.show()
 
     def _on_decision_applied(self, payload: dict):
-        print(json.dumps(payload), flush=True)
+        _emit_command(payload)
         self._append_log(
             f"[ADMIN] Applied process decision for {payload.get('definition', {}).get('process_name') or 'Unknown'}"
         )
@@ -1702,6 +1707,7 @@ def _ipc_reader(q: queue.Queue) -> None:
 
 
 def run() -> int:
+    global _IPC_CLIENT
     log_dir = PROJECT_DIR / "data" / "logs" / "server"
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_runtime_logging("server_gui", log_dir)
@@ -1714,6 +1720,15 @@ def run() -> int:
     gui.show()
 
     ipc_queue: queue.Queue = queue.Queue()
+    if should_use_ws_ipc():
+        _IPC_CLIENT = ThreadedIpcClient(
+            role="dashboard_gui",
+            on_message=lambda message: ipc_queue.put(message.get("data", {}))
+            if message.get("channel") == "server.dashboard_state"
+            else None,
+        )
+        if not _IPC_CLIENT.start():
+            _IPC_CLIENT = None
 
     signals = _IPCSignals()
     if not standalone:
@@ -1745,7 +1760,10 @@ def run() -> int:
     reader_thread = Thread(target=_ipc_reader, args=(ipc_queue,), daemon=True)
     reader_thread.start()
 
-    return app.exec()
+    exit_code = app.exec()
+    if _IPC_CLIENT:
+        _IPC_CLIENT.stop()
+    return exit_code
 
 
 if __name__ == "__main__":

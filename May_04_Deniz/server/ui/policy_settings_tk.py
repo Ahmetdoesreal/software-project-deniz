@@ -311,7 +311,7 @@ class PolicySettingsMixin:
             messagebox.showerror("Settings", str(exc))
             return
 
-        print(json.dumps(payload), flush=True)
+        self._emit_command(payload)
         self._settings_dirty = False
         self.settings_status_var.set("Saving settings...")
         self._append_log("[ADMIN] Saving GUI settings")

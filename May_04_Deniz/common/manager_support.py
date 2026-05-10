@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from common.ipc_ws import ThreadedIpcServer
+
 
 def apply_dpi_awareness():
     try:
@@ -51,6 +53,7 @@ class ManagedProcessSession:
         self._reader_thread = None
         self._log_handle = None
         self._log_lock = threading.Lock()
+        self._ipc_server = None
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -70,19 +73,26 @@ class ManagedProcessSession:
         if env:
             launch_env.update(env)
         launch_env["PYTHONUNBUFFERED"] = "1"
+        self._start_ipc_server()
+        if self._ipc_server:
+            launch_env.update(self._ipc_server.child_env("managed_process"))
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        self.process = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=launch_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=creationflags,
-        )
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=launch_env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=creationflags,
+            )
+        except Exception:
+            self._stop_ipc_server()
+            raise
         self._write_log_text(
             f"[MANAGER] Started {self.session_name} process (pid {self.process.pid}).\n"
         )
@@ -119,6 +129,7 @@ class ManagedProcessSession:
                 f"[MANAGER] {self.session_name} process exited with code {returncode}.\n"
             )
             self._close_log_handle()
+            self._stop_ipc_server()
 
     def _capture_runtime_log_path(self, line: str):
         prefix = "[LOG] Writing runtime log to "
@@ -153,6 +164,12 @@ class ManagedProcessSession:
 
         message = text.rstrip("\n")
         self._write_log_text(f"[MANAGER] > {message}\n")
+        if self._ipc_server and self._ipc_server.send(
+            "manager.console_command",
+            {"command": message},
+        ):
+            return True
+
         try:
             self.process.stdin.write(message + "\n")
             self.process.stdin.flush()
@@ -185,6 +202,8 @@ class ManagedProcessSession:
         except Exception as exc:
             self._write_log_text(f"[MANAGER] Stop failed: {exc}\n")
             return False
+        finally:
+            self._stop_ipc_server()
 
     def read_output_text(self) -> str:
         if not self.log_path or not self.log_path.exists():
@@ -193,6 +212,27 @@ class ManagedProcessSession:
             return self.log_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return ""
+
+    def _start_ipc_server(self):
+        self._stop_ipc_server()
+        try:
+            self._ipc_server = ThreadedIpcServer(role="manager")
+            self._ipc_server.start()
+            self._write_log_text(
+                f"[MANAGER] Local IPC listening on {self._ipc_server._server.url}.\n"
+            )
+        except Exception as exc:
+            self._ipc_server = None
+            self._write_log_text(f"[MANAGER] Local IPC unavailable: {exc}\n")
+
+    def _stop_ipc_server(self):
+        if not self._ipc_server:
+            return
+        try:
+            self._ipc_server.stop()
+        except Exception:
+            pass
+        self._ipc_server = None
 
 
 class ConsoleWindow(tk.Toplevel):

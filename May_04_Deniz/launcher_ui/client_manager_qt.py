@@ -247,6 +247,8 @@ class ClientManager(QMainWindow):
             self.login_entry.text().strip(),
             "--password",
             self.password_entry.text().strip(),
+            "--ipc-transport",
+            "auto",
         ]
         ad_domain = self._auth_config.get("ad_domain", "")
         auth_secret = self._auth_config.get("auth_secret", "")

@@ -14,6 +14,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from common.manager_support import install_close_guard
+from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from common.runtime_logging import setup_runtime_logging
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
 from server.ui.dashboard_table_helpers import (
@@ -35,6 +36,14 @@ from server.ui.process_database_helpers import (
     build_process_decision_payload,
     process_row_google_search_url,
 )
+
+_IPC_CLIENT = None
+
+
+def _emit_command(payload: dict):
+    if _IPC_CLIENT and _IPC_CLIENT.send("dashboard.command", payload):
+        return
+    print(json.dumps(payload), flush=True)
 
 
 def _format_remaining(seconds: int) -> str:
@@ -189,6 +198,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
         self._build_layout()
         self.after(1000, self.update_timers)
+
+    def _emit_command(self, payload: dict):
+        _emit_command(payload)
 
     def _build_layout(self):
         self.notebook = ttk.Notebook(self)
@@ -893,17 +905,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 return
 
         for incident in eligible:
-            print(
-                json.dumps(
-                    {
-                        "cmd": "kill_pid",
-                        "uuid": incident.get("client_id"),
-                        "incident_id": incident.get("incident_id"),
-                        "process_name": incident.get("process_name") or "Unknown",
-                        "pid": int(incident.get("pid", 0) or 0),
-                    }
-                ),
-                flush=True,
+            _emit_command(
+                {
+                    "cmd": "kill_pid",
+                    "uuid": incident.get("client_id"),
+                    "incident_id": incident.get("incident_id"),
+                    "process_name": incident.get("process_name") or "Unknown",
+                    "pid": int(incident.get("pid", 0) or 0),
+                }
             )
         self._append_log(
             f"[ADMIN] Requested PID kill for {len(eligible)} selected process(es)"
@@ -986,15 +995,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self._emit_incident_user_commands("forgive_violation", incidents)
 
     def _emit_incident_user_command(self, command: str, incident: dict):
-        print(
-            json.dumps(
-                {
-                    "cmd": command,
-                    "uuid": incident.get("client_id"),
-                    "incident_id": incident.get("incident_id"),
-                }
-            ),
-            flush=True,
+        _emit_command(
+            {
+                "cmd": command,
+                "uuid": incident.get("client_id"),
+                "incident_id": incident.get("incident_id"),
+            }
         )
         self._append_log(
             f"[ADMIN] Sent {command} for user {incident.get('login_id') or incident.get('client_id')}"
@@ -1002,15 +1008,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
     def _emit_incident_user_commands(self, command: str, incidents: list[dict]):
         for incident in incidents:
-            print(
-                json.dumps(
-                    {
-                        "cmd": command,
-                        "uuid": incident.get("client_id"),
-                        "incident_id": incident.get("incident_id"),
-                    }
-                ),
-                flush=True,
+            _emit_command(
+                {
+                    "cmd": command,
+                    "uuid": incident.get("client_id"),
+                    "incident_id": incident.get("incident_id"),
+                }
             )
         self._append_log(
             f"[ADMIN] Sent {command} for {len(incidents)} selected user(s)"
@@ -1076,27 +1079,27 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
 
     def start_exam_globally(self):
-        print(json.dumps({"cmd": "start_exam_global"}), flush=True)
+        _emit_command({"cmd": "start_exam_global"})
         self._append_log("[ADMIN] Enabled exam start globally")
 
     def finish_exam_globally(self):
-        print(json.dumps({"cmd": "finish_exam_global"}), flush=True)
+        _emit_command({"cmd": "finish_exam_global"})
         self._append_log("[ADMIN] Requested global exam finish")
 
     def edit_policy(self):
-        print(json.dumps({"cmd": "edit_policy"}), flush=True)
+        _emit_command({"cmd": "edit_policy"})
         self._append_log("[ADMIN] Opening exam policy file")
 
     def apply_policy(self):
-        print(json.dumps({"cmd": "apply_policy"}), flush=True)
+        _emit_command({"cmd": "apply_policy"})
         self._append_log("[ADMIN] Applying exam policy")
 
     def edit_process_definitions(self):
-        print(json.dumps({"cmd": "edit_process_definitions"}), flush=True)
+        _emit_command({"cmd": "edit_process_definitions"})
         self._append_log("[ADMIN] Opening process definitions file")
 
     def apply_process_definitions(self):
-        print(json.dumps({"cmd": "apply_process_definitions"}), flush=True)
+        _emit_command({"cmd": "apply_process_definitions"})
         self._append_log("[ADMIN] Applying process definitions")
 
     def export_settings(self):
@@ -1107,7 +1110,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         if not path:
             return
-        print(json.dumps({"cmd": "export_settings", "path": path}), flush=True)
+        _emit_command({"cmd": "export_settings", "path": path})
         self._append_log(f"[ADMIN] Exporting settings to {path}")
 
     def import_settings(self):
@@ -1117,18 +1120,15 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         if not path:
             return
-        print(json.dumps({"cmd": "import_settings", "path": path}), flush=True)
+        _emit_command({"cmd": "import_settings", "path": path})
         self._append_log(f"[ADMIN] Importing settings from {path}")
 
     def toggle_remember_settings(self):
-        print(
-            json.dumps(
-                {
-                    "cmd": "set_remember_settings",
-                    "remember": bool(self.remember_settings_var.get()),
-                }
-            ),
-            flush=True,
+        _emit_command(
+            {
+                "cmd": "set_remember_settings",
+                "remember": bool(self.remember_settings_var.get()),
+            }
         )
         self._append_log(
             f"[ADMIN] Remember settings {'enabled' if self.remember_settings_var.get() else 'disabled'}"
@@ -1142,7 +1142,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         if not command.startswith("/"):
             command = "/" + command
 
-        print(json.dumps({"type": "console_command", "command": command}), flush=True)
+        _emit_command({"type": "console_command", "command": command})
         self.cmd_entry.delete(0, tk.END)
         self._append_log(f"[ADMIN] Executing: {command}")
 
@@ -1462,15 +1462,40 @@ def ipc_reader(app: ServerGUI):
             pass
 
 
+def _ipc_message_handler(app: ServerGUI, msg: dict):
+    if msg.get("channel") != "server.dashboard_state":
+        return
+    payload = msg.get("data", {})
+    if not isinstance(payload, dict):
+        return
+    message_type = payload.get("type")
+    if message_type == "state_update":
+        app.after(0, app.process_state_update, payload)
+    elif message_type == "client_message":
+        app.after(0, app.log_message, payload.get("uuid"), payload.get("text"))
+    elif message_type == "settings_result":
+        app.after(0, app.process_settings_result, payload)
+
+
 def run() -> int:
+    global _IPC_CLIENT
     setup_runtime_logging(
         "server_gui",
         PROJECT_DIR / "data" / "logs" / "server",
     )
     app = ServerGUI(standalone_mode=sys.stdin.isatty())
+    if should_use_ws_ipc():
+        _IPC_CLIENT = ThreadedIpcClient(
+            role="dashboard_gui",
+            on_message=lambda message: _ipc_message_handler(app, message),
+        )
+        if not _IPC_CLIENT.start():
+            _IPC_CLIENT = None
     reader_thread = Thread(target=ipc_reader, args=(app,), daemon=True)
     reader_thread.start()
     app.mainloop()
+    if _IPC_CLIENT:
+        _IPC_CLIENT.stop()
     return 0
 
 

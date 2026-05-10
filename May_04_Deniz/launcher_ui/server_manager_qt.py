@@ -315,6 +315,8 @@ class ServerManager(QMainWindow):
             str(self.port_entry.value()),
             "--exam-duration",
             str(self.duration_entry.value()),
+            "--ipc-transport",
+            "auto",
         ]
         exam_file = self.file_entry.text().strip()
         if exam_file:

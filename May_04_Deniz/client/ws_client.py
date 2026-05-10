@@ -12,6 +12,7 @@ import aiohttp
 import psutil
 
 from common import events, protocol, security
+from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
 from .exam_state import ExamStateLogger
 from .incidents import ClientIncidentEngine
 from .submission import validate_submission_file
@@ -105,15 +106,45 @@ async def _wait_for_queue_or_event(
 
 
 class StdinBridge:
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self, loop: asyncio.AbstractEventLoop, *, ipc_transport: str = "auto"):
         self.loop = loop
         self.queue = asyncio.Queue()
+        self.ipc_transport = ipc_transport
+        self.ipc_client = None
+        self.ipc_task = None
         self.thread = Thread(target=self._reader, daemon=True)
         self.thread.start()
+        if should_use_ws_ipc(ipc_transport):
+            self.ipc_task = asyncio.create_task(self._ipc_reader())
 
     def _reader(self):
         for line in sys.stdin:
             _run_in_background(self.loop, self.queue.put_nowait, UserCommand("stdin", line))
+
+    async def _ipc_reader(self):
+        self.ipc_client = LocalIpcClient(role="client_cli")
+        if not await self.ipc_client.connect():
+            return
+        try:
+            while True:
+                message = await self.ipc_client.incoming.get()
+                if message.get("channel") != "manager.console_command":
+                    continue
+                command = str(message.get("data", {}).get("command", "") or "")
+                if command:
+                    await self.queue.put(UserCommand("stdin", command + "\n"))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.ipc_client.close()
+
+    async def close(self):
+        if self.ipc_task:
+            self.ipc_task.cancel()
+            try:
+                await self.ipc_task
+            except asyncio.CancelledError:
+                pass
 
 
 @dataclass
@@ -123,25 +154,48 @@ class UserCommand:
 
 
 class ClientGUIBridge:
-    def __init__(self, loop: asyncio.AbstractEventLoop, input_queue: asyncio.Queue, *, ui: str = "tk"):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        input_queue: asyncio.Queue,
+        *,
+        ui: str = "tk",
+        ipc_transport: str = "auto",
+    ):
         self.loop = loop
         self.input_queue = input_queue
         self.process = None
         self._ui = ui if ui in {"tk", "qt"} else "tk"
+        self._ipc_transport = ipc_transport
+        self._ipc_server = None
 
     def ensure_started(self):
         if self.process is not None and self.process.poll() is None:
             return
 
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "client.gui", "--ui", self._ui],
-            cwd=_project_dir(),
-            env=_child_env(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        env = _child_env()
+        self._start_ipc_server(env)
+        try:
+            self.process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "client.gui",
+                    "--ui",
+                    self._ui,
+                    "--ipc-transport",
+                    self._ipc_transport,
+                ],
+                cwd=_project_dir(),
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except Exception:
+            self._stop_ipc_server()
+            raise
         Thread(target=self._stdout_reader, daemon=True).start()
 
     def _stdout_reader(self):
@@ -158,6 +212,36 @@ class ClientGUIBridge:
             process.stdout.close()
         except Exception:
             pass
+
+    def _start_ipc_server(self, env: dict):
+        self._stop_ipc_server()
+        try:
+            self._ipc_server = ThreadedIpcServer(
+                role="client",
+                on_message=self._handle_ipc_message,
+            )
+            self._ipc_server.start()
+            env.update(self._ipc_server.child_env("timer_gui", self._ipc_transport))
+        except Exception as exc:
+            print(f"[GUI IPC] Local WebSocket IPC unavailable: {exc}")
+            self._ipc_server = None
+
+    def _stop_ipc_server(self):
+        if not self._ipc_server:
+            return
+        try:
+            self._ipc_server.stop()
+        except Exception:
+            pass
+        self._ipc_server = None
+
+    def _handle_ipc_message(self, message: dict):
+        if message.get("channel") != "timer.command":
+            return
+        command = self._parse_gui_payload(message.get("data", {}))
+        if command is None:
+            return
+        _run_in_background(self.loop, self.input_queue.put_nowait, command)
 
     def send_sync(self, remaining_seconds: int):
         self._write(f"SYNC:{remaining_seconds}\n")
@@ -194,6 +278,7 @@ class ClientGUIBridge:
         self.process = None
         if process and process.poll() is None:
             process.kill()
+        self._stop_ipc_server()
 
     def _parse_gui_command(self, line: str) -> UserCommand | None:
         text = line.strip()
@@ -208,7 +293,9 @@ class ClientGUIBridge:
             payload = json.loads(text)
         except json.JSONDecodeError:
             return None
+        return self._parse_gui_payload(payload)
 
+    def _parse_gui_payload(self, payload: dict) -> UserCommand | None:
         command = payload.get("cmd")
         if command == "start_exam":
             print("[GUI] Start button pressed.")
@@ -223,6 +310,11 @@ class ClientGUIBridge:
 
     def _write(self, message: str):
         if not self.process or self.process.poll() is not None:
+            return
+        if self._ipc_server and self._ipc_server.send(
+            "client.timer_state",
+            {"line": message.rstrip("\n")},
+        ):
             return
 
         try:
@@ -447,6 +539,7 @@ class WebSocketSession:
         recorder: ReplayRecorder | None,
         *,
         gui_ui: str = "tk",
+        ipc_transport: str = "auto",
         incident_buffer: IncidentBuffer | None = None,
     ):
         self.ws_url = ws_url
@@ -462,8 +555,13 @@ class WebSocketSession:
             start_event=asyncio.Event(),
         )
         self.output_dir = os.path.join("data", "client", self.session_uuid)
-        self.stdin = StdinBridge(self.loop)
-        self.gui = ClientGUIBridge(self.loop, self.stdin.queue, ui=gui_ui)
+        self.stdin = StdinBridge(self.loop, ipc_transport=ipc_transport)
+        self.gui = ClientGUIBridge(
+            self.loop,
+            self.stdin.queue,
+            ui=gui_ui,
+            ipc_transport=ipc_transport,
+        )
         self.exam_state_logger = ExamStateLogger(self.output_dir)
         self.incident_engine = ClientIncidentEngine()
         self.incident_buffer = incident_buffer
@@ -587,6 +685,7 @@ class WebSocketSession:
         finally:
             listener_task.cancel()
             self.gui.close()
+            await self.stdin.close()
             self._stop_runtime_monitors()
             await self.replay_save_queue.aclose()
             for task in list(self._background_tasks):
@@ -1133,16 +1232,17 @@ class WebSocketSession:
             await self._report_incident(incident)
 
     async def _flush_incident_buffer(self):
-        if not self.incident_buffer or self.incident_buffer.unacked_count() == 0:
+        incident_buffer = getattr(self, "incident_buffer", None)
+        if not incident_buffer or incident_buffer.unacked_count() == 0:
             return
-        unacked = self.incident_buffer.get_unacked()
+        unacked = incident_buffer.get_unacked()
         print(f"[INCIDENT] Flushing {len(unacked)} unacked incident(s) (seq {unacked[0].get('seq')}–{unacked[-1].get('seq')})...")
         for payload in unacked:
             seq = payload.get("seq")
             try:
                 await self._send_payload(events.incident_report(payload))
                 if seq is not None:
-                    self.incident_buffer.mark_sent(seq)
+                    incident_buffer.mark_sent(seq)
             except Exception as exc:
                 print(f"[INCIDENT] Flush stopped at seq={seq}: {exc} — remaining stay in buffer.")
                 break
@@ -1157,14 +1257,15 @@ class WebSocketSession:
         if needs_evidence:
             incident_payload["evidence_status"] = "pending"
 
-        if self.incident_buffer:
-            incident_payload = self.incident_buffer.enqueue(incident_payload)
+        incident_buffer = getattr(self, "incident_buffer", None)
+        if incident_buffer:
+            incident_payload = incident_buffer.enqueue(incident_payload)
 
         seq = incident_payload.get("seq")
         try:
             await self._send_payload(events.incident_report(incident_payload))
-            if self.incident_buffer and seq is not None:
-                self.incident_buffer.mark_sent(seq)
+            if incident_buffer and seq is not None:
+                incident_buffer.mark_sent(seq)
         except Exception as exc:
             incident_id = incident_payload.get("incident_id")
             seq_label = f" seq={seq}" if seq is not None else ""
@@ -1348,6 +1449,7 @@ async def run_ws(
     recorder: ReplayRecorder | None,
     *,
     gui_ui: str = "tk",
+    ipc_transport: str = "auto",
     incident_buffer: IncidentBuffer | None = None,
 ):
     """Connect via WebSocket, handle exam flow and pings."""
@@ -1356,5 +1458,6 @@ async def run_ws(
             return await WebSocketSession(
                 ws_url, base_url, session_uuid, password, ws, recorder,
                 gui_ui=gui_ui,
+                ipc_transport=ipc_transport,
                 incident_buffer=incident_buffer,
             ).run()

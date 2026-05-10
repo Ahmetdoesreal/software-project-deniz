@@ -350,6 +350,8 @@ class ServerManager(tk.Tk):
             str(self.v_port.get()),
             "--exam-duration",
             str(self.v_dur.get()),
+            "--ipc-transport",
+            "auto",
         ]
         exam_file = self.v_file.get().strip()
         if exam_file:

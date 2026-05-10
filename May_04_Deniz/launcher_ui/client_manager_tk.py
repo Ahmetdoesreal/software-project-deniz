@@ -278,6 +278,8 @@ class ClientManager(tk.Tk):
             self.v_login.get().strip(),
             "--password",
             self.v_pass.get().strip(),
+            "--ipc-transport",
+            "auto",
         ]
         ad_domain = self._auth_config.get("ad_domain", "")
         auth_secret = self._auth_config.get("auth_secret", "")

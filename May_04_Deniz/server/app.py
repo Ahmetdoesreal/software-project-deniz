@@ -97,6 +97,10 @@ async def cleanup_background_tasks(app: web.Application):
     
     if state.gui_process and state.gui_process.poll() is None:
         state.gui_process.kill()
+    gui_ipc = getattr(state, "gui_ipc_server", None)
+    if gui_ipc:
+        gui_ipc.stop()
+        state.gui_ipc_server = None
 
 
 def create_app(args) -> web.Application:
@@ -122,6 +126,7 @@ def create_app(args) -> web.Application:
     app["python_executable"] = getattr(args, "python_executable", None)
     app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
     app["auth_secret"] = str(getattr(args, "auth_secret", None) or "")
+    app["ipc_transport"] = str(getattr(args, "ipc_transport", "auto") or "auto")
     gui_ui = str(getattr(args, "ui", "tk") or "tk").strip().lower()
     if gui_ui not in {"tk", "qt"}:
         gui_ui = "tk"

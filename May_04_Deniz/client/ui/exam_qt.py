@@ -54,12 +54,17 @@ except ImportError:  # pragma: no cover - import guard
     raise
 
 from client.submission import build_file_preview, format_bytes
+from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from common.runtime_logging import setup_runtime_logging
 from ui.widgets import apply_theme, make_button, monospace_font, style_button
 from ui.theme import M, TY, apply_typography
 
+_IPC_CLIENT = None
+
 
 def _emit_command(payload: dict) -> None:
+    if _IPC_CLIENT and _IPC_CLIENT.send("timer.command", payload):
+        return
     print(json.dumps(payload), flush=True)
 
 
@@ -568,47 +573,60 @@ class ExamTimerGUI(QMainWindow):
         self.submission_window.activateWindow()
 
 
+def _handle_ipc_line(signals: _IPCSignals, line: str) -> None:
+    command, value = _parse_ipc_line(line.strip())
+    try:
+        if command == "SYNC":
+            signals.sync.emit(int(value))
+        elif command == "PAUSE":
+            payload = json.loads(value) if value else {}
+            signals.pause.emit(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "RESUME":
+            payload = json.loads(value) if value else {}
+            signals.resume.emit(
+                int(payload.get("remaining_seconds", 0) or 0),
+                str(payload.get("reason", "") or ""),
+            )
+        elif command == "END":
+            signals.end.emit()
+        elif command == "RESET":
+            signals.reset.emit()
+        elif command == "ERROR":
+            signals.error.emit(value)
+        elif command == "OPEN_FINISH":
+            signals.open_finish.emit(value)
+        elif command == "UPLOAD_OK":
+            signals.upload_ok.emit(value)
+        elif command == "UPLOAD_ERROR":
+            signals.upload_error.emit(value)
+        elif command == "UPLOAD_STEP":
+            signals.upload_step.emit(value)
+    except Exception:
+        pass
+
+
+def _handle_ipc_message(signals: _IPCSignals, message: dict) -> None:
+    if message.get("channel") != "client.timer_state":
+        return
+    line = str(message.get("data", {}).get("line", "") or "")
+    if line:
+        _handle_ipc_line(signals, line)
+
+
 def _ipc_reader(signals: _IPCSignals) -> None:
     try:
         for line in iter(sys.stdin.readline, ""):
-            command, value = _parse_ipc_line(line.strip())
-            try:
-                if command == "SYNC":
-                    signals.sync.emit(int(value))
-                elif command == "PAUSE":
-                    payload = json.loads(value) if value else {}
-                    signals.pause.emit(
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "RESUME":
-                    payload = json.loads(value) if value else {}
-                    signals.resume.emit(
-                        int(payload.get("remaining_seconds", 0) or 0),
-                        str(payload.get("reason", "") or ""),
-                    )
-                elif command == "END":
-                    signals.end.emit()
-                elif command == "RESET":
-                    signals.reset.emit()
-                elif command == "ERROR":
-                    signals.error.emit(value)
-                elif command == "OPEN_FINISH":
-                    signals.open_finish.emit(value)
-                elif command == "UPLOAD_OK":
-                    signals.upload_ok.emit(value)
-                elif command == "UPLOAD_ERROR":
-                    signals.upload_error.emit(value)
-                elif command == "UPLOAD_STEP":
-                    signals.upload_step.emit(value)
-            except Exception:
-                pass
+            _handle_ipc_line(signals, line)
     except (OSError, ValueError):
         pass
     signals.parent_closed.emit()
 
 
 def run() -> int:
+    global _IPC_CLIENT
     log_dir = PROJECT_DIR / "data" / "logs" / "client"
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_runtime_logging("client_gui", log_dir)
@@ -633,11 +651,21 @@ def run() -> int:
     signals.upload_step.connect(gui.handle_upload_step)
     if not standalone:
         signals.parent_closed.connect(gui.force_close)
+    if should_use_ws_ipc():
+        _IPC_CLIENT = ThreadedIpcClient(
+            role="timer_gui",
+            on_message=lambda message: _handle_ipc_message(signals, message),
+        )
+        if not _IPC_CLIENT.start():
+            _IPC_CLIENT = None
 
     reader_thread = Thread(target=_ipc_reader, args=(signals,), daemon=True)
     reader_thread.start()
 
-    return app.exec()
+    exit_code = app.exec()
+    if _IPC_CLIENT:
+        _IPC_CLIENT.stop()
+    return exit_code
 
 
 if __name__ == "__main__":
