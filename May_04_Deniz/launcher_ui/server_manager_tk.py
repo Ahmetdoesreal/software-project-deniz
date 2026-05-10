@@ -61,8 +61,8 @@ class ServerManager(tk.Tk):
         self._server_prompt_status = "Server stopped."
 
         self.title("Exam Server Manager")
-        self.geometry("920x760")
-        self.resizable(False, False)
+        self.geometry("1280x960")
+        self.resizable(True, True)
         install_close_guard(self, self.on_close_request, bind_all=True)
 
         style = ttk.Style(self)
