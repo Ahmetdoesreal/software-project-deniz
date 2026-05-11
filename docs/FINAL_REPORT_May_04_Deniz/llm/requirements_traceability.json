@@ -74,9 +74,9 @@
     },
     {
       "id": "FR-AUTH-003",
-      "summary": "Temporary CATS/AD bypass is controlled by server commands and status.",
-      "modules": ["server.tasks", "server.handlers", "client.preflight"],
-      "interfaces": ["/auth/status", "/disablecatsauth", "/disableadauth", "/enablecatsauth", "/enableadauth", "/authstatus"],
+      "summary": "Temporary CATS/AD disable is controlled by server commands and requires admin validation before login succeeds.",
+      "modules": ["server.tasks", "server.handlers", "server.auth_validation", "client.preflight"],
+      "interfaces": ["/auth/status", "/disablecatsauth", "/disableadauth", "/enablecatsauth", "/enableadauth", "/authstatus", "/authrequests", "/approveauth", "/denyauth"],
       "tests": ["tests/unit/test_auth_bypass.py"]
     },
     {

@@ -33,11 +33,11 @@ python -m unittest discover -s tests
 | Projector route source check | PASS: `/projector` and `/projector/events` are registered in `server.app`. |
 | Command source check | PASS: `/disablecatsauth`, `/editincidentrules`, and `/finishexam` are present in `server.tasks`. |
 | Compile validation | PASS: `python -m compileall -q .` exited with code 0. |
-| Full automated test suite | PASS: `Ran 149 tests in 17.997s`, `OK`. |
+| Full automated test suite | PASS: `Ran 151 tests in 21.956s`, `OK`. |
 
 ## Observed Warnings During Tests
 
-- `aiohttp` emitted `NotAppKeyWarning` in `tests/unit/test_projector.py` because the test application uses string keys such as `exam_phase`, `exam_start_enabled`, and `broadcast_interval`. This warning is test-only and did not fail the suite.
+- `aiohttp` emitted `NotAppKeyWarning` in projector and auth validation tests because test applications use string keys such as `exam_phase`, `auth_bypass`, `auth_secret`, and `broadcast_interval`. This warning is test-only and did not fail the suite.
 - One async test log noted a task duration over the debug threshold in `test_server_handlers.py`. The test completed successfully.
 
 ## Documentation Coverage Checklist
@@ -58,7 +58,7 @@ python -m unittest discover -s tests
 | Reconnect and offline buffering behavior | YES |
 | Safe exam material extraction | YES |
 | Submission and artifact flow | YES |
-| Authentication and temporary bypass flow | YES |
+| Authentication, temporary auth disable, and admin validation flow | YES |
 | Projector page and SSE payload | YES |
 | Security, privacy, and public display safety | YES |
 | Automated test inventory and acceptance matrix | YES |

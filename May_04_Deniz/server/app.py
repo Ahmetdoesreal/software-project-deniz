@@ -129,6 +129,7 @@ def create_app(args) -> web.Application:
     app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
     app["auth_secret"] = str(getattr(args, "auth_secret", None) or "")
     app["auth_bypass"] = {"cats_until": 0.0, "ad_until": 0.0}
+    app["auth_validation"] = {"requests": {}, "approvals": {}}
     app["ipc_transport"] = str(getattr(args, "ipc_transport", "auto") or "auto")
     gui_ui = str(getattr(args, "ui", "tk") or "tk").strip().lower()
     if gui_ui not in {"tk", "qt"}:

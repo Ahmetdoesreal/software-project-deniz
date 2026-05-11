@@ -11,7 +11,7 @@ All HTTP routes are registered by `server.app.create_app`.
 | Method | Route | Direction | Purpose | Sensitive data policy |
 | --- | --- | --- | --- | --- |
 | `GET` | `/health` | Client/launcher to server | Verifies server identity and availability. | Public server metadata only. |
-| `GET` | `/auth/status?login_id=<id>` | Client preflight to server | Returns auth requirements, bypass status, server time, and whether login id is allowed. | Does not authenticate the user; used only to decide local preflight behavior. |
+| `GET` | `/auth/status?login_id=<id>` | Client preflight to server | Returns auth requirements, temporary disable status, admin validation status, server time, and whether login id is allowed. | Does not authenticate the user; used only to decide local preflight behavior. |
 | `GET` | `/projector` | Browser to server | Returns read-only projection HTML. | Public-safe only; no controls. |
 | `GET` | `/projector/events` | Browser to server | SSE stream of projection-safe state. | Must not include login ids, UUIDs, IPs, process names, window titles, paths, or evidence. |
 | `POST` | `/login` | Client to server | Validates login id/password/token and returns session UUID. | Handles credentials; response contains session UUID. |
@@ -29,6 +29,9 @@ The auth status response includes:
 - `ad_required`: whether AD token behavior should normally run.
 - `cats_bypass_until`: bypass expiry timestamp when active.
 - `ad_bypass_until`: bypass expiry timestamp when active.
+- `admin_validation_required`: whether the disabled auth state requires server-side admin approval for this login.
+- `validation_status`: `none`, `pending`, `approved`, or `denied`.
+- `validation_approval_until`: expiry timestamp for the approval window when approved.
 - `allowed_user`: whether the login id is present in allowed users.
 - `server_time`: server time.
 - `reason`: explanatory status text.
@@ -182,6 +185,9 @@ Commands are parsed by `server.tasks.handle_admin_command`. Commands must start 
 | `/enablecatsauth` | Re-enable CATS preflight. |
 | `/enableadauth` | Re-enable AD token auth. |
 | `/authstatus` | Print current auth bypass status. |
+| `/authrequests` | List pending, approved, and denied admin credential validation requests. |
+| `/approveauth <id> [seconds]` | Briefly approve a pending login affected by disabled CATS/AD auth. |
+| `/denyauth <id> [reason]` | Deny a pending login affected by disabled CATS/AD auth. |
 | `/kick <id>` | Disconnect and mark a user kicked. |
 | `/ban <id>` | Disconnect and mark a user banned. |
 | `/unban <id>` | Clear banned state. |

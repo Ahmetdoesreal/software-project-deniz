@@ -46,6 +46,10 @@
       "responsibility": "Read-only projector HTML, SSE endpoint, projection-safe state builder.",
       "owned_contracts": ["/projector", "/projector/events", "projection payload"]
     },
+    "server.auth_validation": {
+      "responsibility": "Runtime-only admin validation queue for logins affected by temporarily disabled CATS or AD auth.",
+      "owned_contracts": ["validation request", "approval window", "/authrequests", "/approveauth", "/denyauth"]
+    },
     "client.main": {
       "responsibility": "Client CLI, discovery, login, exam preparation, persistent recorder and buffer ownership, reconnect loop.",
       "owned_contracts": ["client CLI arguments", "main_loop"]

@@ -8,7 +8,7 @@ import aiohttp
 from common.discovery import discover_server_with_local_fallback
 from common.runtime_logging import install_asyncio_exception_logging, setup_runtime_logging
 from .custommodules.replay_recorder import ReplayRecorder
-from .auth import check_health, perform_login
+from .auth import PendingAuthValidation, check_health, perform_login
 from .exam import fetch_exam_prep
 from .incident_buffer import IncidentBuffer
 from .preflight import fetch_auth_status
@@ -80,18 +80,39 @@ async def resolve_server_target(args) -> tuple[str, int]:
 
 
 async def establish_session(base_url: str, args, recorder_manager: RecorderManager) -> str:
-    ad_domain = getattr(args, "ad_domain", None) or None
-    ad_secret = getattr(args, "auth_secret", None) or None
-    auth_status = await fetch_auth_status(base_url, args.login_id)
-    if isinstance(auth_status, dict) and not bool(auth_status.get("ad_required", bool(ad_domain and ad_secret))):
-        print("[AUTH] Server temporarily allows AD auth bypass for this login.")
-        ad_domain = None
-        ad_secret = None
-    session_uuid = await perform_login(
-        base_url, args.login_id, args.password,
-        ad_domain=ad_domain,
-        ad_secret=ad_secret,
-    )
+    configured_ad_domain = getattr(args, "ad_domain", None) or None
+    configured_ad_secret = getattr(args, "auth_secret", None) or None
+    pending_notice_printed = False
+    ad_disable_notice_printed = False
+    while True:
+        ad_domain = configured_ad_domain
+        ad_secret = configured_ad_secret
+        credential_override = None
+        auth_status = await fetch_auth_status(base_url, args.login_id)
+        if isinstance(auth_status, dict):
+            if str(auth_status.get("validation_status") or "").lower() == "denied":
+                raise ValueError("Credentials were denied by the admin.")
+            if ad_domain and ad_secret and not bool(auth_status.get("ad_required", True)):
+                if not ad_disable_notice_printed:
+                    print("[AUTH] Server disabled AD auth for this login; waiting for server-side admin validation.")
+                    ad_disable_notice_printed = True
+                ad_domain = None
+                ad_secret = None
+            if bool(auth_status.get("admin_validation_required")) and not bool(auth_status.get("ad_required", bool(ad_domain and ad_secret))):
+                credential_override = "ADMIN_VALIDATION_REQUEST"
+        try:
+            session_uuid = await perform_login(
+                base_url, args.login_id, args.password,
+                ad_domain=ad_domain,
+                ad_secret=ad_secret,
+                credential_override=credential_override,
+            )
+            break
+        except PendingAuthValidation as exc:
+            if not pending_notice_printed:
+                print(f"[AUTH] {exc} Ask the admin to run /authrequests and /approveauth {args.login_id}.")
+                pending_notice_printed = True
+            await asyncio.sleep(max(1.0, min(5.0, float(getattr(args, "reconnect", 3) or 3))))
 
     if getattr(args, "check_login", False):
         print("[+] Credentials verified successfully.")

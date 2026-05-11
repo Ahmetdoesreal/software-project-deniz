@@ -15,6 +15,7 @@ from .state import state
 from .submissions import build_artifact_path, build_submission_path, safe_relative_path
 from . import session_state
 from . import ip_guard
+from . import auth_validation
 
 
 def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
@@ -702,10 +703,15 @@ async def auth_status(request: web.Request) -> web.Response:
     cats_bypass = cats_until > time.time()
     ad_bypass = ad_until > time.time() and allowed_user
     auth_secret = str(request.app.get("auth_secret") or "")
+    admin_validation_required = auth_validation.validation_required(
+        request.app,
+        allowed_user=allowed_user,
+    )
+    validation_status = auth_validation.validation_status(request.app, login_id)
     if not allowed_user:
         reason = "login_id is not in allowed_users.json" if login_id else "login_id is required"
-    elif ad_bypass or cats_bypass:
-        reason = "temporary auth bypass active"
+    elif admin_validation_required:
+        reason = f"temporary auth bypass active; admin validation {validation_status}"
     else:
         reason = "normal auth required"
     return web.json_response(
@@ -715,6 +721,9 @@ async def auth_status(request: web.Request) -> web.Response:
             "ad_required": bool(auth_secret) and not ad_bypass,
             "cats_bypass_until": _iso_from_epoch(cats_until),
             "ad_bypass_until": _iso_from_epoch(ad_until if allowed_user else 0.0),
+            "admin_validation_required": admin_validation_required,
+            "validation_status": validation_status,
+            "validation_approval_until": _iso_from_epoch(auth_validation.approval_until(request.app, login_id)),
             "server_time": protocol.now_iso(),
             "reason": reason,
         }
@@ -750,11 +759,49 @@ def _validate_token(request: web.Request, login_id: str, token: str) -> web.Resp
     if not secret:
         return None  # dev/testing: no secret set, skip token verification
     if _auth_bypass_active(request, "ad") and login_id in state.allowed_users and str(token or "").strip():
-        print(f"[AUTH] Temporary AD bypass used for {login_id}.")
+        print(f"[AUTH] Temporary AD bypass used for {login_id} after admin validation.")
         return None
     if not _verify_token(login_id, token, secret):
         return _json_error("Invalid credentials.", 401)
     return None
+
+
+def _validate_admin_auth_bypass(request: web.Request, login_id: str, credential: str) -> web.Response | None:
+    modes = auth_validation.active_bypass_modes(
+        request.app,
+        allowed_user=login_id in state.allowed_users,
+    )
+    if not modes:
+        return None
+
+    if not str(credential or "").strip():
+        return _json_error("login_id and password required", 400)
+
+    status = auth_validation.validation_status(request.app, login_id)
+    if status == "approved":
+        print(f"[AUTH] Admin-approved temporary auth bypass used for {login_id}.")
+        return None
+    if status == "denied":
+        return _json_error("Credentials were denied by the admin.", 403, code="AUTH_REJECTED")
+
+    auth_validation.record_request(
+        request.app,
+        login_id=login_id,
+        ip=_client_ip(request),
+        modes=modes,
+        password_present=True,
+    )
+    print(f"[AUTH] Login for {login_id} is waiting for admin validation ({', '.join(modes)} bypass).")
+    return web.json_response(
+        {
+            "status": "pending_validation",
+            "reason": "Waiting for admin credential validation.",
+            "login_id": login_id,
+            "auth_modes": modes,
+            "server_time": protocol.now_iso(),
+        },
+        status=202,
+    )
 
 
 async def login_handler(request: web.Request) -> web.Response:
@@ -769,6 +816,10 @@ async def login_handler(request: web.Request) -> web.Response:
 
     if login_id not in state.allowed_users:
         return _json_error("User is not allowed to take this exam.", 403)
+
+    bypass_validation = _validate_admin_auth_bypass(request, login_id, token)
+    if bypass_validation is not None:
+        return bypass_validation
 
     token_error = _validate_token(request, login_id, token)
     if token_error:

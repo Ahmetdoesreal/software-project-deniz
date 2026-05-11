@@ -19,7 +19,7 @@ These commands are run from `May_04_Deniz/`.
 
 | Test file | Coverage area |
 | --- | --- |
-| `test_auth_bypass.py` | Temporary CATS/AD bypass commands and status behavior. |
+| `test_auth_bypass.py` | Temporary CATS/AD disable commands, admin validation queue, approve/deny behavior, and status behavior. |
 | `test_client_incident_reporting.py` | Client incident reporting behavior and required runtime fields. |
 | `test_client_incidents.py` | Incident engine, policy matching, focused-window rules, process definitions, incident rules, browser New Tab whitelist, CATS-style configurable whitelist, and Unicode title normalization. |
 | `test_exam_files.py` | Safe exam material extraction, desktop target selection, manifest behavior, and unsafe ZIP rejection. |
@@ -151,7 +151,7 @@ These commands are run from `May_04_Deniz/`.
 - Client reconnect must not stop local logging.
 - Incident buffer restore must not duplicate queued entries.
 - Exam ZIP extraction must not delete unmarked user folders.
-- Auth bypass must expire and remain server-authorized.
+- Auth disable must expire, remain server-authorized, and require admin validation before login succeeds.
 - Projector payload must remain public-safe.
 
 ## 6. Validation Record Location

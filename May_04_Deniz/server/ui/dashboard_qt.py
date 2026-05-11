@@ -297,6 +297,7 @@ def _multi_incident_detail_lines(incidents: list[dict]) -> list[tuple[str, str]]
 def _server_info_rows(info: dict) -> list[tuple[str, str]]:
     all_host_ips = ", ".join(str(ip) for ip in info.get("all_host_ips", []) if str(ip).strip()) or "-"
     auth_bypass = info.get("auth_bypass") or {}
+    validation = auth_bypass.get("validation") or {}
     return [
         ("Server ID", str(info.get("server_id", "-"))),
         ("Host", str(info.get("host", "-"))),
@@ -322,6 +323,9 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
         ("Remember Settings", "Yes" if info.get("remember_settings", True) else "No"),
         ("CATS Auth Disabled", f"{auth_bypass.get('cats_disabled', False)} ({auth_bypass.get('cats_remaining_seconds', 0)}s)"),
         ("AD Auth Disabled", f"{auth_bypass.get('ad_disabled', False)} ({auth_bypass.get('ad_remaining_seconds', 0)}s)"),
+        ("Pending Auth Validations", str(validation.get("pending_count", 0))),
+        ("Approved Auth Validations", str(validation.get("approved_count", 0))),
+        ("Denied Auth Validations", str(validation.get("denied_count", 0))),
         ("Incidents", str(info.get("incident_count", 0))),
         ("Active Incidents", str(info.get("active_incident_count", 0))),
     ]

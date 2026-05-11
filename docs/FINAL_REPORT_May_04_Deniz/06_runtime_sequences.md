@@ -212,15 +212,19 @@ Banned users are not moved to awaiting-submission by global finish. Connected no
 5. Server updates `incident_rules.json` when requested.
 6. Client policy update causes future matching incidents to be suppressed, downgraded, or escalated according to the saved rule.
 
-## 16. Auth Bypass Sequence
+## 16. Temporary Auth Disable And Admin Validation Sequence
 
 1. Operator runs `/disablecatsauth [seconds]` or `/disableadauth [seconds]`.
 2. Server stores runtime expiry time.
 3. Client preflight requests `/auth/status?login_id=<id>`.
-4. Server returns whether bypass is currently active.
-5. Client skips only the allowed local preflight portion.
-6. Server accepts AD bypass login only for allowed users and nonempty passwords.
-7. Expiry automatically returns behavior to strict auth.
+4. Server returns which local checks are disabled and whether admin validation is required.
+5. Client skips only the disabled local preflight portion.
+6. Client submits login with a nonempty credential.
+7. Server records a pending validation request and returns `202 pending_validation`.
+8. Admin runs `/authrequests` to view attempts.
+9. Admin runs `/approveauth <login_id> [seconds]` or `/denyauth <login_id> [reason]`.
+10. Client retries while pending; approved attempts proceed during the short approval window.
+11. Expiry automatically returns behavior to strict auth.
 
 ## 17. Local IPC Startup
 

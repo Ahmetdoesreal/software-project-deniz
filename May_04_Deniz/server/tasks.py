@@ -15,6 +15,7 @@ from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
 from .state import EXAM_POLICY_FILE, INCIDENT_RULES_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
 from . import ip_guard
+from . import auth_validation
 from .settings_service import (
     apply_process_decision,
     apply_incident_rule_decision,
@@ -369,6 +370,7 @@ def _auth_bypass_snapshot(app: web.Application) -> dict:
         "cats_remaining_seconds": cats_remaining,
         "ad_remaining_seconds": ad_remaining,
         "auth_secret_required": bool(str(app.get("auth_secret") or "")),
+        "validation": auth_validation.summary(app),
     }
 
 
@@ -789,7 +791,10 @@ def _parse_auth_bypass_seconds(parts: list[str]) -> int:
 def _set_auth_bypass(app: web.Application, name: str, seconds: int):
     bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
     bypass[f"{name}_until"] = time.time() + seconds
-    print(f"[AUTH] Temporarily disabled {name.upper()} auth for {seconds} second(s).")
+    print(
+        f"[AUTH] Temporarily disabled {name.upper()} auth for {seconds} second(s). "
+        "New matching logins require admin validation."
+    )
 
 
 def _clear_auth_bypass(app: web.Application, name: str):
@@ -800,14 +805,65 @@ def _clear_auth_bypass(app: web.Application, name: str):
 
 def _print_auth_status(app: web.Application):
     snapshot = _auth_bypass_snapshot(app)
+    validation = snapshot.get("validation", {})
     print(
         "[AUTH] "
         f"CATS disabled={snapshot['cats_disabled']} "
         f"({snapshot['cats_remaining_seconds']}s remaining); "
         f"AD disabled={snapshot['ad_disabled']} "
         f"({snapshot['ad_remaining_seconds']}s remaining); "
-        f"server token required={snapshot['auth_secret_required']}"
+        f"server token required={snapshot['auth_secret_required']}; "
+        f"pending validation={validation.get('pending_count', 0)}"
     )
+
+
+def _parse_auth_validation_seconds(parts: list[str]) -> int:
+    if len(parts) < 3:
+        return auth_validation.APPROVAL_SECONDS_DEFAULT
+    try:
+        seconds = int(float(parts[2]))
+    except ValueError:
+        return auth_validation.APPROVAL_SECONDS_DEFAULT
+    return max(1, min(auth_validation.APPROVAL_SECONDS_MAX, seconds))
+
+
+def _print_auth_requests(app: web.Application):
+    rows = auth_validation.rows(app)
+    if not rows:
+        print("[AUTH] No auth validation requests.")
+        return
+    print("[AUTH] Pending/admin validation requests:")
+    for row in rows:
+        modes = ",".join(row.get("auth_modes") or []) or "-"
+        print(
+            f"       - {row.get('login_id')}: status={row.get('status')} "
+            f"modes={modes} ip={row.get('ip') or '-'} "
+            f"attempts={row.get('attempts', 0)} "
+            f"approval_remaining={row.get('approval_remaining_seconds', 0)}s"
+        )
+
+
+def _approve_auth_request(app: web.Application, parts: list[str]):
+    if len(parts) < 2:
+        print("[AUTH] Usage: /approveauth <login_id> [seconds]")
+        return
+    login_id = parts[1].strip()
+    if login_id not in state.allowed_users:
+        print(f"[AUTH] Cannot approve '{login_id}': not in allowed_users.json")
+        return
+    seconds = _parse_auth_validation_seconds(parts)
+    auth_validation.approve(app, login_id, seconds)
+    print(f"[AUTH] Approved credentials for {login_id} for {seconds} second(s).")
+
+
+def _deny_auth_request(app: web.Application, parts: list[str]):
+    if len(parts) < 2:
+        print("[AUTH] Usage: /denyauth <login_id> [reason]")
+        return
+    login_id = parts[1].strip()
+    reason = " ".join(parts[2:]).strip()
+    auth_validation.deny(app, login_id, reason)
+    print(f"[AUTH] Denied credentials for {login_id}.")
 
 
 def _print_connected_clients():
@@ -1654,6 +1710,18 @@ async def handle_admin_command(line: str, app: web.Application):
         _print_auth_status(app)
         return
 
+    if command == "/authrequests":
+        _print_auth_requests(app)
+        return
+
+    if command == "/approveauth":
+        _approve_auth_request(app, parts)
+        return
+
+    if command == "/denyauth":
+        _deny_auth_request(app, parts)
+        return
+
     if command == "/kick":
         await _handle_kick(parts)
         return
@@ -1701,6 +1769,9 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /enablecatsauth       - Re-enable CATS preflight immediately")
         print("  /enableadauth         - Re-enable AD token auth immediately")
         print("  /authstatus           - Show temporary auth bypass status")
+        print("  /authrequests         - List pending admin credential validations")
+        print("  /approveauth <id> [s] - Allow a pending auth validation briefly")
+        print("  /denyauth <id> [why]  - Deny a pending auth validation")
         print("  /kick <id>            - Disconnect a specific client")
         print("  /ban <id>             - Ban and disconnect a specific user")
         print("  /unban <id>           - Remove a user's ban")

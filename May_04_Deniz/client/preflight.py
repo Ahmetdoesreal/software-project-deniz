@@ -2,7 +2,10 @@
 client/preflight.py
 
 Local pre-login validation. When possible, the launcher first asks the server
-whether a short-lived CATS/AD bypass is currently allowed for this login.
+whether a short-lived CATS/AD disable window is active for this login. When
+the server disables a local auth check, the client skips that local check but
+the server places the login into an admin validation queue before allowing the
+session.
 Otherwise both checks run in parallel and must pass.
 
   1. CATS  — scrapes the school portal to confirm the student's credentials are live.
@@ -147,11 +150,13 @@ def run_preflight(
     cats_required = True
     ad_required = bool(ad_domain and auth_secret)
     if isinstance(auth_status, dict):
+        if str(auth_status.get("validation_status") or "").lower() == "denied":
+            return False, "Credentials were denied by the admin."
         cats_required = bool(auth_status.get("cats_required", True))
         ad_required = bool(auth_status.get("ad_required", ad_required))
 
     if not cats_required and not ad_required:
-        return True, "Temporary server auth bypass active."
+        return True, "Temporary server auth bypass active; waiting for admin validation on the server."
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         cats_future = pool.submit(_check_cats, login_id, password) if cats_required else None

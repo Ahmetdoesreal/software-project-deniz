@@ -9,7 +9,7 @@ The implementation uses several layered controls:
 - Server-side login and allowed-user checks.
 - Optional HMAC token validation through shared auth secret.
 - Optional CATS and AD preflight on the client.
-- Temporary server-authorized auth bypass with short TTL.
+- Temporary server-authorized local auth disable with short TTL and admin-managed credential validation.
 - Checksum-protected LAN event messages.
 - Secured sensitive events with signing, timestamp, nonce, and optional encryption.
 - Loopback-only token-protected local IPC.
@@ -27,17 +27,20 @@ The client sends login id, password, and optional token to `POST /login`. The se
 
 Client preflight can perform local CATS and AD checks before full runtime. The client first asks the server for `/auth/status?login_id=<id>`. If the server is unreachable or the status request fails, the client falls back to strict local behavior. This is important: bypass is never decided solely by the client.
 
-### Temporary Bypass
+### Temporary Auth Disable And Admin Validation
 
-Operators can temporarily bypass CATS or AD checks:
+Operators can temporarily disable local CATS or AD checks:
 
 - `/disablecatsauth [seconds]`
 - `/disableadauth [seconds]`
 - `/enablecatsauth`
 - `/enableadauth`
 - `/authstatus`
+- `/authrequests`
+- `/approveauth <login_id> [seconds]`
+- `/denyauth <login_id> [reason]`
 
-Default disable duration is 60 seconds and durations are clamped by server logic. Bypass state is runtime-only. It is not persisted into policy files. AD bypass only changes token behavior for allowed users and still requires a nonempty password.
+Default disable duration is 60 seconds and durations are clamped by server logic. Disable state is runtime-only. It is not persisted into policy files. A login affected by disabled CATS or AD does not pass automatically. The server records a validation request, the client waits and retries, and an admin must approve the login briefly before the server returns a session UUID. The validation request stores metadata such as login id, IP, disabled auth modes, timestamps, and status; it does not store the submitted password.
 
 ## 3. LAN Message Integrity And Security
 
@@ -156,7 +159,7 @@ The security posture is acceptable when:
 - Local IPC rejects invalid tokens and non-loopback peers.
 - Sensitive WebSocket events can be protected and decoded by both sides.
 - Projector payloads never contain private identifiers or evidence.
-- Auth bypass is short-lived, server-authorized, visible in status, and not persisted.
+- Auth disable is short-lived, server-authorized, visible in status, requires admin validation, and is not persisted.
 - Safe ZIP extraction rejects unsafe archive members.
 - Upload size/checksum validation is active.
 - Tests covering these areas pass.

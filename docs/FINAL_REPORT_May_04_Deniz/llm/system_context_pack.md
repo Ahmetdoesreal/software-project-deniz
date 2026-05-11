@@ -6,14 +6,14 @@ Authoritative source: `May_04_Deniz/`
 
 ## One-Paragraph System Definition
 
-`May_04_Deniz` is a Python LAN exam runtime with an authoritative `aiohttp` server, student clients, Tk/Qt GUI surfaces, local loopback IPC, process/focus/idle/hardware/replay monitoring, policy-driven incident detection, final submission upload, temporary server-authorized CATS/AD auth bypass, reconnect-safe incident buffering, safe desktop exam-file extraction, and a read-only projection notification page.
+`May_04_Deniz` is a Python LAN exam runtime with an authoritative `aiohttp` server, student clients, Tk/Qt GUI surfaces, local loopback IPC, process/focus/idle/hardware/replay monitoring, policy-driven incident detection, final submission upload, temporary server-authorized CATS/AD auth disable with admin validation, reconnect-safe incident buffering, safe desktop exam-file extraction, and a read-only projection notification page.
 
 ## Critical Architecture Rules
 
 - LAN student/server protocol is `common.events` over `/ws?id=<uuid>`.
 - Local GUI/manager process control is `common.ipc_ws` over loopback or stdio fallback.
 - Do not merge LAN WebSocket semantics with local IPC semantics.
-- Server owns users, policy, incident history, session state, submissions, artifacts, auth bypass, and dashboard/projector state.
+- Server owns users, policy, incident history, session state, submissions, artifacts, temporary auth disable/admin validation, and dashboard/projector state.
 - Client owns local observation: process list, focused window, idle, hardware, replay, local logs, desktop exam files, incident buffering, and submission bundle assembly.
 - Reconnect is network state only; monitors and local logging must continue.
 - Projector payloads must be public-safe by construction.
@@ -91,6 +91,9 @@ Admin commands:
 - `/enablecatsauth`
 - `/enableadauth`
 - `/authstatus`
+- `/authrequests`
+- `/approveauth <id> [seconds]`
+- `/denyauth <id> [reason]`
 - `/kick <id>`
 - `/ban <id>`
 - `/unban <id>`

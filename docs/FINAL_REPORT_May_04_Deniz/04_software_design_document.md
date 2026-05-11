@@ -24,7 +24,7 @@ The protocol allows reliability metadata such as `seq`, `session_id`, `buffered`
 
 ### App Creation
 
-`server.app.create_app(args)` builds the `aiohttp.web.Application`. It loads users, stores runtime config in app keys, initializes auth bypass runtime state, registers all routes, and installs startup/cleanup callbacks. Startup creates background tasks for time broadcasting, console reading, discovery announcing, duplicate guard, and optional GUI launch.
+`server.app.create_app(args)` builds the `aiohttp.web.Application`. It loads users, stores runtime config in app keys, initializes temporary auth-disable and admin-validation runtime state, registers all routes, and installs startup/cleanup callbacks. Startup creates background tasks for time broadcasting, console reading, discovery announcing, duplicate guard, and optional GUI launch.
 
 ### HTTP Handlers
 
@@ -151,15 +151,20 @@ Incident artifacts and replay saves use similar upload infrastructure but target
 
 ## 8. Auth And Preflight Design
 
-The client preflight layer asks the server for `/auth/status?login_id=<id>` before deciding whether local CATS or AD checks can be skipped. If this request fails, the client uses strict local behavior. The server remains the authority for temporary bypass windows. AD bypass does not mean anonymous login; it only changes token expectations for allowed login IDs and still requires a nonempty password.
+The client preflight layer asks the server for `/auth/status?login_id=<id>` before deciding whether local CATS or AD checks can be skipped. If this request fails, the client uses strict local behavior. When the server temporarily disables CATS or AD, the client skips only the disabled local check and then submits the login attempt to the server. The server records a pending admin validation request instead of allowing the session automatically.
 
-Bypass commands are runtime-only:
+The admin can review requests with `/authrequests`, approve one login briefly with `/approveauth <login_id> [seconds]`, or deny it with `/denyauth <login_id> [reason]`. The validation queue stores login id, source IP, disabled auth modes, timestamps, status, and whether a password was present. It does not store the password.
+
+Temporary auth-disable commands are runtime-only:
 
 - `/disablecatsauth [seconds]`
 - `/disableadauth [seconds]`
 - `/enablecatsauth`
 - `/enableadauth`
 - `/authstatus`
+- `/authrequests`
+- `/approveauth <login_id> [seconds]`
+- `/denyauth <login_id> [reason]`
 
 ## 9. Local IPC Design
 

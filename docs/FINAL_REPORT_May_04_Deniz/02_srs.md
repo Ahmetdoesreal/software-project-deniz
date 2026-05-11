@@ -29,7 +29,7 @@ The system is a local-area exam platform made of one authoritative server proces
 | FR-SRV-004 | The server shall load and persist users, incidents, process blacklist, exam policy, process definitions, and incident rules under `data/server`. | State methods initialize missing files and save normalized content. |
 | FR-SRV-005 | The server shall maintain authoritative per-user session state including waiting, running, paused, awaiting submission, submitted, banned, kicked, finished, and disconnected-derived status. | Dashboard state and WebSocket session-state messages are derived from the same user state model. |
 | FR-SRV-006 | The server shall broadcast time/session updates at the configured interval. | Running sessions receive remaining time updates; GUI state snapshots are pushed without requiring manual refresh. |
-| FR-SRV-007 | The server shall provide admin commands for clients, savescreen, exam status, add time, pause, resume, kill pid, global start, global finish, GUI open, policy/blacklist/definition/rule editing, settings import/export, auth bypass, kick, ban, unban, forgive violation, security, and help. | Commands are parsed by `handle_admin_command` and shared by CLI and GUI request dispatch. |
+| FR-SRV-007 | The server shall provide admin commands for clients, savescreen, exam status, add time, pause, resume, kill pid, global start, global finish, GUI open, policy/blacklist/definition/rule editing, settings import/export, temporary auth disable plus admin validation, kick, ban, unban, forgive violation, security, and help. | Commands are parsed by `handle_admin_command` and shared by CLI and GUI request dispatch. |
 | FR-SRV-008 | The server shall skip banned users during global finish. | `/finishexam` leaves banned users banned and reports skipped banned count. |
 | FR-SRV-009 | The server shall use WebSocket close messages that fit the close-frame byte limit. | Long reasons are trimmed without splitting UTF-8. |
 
@@ -94,9 +94,9 @@ The system is a local-area exam platform made of one authoritative server proces
 | ID | Requirement | Acceptance criteria |
 | --- | --- | --- |
 | FR-AUTH-001 | The client shall support CATS and AD preflight behavior as configured. | Preflight checks server auth status and falls back to strict local behavior if status cannot be fetched. |
-| FR-AUTH-002 | The server shall expose read-only auth status for a login id. | `GET /auth/status?login_id=<id>` returns whether CATS/AD are required and whether bypass is active. |
-| FR-AUTH-003 | The server shall support temporary CATS and AD bypass commands with default 60 seconds and bounded duration. | `/disablecatsauth`, `/disableadauth`, `/enablecatsauth`, `/enableadauth`, and `/authstatus` operate at runtime only. |
-| FR-AUTH-004 | AD bypass shall only allow nonempty passwords for login ids present in `allowed_users.json`. | Server remains authority for bypass allowance. |
+| FR-AUTH-002 | The server shall expose read-only auth status for a login id. | `GET /auth/status?login_id=<id>` returns whether CATS/AD are required, whether a temporary disable window is active, and whether admin validation is pending, approved, or denied. |
+| FR-AUTH-003 | The server shall support temporary CATS and AD disable commands with default 60 seconds and bounded duration. | `/disablecatsauth`, `/disableadauth`, `/enablecatsauth`, `/enableadauth`, and `/authstatus` operate at runtime only. |
+| FR-AUTH-004 | A login affected by disabled CATS or AD auth shall enter an admin-managed validation state before the session is allowed. | `/authrequests` lists attempts; `/approveauth <login_id> [seconds]` briefly allows the login; `/denyauth <login_id> [reason]` rejects it. Passwords are not stored in the validation queue. |
 
 ### 4.8 Local IPC And GUI
 
