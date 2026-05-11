@@ -14,6 +14,7 @@ from server import state as state_module
 from server.gui import (
     build_incident_rule_decision_payload,
     build_process_decision_payload,
+    incident_rule_row_from_incident,
     incident_rule_row_matches_filter,
     process_row_google_search_url,
     process_row_matches_filter,
@@ -447,6 +448,65 @@ class ProcessDatabaseTests(unittest.TestCase):
         self.assertTrue(payload["actions"]["kick"])
         self.assertTrue(payload["actions"]["pause_exam"])
         self.assertTrue(payload["save_policy"])
+
+    def test_incident_rule_save_prefill_reuses_legacy_title_pattern(self):
+        incident = _focused_incident(
+            "focus-whatsapp",
+            "student1",
+            "whatsapp \u2014 Yandex: 2 milyon sonuc bulundu - Profil 1 - Microsoft Edge",
+        )
+        settings_snapshot = {
+            "exam_policy": {
+                "rules": {
+                    "focused_window": {
+                        "blocked_window_titles": ["whatsapp"],
+                        "window_title_match_mode": "contains",
+                    }
+                }
+            }
+        }
+
+        row = incident_rule_row_from_incident(incident, settings_snapshot)
+
+        self.assertEqual(row["window_title_patterns"], ["whatsapp"])
+        self.assertEqual(row["match_mode"], "contains")
+        self.assertEqual(row["process_names"], [])
+        self.assertEqual(row["browser_process_names"], [])
+        self.assertIn("whatsapp", row["name"])
+
+    def test_incident_rule_save_prefill_strips_browser_suffix_without_legacy_policy(self):
+        incident = _focused_incident("focus-cats", "student1", "CATS - Exam Portal - Google Chrome")
+
+        row = incident_rule_row_from_incident(incident, {})
+
+        self.assertEqual(row["window_title_patterns"], ["CATS"])
+        self.assertEqual(row["match_mode"], "contains")
+        self.assertEqual(row["process_names"], [])
+
+    def test_incident_rule_payload_preserves_edited_match_fields(self):
+        row = incident_rule_row_from_incident(
+            _focused_incident("focus-whatsapp", "student1", "WhatsApp - Microsoft Edge"),
+            {},
+        )
+
+        payload = build_incident_rule_decision_payload(
+            row,
+            status="blacklist",
+            actions={"kill_pid": True},
+            save_policy=True,
+            priority=5,
+            process_names=["msedge.exe"],
+            browser_process_names=[],
+            window_title_patterns=["whatsapp"],
+            match_mode="contains",
+        )
+
+        definition = payload["definition"]
+        self.assertEqual(definition["window_title_patterns"], ["whatsapp"])
+        self.assertEqual(definition["process_names"], ["msedge.exe"])
+        self.assertEqual(definition["browser_process_names"], [])
+        self.assertEqual(definition["match_mode"], "contains")
+        self.assertTrue(definition["actions"]["kill_pid"])
 
 
 if __name__ == "__main__":

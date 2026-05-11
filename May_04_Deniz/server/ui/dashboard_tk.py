@@ -40,7 +40,11 @@ from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
     build_incident_rule_decision_payload,
     build_process_decision_payload,
+    incident_rule_field_text,
+    incident_rule_observed_window_title,
+    incident_rule_row_from_incident,
     process_row_google_search_url,
+    split_multiline_values,
 )
 from server.ui.row_refresh import (
     RowSnapshot,
@@ -1305,27 +1309,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.show_incident_rule_decision_window(self._incident_to_rule_row(incident))
 
     def _incident_to_rule_row(self, incident: dict) -> dict:
-        window_title = str(incident.get("window_title") or incident.get("details", {}).get("window_title") or "").strip()
-        process_name = str(incident.get("process_name") or "").strip()
-        return {
-            "rule_key": "",
-            "definition_id": "",
-            "name": str(incident.get("rule_name") or incident.get("rule_id") or "Incident rule"),
-            "status": "unknown",
-            "actions": {},
-            "rule_id": str(incident.get("rule_id") or ""),
-            "event_type": str(incident.get("event_type") or incident.get("rule_id") or ""),
-            "source": str(incident.get("source") or ""),
-            "process_names": [process_name] if process_name else [],
-            "browser_process_names": [],
-            "window_title_patterns": [window_title] if window_title else [],
-            "match_mode": "contains" if window_title else "exact",
-            "priority": 0,
-            "source_incident_id": str(incident.get("incident_id") or ""),
-            "matching_history": [incident],
-            "previous_matching_entries": [],
-            "action_states": [],
-        }
+        return incident_rule_row_from_incident(incident, getattr(self, "settings_snapshot", {}))
 
     def show_incident_rule_decision_window(self, row: dict | None = None):
         row = row or self._selected_incident_rule_row()
@@ -1346,7 +1330,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         frame = ttk.Frame(top, padding=12)
         frame.pack(fill=tk.BOTH, expand=True)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
 
         identity = ttk.LabelFrame(frame, text="Rule Match")
         identity.grid(row=0, column=0, sticky=tk.EW, pady=(0, 10))
@@ -1356,18 +1340,36 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             ("Rule ID", row.get("rule_id") or "-"),
             ("Event Type", row.get("event_type") or "-"),
             ("Source", row.get("source") or "-"),
-            ("Processes", ", ".join(row.get("process_names", [])) or "-"),
-            ("Browser Processes", ", ".join(row.get("browser_process_names", [])) or "-"),
-            ("Title Patterns", ", ".join(row.get("window_title_patterns", [])) or "-"),
-            ("Match Mode", row.get("match_mode") or "-"),
+            ("Observed Title", incident_rule_observed_window_title(row) or "-"),
             ("Matches", str(row.get("match_count", 0) or len(row.get("matching_history", [])))),
         ]
         for index, (label, value) in enumerate(rows):
             ttk.Label(identity, text=f"{label}:").grid(row=index, column=0, sticky=tk.W, padx=(8, 8), pady=2)
             ttk.Label(identity, text=str(value), style="Mono.TLabel", wraplength=760).grid(row=index, column=1, sticky=tk.W, pady=2)
 
+        match_fields = ttk.LabelFrame(frame, text="Saved Match Fields")
+        match_fields.grid(row=1, column=0, sticky=tk.EW, pady=(0, 10))
+        match_fields.columnconfigure(1, weight=1)
+        ttk.Label(match_fields, text="Title Patterns").grid(row=0, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
+        title_text = tk.Text(match_fields, height=3, width=78, font=self.mono_font, wrap=tk.WORD)
+        title_text.insert("1.0", incident_rule_field_text(row, "window_title_patterns"))
+        title_text.grid(row=0, column=1, sticky=tk.EW, pady=4)
+        ttk.Label(match_fields, text="Match Mode").grid(row=1, column=0, sticky=tk.W, padx=(8, 8), pady=4)
+        match_mode_var = tk.StringVar(value=str(row.get("match_mode") or "contains"))
+        ttk.Combobox(match_fields, textvariable=match_mode_var, values=("contains", "exact"), state="readonly", width=14).grid(
+            row=1, column=1, sticky=tk.W, pady=4
+        )
+        ttk.Label(match_fields, text="Processes").grid(row=2, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
+        process_text = tk.Text(match_fields, height=2, width=78, font=self.mono_font, wrap=tk.NONE)
+        process_text.insert("1.0", incident_rule_field_text(row, "process_names"))
+        process_text.grid(row=2, column=1, sticky=tk.EW, pady=4)
+        ttk.Label(match_fields, text="Browser Processes").grid(row=3, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
+        browser_text = tk.Text(match_fields, height=2, width=78, font=self.mono_font, wrap=tk.NONE)
+        browser_text.insert("1.0", incident_rule_field_text(row, "browser_process_names"))
+        browser_text.grid(row=3, column=1, sticky=tk.EW, pady=4)
+
         controls = ttk.LabelFrame(frame, text="Decision")
-        controls.grid(row=1, column=0, sticky=tk.EW, pady=(0, 10))
+        controls.grid(row=2, column=0, sticky=tk.EW, pady=(0, 10))
         for column in range(5):
             controls.columnconfigure(column, weight=1)
         status_var = tk.StringVar(value=str(row.get("status") or "unknown"))
@@ -1398,11 +1400,15 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 {name: var.get() for name, var in action_vars.items()},
                 save_var.get(),
                 priority_var.get(),
+                split_multiline_values(title_text.get("1.0", tk.END)),
+                match_mode_var.get(),
+                split_multiline_values(process_text.get("1.0", tk.END), split_commas=True),
+                split_multiline_values(browser_text.get("1.0", tk.END), split_commas=True),
             ),
         ).grid(row=2, column=3, columnspan=2, sticky=tk.EW, padx=8, pady=6)
 
         history_frame = ttk.LabelFrame(frame, text="Matching Incidents")
-        history_frame.grid(row=2, column=0, sticky=tk.NSEW)
+        history_frame.grid(row=3, column=0, sticky=tk.NSEW)
         history_columns = ("student", "rule", "status", "pid", "active", "summary")
         history_tree = ttk.Treeview(history_frame, columns=history_columns, show="headings", style="Monospace.Treeview")
         for column, text, width in (
@@ -1433,7 +1439,19 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 ),
             )
 
-    def _emit_incident_rule_decision(self, window, row: dict, status: str, actions: dict, save_policy: bool, priority_text: str):
+    def _emit_incident_rule_decision(
+        self,
+        window,
+        row: dict,
+        status: str,
+        actions: dict,
+        save_policy: bool,
+        priority_text: str,
+        window_title_patterns: list[str],
+        match_mode: str,
+        process_names: list[str],
+        browser_process_names: list[str],
+    ):
         try:
             priority = int(str(priority_text or "0").strip())
         except ValueError:
@@ -1445,6 +1463,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             actions=actions,
             save_policy=save_policy,
             priority=priority,
+            process_names=process_names,
+            browser_process_names=browser_process_names,
+            window_title_patterns=window_title_patterns,
+            match_mode=match_mode,
         )
         self._emit_command(payload)
         window.destroy()

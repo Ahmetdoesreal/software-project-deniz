@@ -23,6 +23,7 @@ from server.ui.dashboard_table_helpers import (
 from server.ui.process_database_helpers import (
     build_incident_rule_decision_payload,
     build_process_decision_payload,
+    incident_rule_row_from_incident,
     process_row_google_search_url,
 )
 

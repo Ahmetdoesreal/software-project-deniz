@@ -33,7 +33,12 @@ from PySide6.QtWidgets import (
 from ui.theme import M
 from ui.widgets import make_button, monospace_font
 from common.process_definitions import build_google_search_url
-from server.ui.process_database_helpers import build_incident_rule_decision_payload
+from server.ui.process_database_helpers import (
+    build_incident_rule_decision_payload,
+    incident_rule_field_text,
+    incident_rule_observed_window_title,
+    split_multiline_values,
+)
 
 SEVERITY_VALUES = ("info", "warning", "violation")
 WINDOW_TITLE_MATCH_MODES = ("contains", "exact")
@@ -308,10 +313,7 @@ class IncidentRuleDecisionDialog(QDialog):
             ("Rule ID", self.row.get("rule_id") or "-"),
             ("Event Type", self.row.get("event_type") or "-"),
             ("Source", self.row.get("source") or "-"),
-            ("Processes", ", ".join(self.row.get("process_names", [])) or "-"),
-            ("Browser Processes", ", ".join(self.row.get("browser_process_names", [])) or "-"),
-            ("Title Patterns", ", ".join(self.row.get("window_title_patterns", [])) or "-"),
-            ("Match Mode", self.row.get("match_mode") or "-"),
+            ("Observed Title", incident_rule_observed_window_title(self.row) or "-"),
             ("Matches", str(self.row.get("match_count", 0) or len(self.row.get("matching_history", [])))),
         ]
         for label, value in rows:
@@ -325,6 +327,53 @@ class IncidentRuleDecisionDialog(QDialog):
             row_layout.addWidget(val, stretch=1)
             identity_layout.addLayout(row_layout)
         layout.addWidget(identity_box)
+
+        match_box = QGroupBox("Saved Match Fields")
+        match_layout = QVBoxLayout(match_box)
+
+        title_row = QHBoxLayout()
+        title_label = QLabel("Title Patterns:")
+        title_label.setFixedWidth(180)
+        self.title_patterns_edit = QPlainTextEdit()
+        self.title_patterns_edit.setPlainText(incident_rule_field_text(self.row, "window_title_patterns"))
+        self.title_patterns_edit.setMinimumHeight(76)
+        self.title_patterns_edit.setFont(monospace_font())
+        title_row.addWidget(title_label)
+        title_row.addWidget(self.title_patterns_edit, stretch=1)
+        match_layout.addLayout(title_row)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Match Mode:"))
+        self.match_mode_combo = style_combo(QComboBox())
+        self.match_mode_combo.addItems(["contains", "exact"])
+        self.match_mode_combo.setCurrentText(str(self.row.get("match_mode") or "contains"))
+        mode_row.addWidget(self.match_mode_combo)
+        mode_row.addStretch()
+        match_layout.addLayout(mode_row)
+
+        process_row = QHBoxLayout()
+        process_label = QLabel("Processes:")
+        process_label.setFixedWidth(180)
+        self.process_names_edit = QPlainTextEdit()
+        self.process_names_edit.setPlainText(incident_rule_field_text(self.row, "process_names"))
+        self.process_names_edit.setMinimumHeight(56)
+        self.process_names_edit.setFont(monospace_font())
+        process_row.addWidget(process_label)
+        process_row.addWidget(self.process_names_edit, stretch=1)
+        match_layout.addLayout(process_row)
+
+        browser_row = QHBoxLayout()
+        browser_label = QLabel("Browser Processes:")
+        browser_label.setFixedWidth(180)
+        self.browser_process_names_edit = QPlainTextEdit()
+        self.browser_process_names_edit.setPlainText(incident_rule_field_text(self.row, "browser_process_names"))
+        self.browser_process_names_edit.setMinimumHeight(56)
+        self.browser_process_names_edit.setFont(monospace_font())
+        browser_row.addWidget(browser_label)
+        browser_row.addWidget(self.browser_process_names_edit, stretch=1)
+        match_layout.addLayout(browser_row)
+
+        layout.addWidget(match_box)
 
         controls_box = QGroupBox("Decision")
         controls_layout = QVBoxLayout(controls_box)
@@ -414,6 +463,13 @@ class IncidentRuleDecisionDialog(QDialog):
             actions=actions,
             save_policy=self.chk_save.isChecked(),
             priority=priority,
+            process_names=split_multiline_values(self.process_names_edit.toPlainText(), split_commas=True),
+            browser_process_names=split_multiline_values(
+                self.browser_process_names_edit.toPlainText(),
+                split_commas=True,
+            ),
+            window_title_patterns=split_multiline_values(self.title_patterns_edit.toPlainText()),
+            match_mode=self.match_mode_combo.currentText(),
         )
         self.decision_applied.emit(payload)
         self.accept()

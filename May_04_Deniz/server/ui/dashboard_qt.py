@@ -91,6 +91,7 @@ from server.ui.dashboard_table_helpers import (
 from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
     build_process_decision_payload,
+    incident_rule_row_from_incident,
     process_row_google_search_url,
 )
 from server.ui.row_refresh import (
@@ -1204,30 +1205,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.show_incident_rule_decision_window(self._incident_to_rule_row(incident))
 
     def _incident_to_rule_row(self, incident: dict) -> dict:
-        details = incident.get("details", {})
-        if not isinstance(details, dict):
-            details = {}
-        window_title = str(incident.get("window_title") or details.get("window_title") or "").strip()
-        process_name = str(incident.get("process_name") or "").strip()
-        return {
-            "rule_key": "",
-            "definition_id": "",
-            "name": str(incident.get("rule_name") or incident.get("rule_id") or "Incident rule"),
-            "status": "unknown",
-            "actions": {},
-            "rule_id": str(incident.get("rule_id") or ""),
-            "event_type": str(incident.get("event_type") or incident.get("rule_id") or ""),
-            "source": str(incident.get("source") or ""),
-            "process_names": [process_name] if process_name else [],
-            "browser_process_names": [],
-            "window_title_patterns": [window_title] if window_title else [],
-            "match_mode": "contains" if window_title else "exact",
-            "priority": 0,
-            "source_incident_id": str(incident.get("incident_id") or ""),
-            "matching_history": [incident],
-            "previous_matching_entries": [],
-            "action_states": [],
-        }
+        return incident_rule_row_from_incident(incident, getattr(self, "settings_snapshot", {}))
 
     # ------------------------------------------------------------------ process database helpers
     def _selected_process_row(self) -> Optional[dict]:

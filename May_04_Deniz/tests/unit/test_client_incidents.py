@@ -509,6 +509,108 @@ class ClientIncidentEngineTests(unittest.TestCase):
         self.assertTrue(incidents[0]["configured_actions"]["kill_pid"])
         self.assertEqual(incidents[0]["matched_incident_rule"]["status"], "blacklist")
 
+    def test_incident_rules_title_only_contains_matches_whatsapp_browser_variants(self):
+        variants = [
+            ("msedge.exe", "WhatsApp - Microsoft Edge"),
+            ("chrome.exe", "WhatsApp - Google Chrome"),
+            ("yandex.exe", "whatsapp - Yandex"),
+            (
+                "msedge.exe",
+                "whatsapp \u2014 Yandex: 2 milyon sonuc bulundu - Profil 1 - Microsoft Edge",
+            ),
+            ("msedge.exe", "Whats\u200bApp\u00a0-\u200e Microsoft Edge"),
+        ]
+        for process_name, title in variants:
+            with self.subTest(process_name=process_name, title=title):
+                engine = ClientIncidentEngine()
+                policy = {
+                    "policy_version": "policy-whatsapp-title-only",
+                    "rules": [
+                        {
+                            "rule_id": "focused_window_policy",
+                            "source": "focused_window",
+                            "type": "focused_window",
+                            "enabled": True,
+                            "severity": "warning",
+                            "allowed_process_names": [],
+                            "blocked_window_titles": [],
+                            "open_after_consecutive": 1,
+                            "resolve_after_consecutive": 1,
+                        },
+                        {
+                            "rule_id": "incident_rules",
+                            "source": "incident_rules",
+                            "type": "incident_rules",
+                            "enabled": True,
+                            "definitions": [
+                                {
+                                    "name": "WhatsApp title",
+                                    "status": "blacklist",
+                                    "event_type": "focused_window_policy",
+                                    "source": "focused_window",
+                                    "window_title_patterns": ["whatsapp"],
+                                    "match_mode": "contains",
+                                    "actions": {"kill_pid": True},
+                                }
+                            ],
+                        },
+                    ],
+                }
+                ok, reason = engine.apply_policy(policy)
+                self.assertTrue(ok, reason)
+
+                incidents = engine.observe_focused_window(
+                    {"process_name": process_name, "window_title": title, "process_id": 1234}
+                )
+
+                self.assertEqual(len(incidents), 1)
+                self.assertEqual(incidents[0]["severity"], "violation")
+                self.assertEqual(incidents[0]["matched_incident_rule"]["status"], "blacklist")
+                self.assertTrue(incidents[0]["configured_actions"]["kill_pid"])
+
+    def test_incident_rules_exact_title_does_not_match_contains_variant(self):
+        engine = ClientIncidentEngine()
+        policy = {
+            "policy_version": "policy-exact-title",
+            "rules": [
+                {
+                    "rule_id": "focused_window_policy",
+                    "source": "focused_window",
+                    "type": "focused_window",
+                    "enabled": True,
+                    "severity": "warning",
+                    "allowed_process_names": [],
+                    "blocked_window_titles": [],
+                    "open_after_consecutive": 1,
+                    "resolve_after_consecutive": 1,
+                },
+                {
+                    "rule_id": "incident_rules",
+                    "source": "incident_rules",
+                    "type": "incident_rules",
+                    "enabled": True,
+                    "definitions": [
+                        {
+                            "name": "Exact WhatsApp title",
+                            "status": "blacklist",
+                            "event_type": "focused_window_policy",
+                            "source": "focused_window",
+                            "window_title_patterns": ["whatsapp"],
+                            "match_mode": "exact",
+                        }
+                    ],
+                },
+            ],
+        }
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "msedge.exe", "window_title": "WhatsApp - Microsoft Edge", "process_id": 1234}
+        )
+
+        self.assertEqual(incidents, [])
+
     def test_focused_window_title_matching_ignores_invisible_browser_separators(self):
         engine = ClientIncidentEngine()
         ok, reason = engine.apply_policy(
