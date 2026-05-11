@@ -101,6 +101,14 @@ def resolve_auth_status_sync(
         return None
 
 
+def auth_status_requires_admin_validation(auth_status: dict | None) -> bool:
+    if not isinstance(auth_status, dict):
+        return False
+    if str(auth_status.get("validation_status") or "").lower() == "denied":
+        return False
+    return bool(auth_status.get("admin_validation_required", False))
+
+
 # ── Individual checks ─────────────────────────────────────────────────────────
 
 def _check_cats(login_id: str, password: str) -> tuple[bool, str]:

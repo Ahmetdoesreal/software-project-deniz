@@ -4,6 +4,7 @@ import time
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from client.preflight import auth_status_requires_admin_validation
 from server import session_state
 from server.handlers import auth_status, login_handler
 from server.state import state
@@ -28,6 +29,45 @@ class AuthBypassCommandTests(unittest.IsolatedAsyncioTestCase):
         snapshot = _auth_bypass_snapshot(app)
         self.assertFalse(snapshot["cats_disabled"])
         self.assertFalse(snapshot["ad_disabled"])
+
+    async def test_disableauth_and_enableauth_toggle_both_modes(self):
+        app = {
+            "auth_bypass": {"cats_until": 0.0, "ad_until": 0.0},
+            "auth_secret": "secret",
+        }
+
+        await handle_admin_command("/disableauth 90", app)
+        snapshot = _auth_bypass_snapshot(app)
+        self.assertTrue(snapshot["cats_disabled"])
+        self.assertTrue(snapshot["ad_disabled"])
+
+        await handle_admin_command("/enableauth", app)
+        snapshot = _auth_bypass_snapshot(app)
+        self.assertFalse(snapshot["cats_disabled"])
+        self.assertFalse(snapshot["ad_disabled"])
+
+    async def test_launcher_skips_blocking_check_when_admin_validation_required(self):
+        self.assertTrue(
+            auth_status_requires_admin_validation(
+                {
+                    "admin_validation_required": True,
+                    "validation_status": "pending",
+                    "cats_required": False,
+                    "ad_required": False,
+                }
+            )
+        )
+        self.assertFalse(
+            auth_status_requires_admin_validation(
+                {
+                    "admin_validation_required": True,
+                    "validation_status": "denied",
+                    "cats_required": False,
+                    "ad_required": False,
+                }
+            )
+        )
+        self.assertFalse(auth_status_requires_admin_validation(None))
 
     async def test_disabled_auth_requires_admin_validation_before_login(self):
         original_allowed = state.allowed_users

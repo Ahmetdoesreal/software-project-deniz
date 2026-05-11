@@ -54,7 +54,7 @@ from common.manager_support import ManagedProcessSession
 from common.manager_support_qt import ConsoleWindow, install_close_guard, monospace_font
 from ui.widgets import apply_theme, make_button, make_divider
 from ui.theme import M
-from client.preflight import load_auth_config, resolve_auth_status_sync, run_preflight
+from client.preflight import auth_status_requires_admin_validation, load_auth_config, resolve_auth_status_sync, run_preflight
 
 
 class _LoginCheckSignals(QWidget):
@@ -344,6 +344,9 @@ class ClientManager(QMainWindow):
         )
         if not preflight_ok:
             self._signals.failed.emit(preflight_result)
+            return
+        if auth_status_requires_admin_validation(auth_status):
+            self._signals.succeeded.emit()
             return
 
         # Step 2: server reachability + token acceptance check

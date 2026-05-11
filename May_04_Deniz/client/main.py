@@ -109,6 +109,10 @@ async def establish_session(base_url: str, args, recorder_manager: RecorderManag
             )
             break
         except PendingAuthValidation as exc:
+            if getattr(args, "check_login", False):
+                print(f"[AUTH] {exc} Ask the admin to run /authrequests and /approveauth {args.login_id}.")
+                print("[+] Login entered admin validation state.")
+                sys.exit(0)
             if not pending_notice_printed:
                 print(f"[AUTH] {exc} Ask the admin to run /authrequests and /approveauth {args.login_id}.")
                 pending_notice_printed = True

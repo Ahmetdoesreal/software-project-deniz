@@ -797,10 +797,28 @@ def _set_auth_bypass(app: web.Application, name: str, seconds: int):
     )
 
 
+def _set_all_auth_bypass(app: web.Application, seconds: int):
+    bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
+    until = time.time() + seconds
+    bypass["cats_until"] = until
+    bypass["ad_until"] = until
+    print(
+        f"[AUTH] Temporarily disabled CATS and AD auth for {seconds} second(s). "
+        "New matching logins require admin validation."
+    )
+
+
 def _clear_auth_bypass(app: web.Application, name: str):
     bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
     bypass[f"{name}_until"] = 0.0
     print(f"[AUTH] Re-enabled {name.upper()} auth.")
+
+
+def _clear_all_auth_bypass(app: web.Application):
+    bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
+    bypass["cats_until"] = 0.0
+    bypass["ad_until"] = 0.0
+    print("[AUTH] Re-enabled CATS and AD auth.")
 
 
 def _print_auth_status(app: web.Application):
@@ -1690,12 +1708,20 @@ async def handle_admin_command(line: str, app: web.Application):
         await _handle_set_remember_settings(parts)
         return
 
+    if command == "/disableauth":
+        _set_all_auth_bypass(app, _parse_auth_bypass_seconds(parts))
+        return
+
     if command == "/disablecatsauth":
         _set_auth_bypass(app, "cats", _parse_auth_bypass_seconds(parts))
         return
 
     if command == "/disableadauth":
         _set_auth_bypass(app, "ad", _parse_auth_bypass_seconds(parts))
+        return
+
+    if command == "/enableauth":
+        _clear_all_auth_bypass(app)
         return
 
     if command == "/enablecatsauth":
@@ -1764,8 +1790,10 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /exportsettings <p>   - Export blacklist + policy settings bundle")
         print("  /importsettings <p>   - Import blacklist + policy settings bundle")
         print("  /remembersettings on|off - Toggle remembered policy settings")
+        print("  /disableauth [s]      - Temporarily skip CATS and AD checks (default 60s)")
         print("  /disablecatsauth [s]  - Temporarily skip CATS preflight (default 60s)")
         print("  /disableadauth [s]    - Temporarily skip AD token auth for allowed users")
+        print("  /enableauth           - Re-enable CATS and AD auth immediately")
         print("  /enablecatsauth       - Re-enable CATS preflight immediately")
         print("  /enableadauth         - Re-enable AD token auth immediately")
         print("  /authstatus           - Show temporary auth bypass status")
