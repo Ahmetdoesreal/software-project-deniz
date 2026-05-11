@@ -35,8 +35,10 @@ class IncidentBuffer:
         self._seq_lock = threading.Lock()
         self._memory: dict[int, dict] = {}       # seq -> entry
         self._id_to_seq: dict[str, int] = {}     # incident_id -> seq
+        self._pending_evidence: dict[str, dict] = {}
         self._packets_path: str | None = None
         self._index_path: str | None = None
+        self._evidence_path: str | None = None
 
     # ── Session lifecycle ─────────────────────────────────────────────────────
 
@@ -48,6 +50,7 @@ class IncidentBuffer:
         Returns the number of payloads restored.
         """
         unacked = self._collect_unacked(uuid)
+        pending_evidence = self._collect_pending_evidence(uuid)
 
         if unacked:
             max_seq = max(int(p.get("seq", 0)) for p in unacked)
@@ -59,9 +62,11 @@ class IncidentBuffer:
         os.makedirs(folder, exist_ok=True)
         self._packets_path = os.path.join(folder, "packets.jsonl")
         self._index_path = os.path.join(folder, "index.jsonl")
+        self._evidence_path = os.path.join(folder, "evidence.jsonl")
 
         self._memory = {}
         self._id_to_seq = {}
+        self._pending_evidence = {}
 
         for payload in unacked:
             seq = int(payload.get("seq", 0))
@@ -76,6 +81,10 @@ class IncidentBuffer:
                 self._id_to_seq[incident_id] = seq
             self._write_packet(payload)
             self._append_index(seq, incident_id, "queued", note="restored")
+
+        for incident_id, payload in pending_evidence.items():
+            self._pending_evidence[incident_id] = payload
+            self._append_evidence(incident_id, "pending", payload, note="restored")
 
         return len(unacked)
 
@@ -94,6 +103,8 @@ class IncidentBuffer:
 
         payload = dict(payload)
         payload["seq"] = seq
+        payload.setdefault("queued_at", protocol.now_iso())
+        payload.setdefault("buffered", False)
         incident_id = str(payload.get("incident_id", ""))
 
         self._memory[seq] = {
@@ -116,6 +127,19 @@ class IncidentBuffer:
             return
         entry["status"] = "sent"
         self._append_index(seq, entry["incident_id"], "sent")
+
+    def mark_buffered(self, seq: int, note: str = ""):
+        """Mark an already queued packet as buffered after a send failure."""
+        entry = self._memory.get(seq)
+        if not entry or entry["status"] == "acked":
+            return
+        payload = dict(entry["payload"])
+        payload["buffered"] = True
+        payload.setdefault("queued_at", protocol.now_iso())
+        entry["payload"] = payload
+        entry["status"] = "queued"
+        self._write_packet(payload)
+        self._append_index(seq, entry["incident_id"], "queued", note=note or "buffered")
 
     def mark_acked(self, incident_id: str):
         """Call when incident_received arrives from the server."""
@@ -142,6 +166,28 @@ class IncidentBuffer:
 
     def unacked_count(self) -> int:
         return sum(1 for e in self._memory.values() if e["status"] != "acked")
+
+    def mark_evidence_pending(self, payload: dict):
+        incident_id = str(payload.get("incident_id", "") or "")
+        if not incident_id:
+            return
+        payload = dict(payload)
+        payload.setdefault("queued_at", protocol.now_iso())
+        self._pending_evidence[incident_id] = payload
+        self._append_evidence(incident_id, "pending", payload)
+
+    def mark_evidence_complete(self, incident_id: str, artifact_path: str = ""):
+        incident_id = str(incident_id or "")
+        if not incident_id:
+            return
+        payload = self._pending_evidence.pop(incident_id, {})
+        if artifact_path:
+            payload = dict(payload)
+            payload["artifact_path"] = artifact_path
+        self._append_evidence(incident_id, "uploaded", payload)
+
+    def get_pending_evidence(self) -> list[dict]:
+        return [dict(payload) for _incident_id, payload in sorted(self._pending_evidence.items())]
 
     # ── Disk helpers ──────────────────────────────────────────────────────────
 
@@ -170,6 +216,23 @@ class IncidentBuffer:
                 f.write(json.dumps(entry) + "\n")
         except Exception as exc:
             print(f"[BUFFER] Failed to update index: {exc}")
+
+    def _append_evidence(self, incident_id: str, status: str, payload: dict, note: str = ""):
+        if not self._evidence_path:
+            return
+        entry = {
+            "incident_id": incident_id,
+            "status": status,
+            "timestamp": protocol.now_iso(),
+            "payload": payload,
+        }
+        if note:
+            entry["note"] = note
+        try:
+            with open(self._evidence_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as exc:
+            print(f"[BUFFER] Failed to update evidence index: {exc}")
 
     def _collect_unacked(self, uuid: str) -> list[dict]:
         """
@@ -205,7 +268,7 @@ class IncidentBuffer:
                 print(f"[BUFFER] Could not read index {index_path}: {exc}")
                 continue
 
-            # Collect payloads not acked
+            packets_by_seq: dict[int, dict] = {}
             try:
                 with open(packets_path, encoding="utf-8") as f:
                     for line in f:
@@ -214,9 +277,48 @@ class IncidentBuffer:
                             continue
                         payload = json.loads(line)
                         seq = int(payload.get("seq", 0))
-                        if final_status.get(seq) != "acked":
-                            unacked.append(payload)
+                        packets_by_seq[seq] = payload
             except Exception as exc:
                 print(f"[BUFFER] Could not read packets {packets_path}: {exc}")
 
-        return unacked
+            for seq, payload in sorted(packets_by_seq.items()):
+                if final_status.get(seq) != "acked":
+                    unacked.append(payload)
+
+        deduped: dict[int, dict] = {}
+        for payload in unacked:
+            try:
+                deduped[int(payload.get("seq", 0))] = payload
+            except (TypeError, ValueError):
+                continue
+        return [deduped[seq] for seq in sorted(deduped)]
+
+    def _collect_pending_evidence(self, uuid: str) -> dict[str, dict]:
+        buffer_root = os.path.join("data", "client", uuid, "buffer")
+        if not os.path.isdir(buffer_root):
+            return {}
+
+        pending: dict[str, dict] = {}
+        for session_name in sorted(os.listdir(buffer_root)):
+            evidence_path = os.path.join(buffer_root, session_name, "evidence.jsonl")
+            if not os.path.isfile(evidence_path):
+                continue
+            try:
+                with open(evidence_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        row = json.loads(line)
+                        incident_id = str(row.get("incident_id", "") or "")
+                        if not incident_id:
+                            continue
+                        if row.get("status") == "uploaded":
+                            pending.pop(incident_id, None)
+                        else:
+                            payload = row.get("payload")
+                            if isinstance(payload, dict):
+                                pending[incident_id] = payload
+            except Exception as exc:
+                print(f"[BUFFER] Could not read evidence {evidence_path}: {exc}")
+        return pending

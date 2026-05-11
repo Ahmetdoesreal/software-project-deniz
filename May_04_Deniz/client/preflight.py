@@ -1,8 +1,9 @@
 """
 client/preflight.py
 
-Local pre-login validation that runs before any network contact with the server.
-Both checks run in parallel and must pass.
+Local pre-login validation. When possible, the launcher first asks the server
+whether a short-lived CATS/AD bypass is currently allowed for this login.
+Otherwise both checks run in parallel and must pass.
 
   1. CATS  — scrapes the school portal to confirm the student's credentials are live.
   2. AD    — validates via Windows LogonUserW and returns an HMAC token.
@@ -14,13 +15,18 @@ The AD password never travels over the network.
 from __future__ import annotations
 
 import concurrent.futures
+import asyncio
 import json
 import sys
 from pathlib import Path
 
+import aiohttp
+
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+from common.discovery import discover_server_with_local_fallback
 
 
 def load_auth_config(project_dir: Path | None = None) -> dict:
@@ -34,6 +40,62 @@ def load_auth_config(project_dir: Path | None = None) -> dict:
             return json.load(f)
     except Exception:
         return {"ad_domain": ".", "auth_secret": ""}
+
+
+async def fetch_auth_status(base_url: str, login_id: str) -> dict | None:
+    try:
+        timeout = aiohttp.ClientTimeout(total=3.0)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base_url}/auth/status", params={"login_id": login_id}) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+async def resolve_auth_status(
+    login_id: str,
+    *,
+    server_id: str,
+    host: str | None,
+    port: int,
+    timeout: float = 3.0,
+) -> dict | None:
+    if host:
+        return await fetch_auth_status(f"http://{host}:{port}", login_id)
+    target = await discover_server_with_local_fallback(
+        server_id=server_id,
+        timeout=timeout,
+        local_port=port,
+    )
+    if not target:
+        return None
+    resolved_host, resolved_port = target
+    return await fetch_auth_status(f"http://{resolved_host}:{resolved_port}", login_id)
+
+
+def resolve_auth_status_sync(
+    login_id: str,
+    *,
+    server_id: str,
+    host: str | None,
+    port: int,
+    timeout: float = 3.0,
+) -> dict | None:
+    try:
+        return asyncio.run(
+            resolve_auth_status(
+                login_id,
+                server_id=server_id,
+                host=host,
+                port=port,
+                timeout=timeout,
+            )
+        )
+    except Exception:
+        return None
 
 
 # ── Individual checks ─────────────────────────────────────────────────────────
@@ -73,6 +135,7 @@ def run_preflight(
     password: str,
     ad_domain: str,
     auth_secret: str,
+    auth_status: dict | None = None,
 ) -> tuple[bool, str]:
     """
     Run CATS and AD checks in parallel. Both must pass.
@@ -81,12 +144,21 @@ def run_preflight(
         (True,  hmac_token)   — both checks passed; token is sent to the server
         (False, error_message) — one or both checks failed
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        cats_future = pool.submit(_check_cats, login_id, password)
-        ad_future   = pool.submit(_check_ad, login_id, password, ad_domain, auth_secret)
+    cats_required = True
+    ad_required = bool(ad_domain and auth_secret)
+    if isinstance(auth_status, dict):
+        cats_required = bool(auth_status.get("cats_required", True))
+        ad_required = bool(auth_status.get("ad_required", ad_required))
 
-        cats_ok, cats_result = cats_future.result()
-        ad_ok,   ad_result   = ad_future.result()
+    if not cats_required and not ad_required:
+        return True, "Temporary server auth bypass active."
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        cats_future = pool.submit(_check_cats, login_id, password) if cats_required else None
+        ad_future = pool.submit(_check_ad, login_id, password, ad_domain, auth_secret) if ad_required else None
+
+        cats_ok, cats_result = (cats_future.result() if cats_future else (True, "CATS bypassed by server."))
+        ad_ok, ad_result = (ad_future.result() if ad_future else (True, "AD bypassed by server."))
 
     if not cats_ok:
         return False, f"School authentication failed: {cats_result}"

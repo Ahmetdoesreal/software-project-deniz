@@ -19,6 +19,14 @@ from common.process_definitions import (
     process_incident_identity,
     stable_process_key,
 )
+from common.incident_rules import (
+    INCIDENT_RULES_RULE_ID,
+    incident_history_entry,
+    incident_matches_rule,
+    incident_rule_from_incident,
+    normalize_incident_rule,
+    normalize_incident_rules,
+)
 
 from . import session_state
 
@@ -45,6 +53,8 @@ def get_settings_snapshot(state, app=None) -> dict:
         "process_blacklist": list(state.process_blacklist),
         "process_blacklist_version": state.process_blacklist_version,
         "process_definitions_version": state.process_definitions_version,
+        "incident_rules": list(state.rule_config(INCIDENT_RULES_RULE_ID).get("definitions", [])),
+        "incident_rules_version": state.incident_rules_version,
         "operator_defaults": state.operator_defaults(),
         "session": state.session_policy(),
     }
@@ -70,9 +80,17 @@ def update_exam_policy(state, patch: dict, *, actor="admin", _audit_action="upda
         if isinstance(merged_rules.get("process_definitions"), dict)
         else {}
     )
+    merged_incident_rules = (
+        merged_rules.get(INCIDENT_RULES_RULE_ID, {})
+        if isinstance(merged_rules.get(INCIDENT_RULES_RULE_ID), dict)
+        else {}
+    )
     has_definition_payload = "definitions" in merged_process_definitions
+    has_incident_rule_payload = "definitions" in merged_incident_rules
     next_definitions = process_definitions(state)
+    next_incident_rules = incident_rules(state)
     definitions_changed = False
+    incident_rules_changed = False
     if has_definition_payload:
         before_definitions = process_definitions(state)
         next_definitions = normalize_definitions(merged_process_definitions.get("definitions", []))
@@ -84,10 +102,23 @@ def update_exam_policy(state, patch: dict, *, actor="admin", _audit_action="upda
             else {}
         )
         normalized_process_definitions.pop("definitions", None)
+    if has_incident_rule_payload:
+        before_incident_rules = incident_rules(state)
+        next_incident_rules = normalize_incident_rules(merged_incident_rules.get("definitions", []))
+        incident_rules_changed = before_incident_rules != next_incident_rules
+        normalized_rules = normalized.get("rules", {}) if isinstance(normalized.get("rules"), dict) else {}
+        normalized_incident_rules = (
+            normalized_rules.get(INCIDENT_RULES_RULE_ID, {})
+            if isinstance(normalized_rules.get(INCIDENT_RULES_RULE_ID), dict)
+            else {}
+        )
+        normalized_incident_rules.pop("definitions", None)
 
     changed_paths = _changed_paths(before_config, normalized)
     if definitions_changed and "process_definitions" not in changed_paths:
         changed_paths.append("process_definitions")
+    if incident_rules_changed and INCIDENT_RULES_RULE_ID not in changed_paths:
+        changed_paths.append(INCIDENT_RULES_RULE_ID)
 
     if not changed_paths:
         return SettingsResult(
@@ -103,6 +134,9 @@ def update_exam_policy(state, patch: dict, *, actor="admin", _audit_action="upda
     if has_definition_payload:
         state.process_definitions = next_definitions
         state.save_process_definitions()
+    if has_incident_rule_payload:
+        state.incident_rules = next_incident_rules
+        state.save_incident_rules()
     state.save_exam_policy()
     after_version = state.current_exam_policy().get("policy_version", "")
     _append_audit(
@@ -238,6 +272,10 @@ def process_definitions(state) -> list[dict]:
     return normalize_definitions(state.rule_config("process_definitions").get("definitions", []))
 
 
+def incident_rules(state) -> list[dict]:
+    return normalize_incident_rules(state.rule_config(INCIDENT_RULES_RULE_ID).get("definitions", []))
+
+
 def update_process_definitions(
     state,
     definitions: list[dict],
@@ -318,6 +356,92 @@ def upsert_process_definition(state, definition: dict, *, actor="admin") -> Sett
         updated,
         actor=actor,
         _audit_action="upsert_process_definition",
+    )
+
+
+def update_incident_rules(
+    state,
+    definitions: list[dict],
+    *,
+    actor="admin",
+    _audit_action="update_incident_rules",
+) -> SettingsResult:
+    if not isinstance(definitions, list):
+        return _error_result("Incident rules must be a JSON list.", state)
+
+    before_entries = incident_rules(state)
+    before_version = state.incident_rules_version
+    before_policy_version = state.current_exam_policy().get("policy_version", "")
+    next_entries = normalize_incident_rules(definitions)
+
+    if before_entries == next_entries:
+        return SettingsResult(
+            ok=True,
+            changed=False,
+            message="No incident rule changes.",
+            settings=get_settings_snapshot(state),
+            changed_paths=[],
+            errors=[],
+        )
+
+    state.incident_rules = next_entries
+    state.save_incident_rules()
+    _append_audit(
+        state,
+        actor=actor,
+        action=_audit_action,
+        changed_paths=[INCIDENT_RULES_RULE_ID],
+        before={
+            "incident_rules_version": before_version,
+            "policy_version": before_policy_version,
+        },
+        after={
+            "incident_rules_version": state.incident_rules_version,
+            "policy_version": state.current_exam_policy().get("policy_version", ""),
+        },
+    )
+    return SettingsResult(
+        ok=True,
+        changed=True,
+        message="Incident rules updated.",
+        settings=get_settings_snapshot(state),
+        changed_paths=[INCIDENT_RULES_RULE_ID],
+        errors=[],
+    )
+
+
+def upsert_incident_rule(state, definition: dict, *, actor="admin") -> SettingsResult:
+    normalized = normalize_incident_rule(definition)
+    if not any(
+        normalized.get(key)
+        for key in ("rule_id", "event_type", "source", "process_names", "browser_process_names", "window_title_patterns")
+    ):
+        return _error_result("Incident rule requires at least one match field.", state)
+
+    current = incident_rules(state)
+    updated: list[dict] = []
+    replaced = False
+    for existing in current:
+        same_id = existing.get("definition_id") == normalized.get("definition_id")
+        same_key = existing.get("rule_key") == normalized.get("rule_key")
+        if same_id or same_key:
+            merged = {
+                **existing,
+                **normalized,
+                "created_at": existing.get("created_at") or normalized.get("created_at"),
+            }
+            updated.append(normalize_incident_rule(merged))
+            replaced = True
+        else:
+            updated.append(existing)
+    if not replaced:
+        updated.append(normalized)
+
+    return update_incident_rules(
+        state,
+        updated,
+        actor=actor,
+        _audit_action="upsert_incident_rule",
     )
 
 
@@ -452,6 +576,201 @@ def build_process_database(state) -> list[dict]:
         ),
         reverse=True,
     )
+
+
+def matching_incident_rule_incidents(state, definition: dict) -> list[dict]:
+    normalized = normalize_incident_rule(definition)
+    matches = []
+    for incident in state.incidents:
+        if not isinstance(incident, dict):
+            continue
+        if incident_matches_rule(incident, normalized):
+            matches.append(incident)
+    return matches
+
+
+def build_incident_rules_database(state) -> list[dict]:
+    definitions = incident_rules(state)
+    rows: dict[str, dict] = {}
+
+    for definition in definitions:
+        row = _empty_incident_rule_row(definition)
+        row["source"] = "policy"
+        rows[row["rule_key"]] = row
+
+    for incident in state.incidents:
+        if not isinstance(incident, dict):
+            continue
+        matching = [
+            definition
+            for definition in definitions
+            if incident_matches_rule(incident, definition)
+        ]
+        if matching:
+            definition = matching[0]
+        else:
+            definition = incident_rule_from_incident(
+                incident,
+                status=_incident_rule_status_from_incident(incident),
+            )
+        rule_key = str(definition.get("rule_key", "") or "")
+        if not rule_key:
+            continue
+        row = rows.setdefault(rule_key, _empty_incident_rule_row(definition))
+        incident_id = str(incident.get("incident_id", "") or "")
+        active = bool(incident_id and incident_id in state.active_incidents)
+        row["matching_history"].append(incident_history_entry(incident, active=active))
+        row["active"] = bool(row["active"] or active)
+        if str(incident.get("status", "") or "") == "resolved":
+            row["resolved"] = True
+        event_at = str(
+            incident.get("server_received_at")
+            or incident.get("reported_at")
+            or incident.get("event_at")
+            or incident.get("timestamp")
+            or ""
+        )
+        if event_at and event_at > str(row.get("last_seen", "")):
+            row["last_seen"] = event_at
+
+    for row in rows.values():
+        history = row["matching_history"]
+        students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("login_id") or entry.get("client_id") or "")})
+        opened_students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("status", "") or "") == "opened" and str(entry.get("login_id") or entry.get("client_id") or "")})
+        resolved_students = sorted({str(entry.get("login_id") or entry.get("client_id") or "") for entry in history if str(entry.get("status", "") or "") == "resolved" and str(entry.get("login_id") or entry.get("client_id") or "")})
+        row["match_count"] = len(history)
+        row["affected_students"] = students
+        row["affected_student_count"] = len(students)
+        row["opened_students"] = opened_students
+        row["resolved_students"] = resolved_students
+        row["closed_students"] = resolved_students
+        row["saved_action_labels"] = _action_labels(row.get("actions", {}))
+        row["action_states"] = build_action_states(state, history)
+        row["action_availability"] = _summarize_action_states(row["action_states"])
+        row["previous_matching_entries"] = _previous_matching_incident_rules(row, definitions)
+        row["warning"] = row.get("status") == "warning"
+        if not row.get("last_seen") and row.get("updated_at"):
+            row["last_seen"] = row["updated_at"]
+
+    return sorted(
+        rows.values(),
+        key=lambda row: (
+            bool(row.get("active")),
+            str(row.get("last_seen", "")),
+            str(row.get("name", "")),
+        ),
+        reverse=True,
+    )
+
+
+def apply_incident_rule_decision(state, decision: dict, *, actor="admin") -> dict:
+    if not isinstance(decision, dict):
+        return {"ok": False, "message": "Incident rule decision must be an object.", "errors": ["Incident rule decision must be an object."]}
+
+    raw_definition = dict(decision.get("definition") or {})
+    if not raw_definition and isinstance(decision.get("incident"), dict):
+        raw_definition = incident_rule_from_incident(decision.get("incident"), status=str(decision.get("status") or "unknown"))
+    raw_definition["status"] = str(decision.get("status") or raw_definition.get("status") or "unknown")
+    raw_definition["actions"] = normalize_actions(decision.get("actions") or raw_definition.get("actions"))
+    if "priority" in decision:
+        raw_definition["priority"] = int(decision.get("priority", 0) or 0)
+    now = protocol.now_iso()
+    raw_definition["updated_at"] = now
+    raw_definition["decided_at"] = now
+    raw_definition["decided_by"] = str(actor or "admin")
+    if decision.get("reason"):
+        raw_definition["decision_reason"] = str(decision.get("reason") or "")
+
+    definition = normalize_incident_rule(raw_definition, now=now)
+    if not any(
+        definition.get(key)
+        for key in ("rule_id", "event_type", "source", "process_names", "browser_process_names", "window_title_patterns")
+    ):
+        return {"ok": False, "message": "Decision requires at least one incident match field.", "errors": ["Decision requires at least one incident match field."]}
+
+    matches = matching_incident_rule_incidents(state, definition)
+    history = [
+        incident_history_entry(
+            incident,
+            active=str(incident.get("incident_id", "") or "") in state.active_incidents,
+        )
+        for incident in matches
+    ]
+    definition["matching_history"] = history
+    definition["previous_matching_entries"] = _previous_matching_incident_rules(definition, incident_rules(state))
+
+    saved_to_policy = bool(decision.get("save_policy", False))
+    settings_result = None
+    if saved_to_policy:
+        settings_result = upsert_incident_rule(state, definition, actor=actor)
+        if not settings_result.ok:
+            return {
+                "ok": False,
+                "message": settings_result.message,
+                "errors": settings_result.errors,
+                "definition": definition,
+            }
+
+    for incident in matches:
+        incident["incident_rule_decision"] = {
+            "definition_id": definition.get("definition_id"),
+            "rule_key": definition.get("rule_key"),
+            "status": definition.get("status"),
+            "actions": dict(definition.get("actions", {})),
+            "saved_to_policy": saved_to_policy,
+            "decided_at": now,
+            "decided_by": str(actor or "admin"),
+        }
+    if matches and hasattr(state, "save_incidents"):
+        state.save_incidents()
+
+    action_results = []
+    banned_login_ids = []
+    if definition.get("actions", {}).get("ban"):
+        for login_id in sorted({entry.get("login_id", "") for entry in history if entry.get("login_id")}):
+            user = state.users_db.get(login_id)
+            if not user:
+                action_results.append(_action_result(login_id, "ban", "not_possible", "unknown user"))
+                continue
+            if user.get("banned") or session_state.derive_state(user) == session_state.BANNED:
+                action_results.append(_action_result(login_id, "ban", "applied", "already banned"))
+                continue
+            session_state.set_state(user, session_state.BANNED, reason=f"Incident rule decision: {definition.get('name')}")
+            user["kick_count"] = int(user.get("kick_count", 0)) + 1
+            user["last_action"] = f"Incident rule decision ban: {definition.get('name') or definition.get('rule_key')}"
+            banned_login_ids.append(login_id)
+            action_results.append(_action_result(login_id, "ban", "applied", "banned"))
+        if banned_login_ids:
+            state.save_users()
+
+    if hasattr(state, "append_audit"):
+        state.append_audit(
+            {
+                "timestamp": now,
+                "actor": str(actor or "admin"),
+                "action": "apply_incident_rule_decision",
+                "definition_id": definition.get("definition_id"),
+                "rule_key": definition.get("rule_key"),
+                "status": definition.get("status"),
+                "actions": definition.get("actions", {}),
+                "saved_to_policy": saved_to_policy,
+                "matching_incident_ids": [entry.get("incident_id") for entry in history],
+                "banned_login_ids": banned_login_ids,
+            }
+        )
+
+    return {
+        "ok": True,
+        "changed": bool(saved_to_policy and settings_result and settings_result.changed) or bool(matches) or bool(banned_login_ids),
+        "message": "Incident rule decision applied.",
+        "definition": definition,
+        "matching_history": history,
+        "matching_incident_ids": [entry.get("incident_id") for entry in history],
+        "action_states": build_action_states(state, history),
+        "action_results": action_results,
+        "banned_login_ids": banned_login_ids,
+        "saved_to_policy": saved_to_policy,
+    }
 
 
 def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
@@ -688,6 +1007,43 @@ def _empty_process_row(definition: dict) -> dict:
     }
 
 
+def _empty_incident_rule_row(definition: dict) -> dict:
+    normalized = normalize_incident_rule(definition)
+    return {
+        "rule_key": normalized.get("rule_key", ""),
+        "definition_id": normalized.get("definition_id", ""),
+        "name": normalized.get("name", ""),
+        "status": normalized.get("status", "unknown"),
+        "actions": normalize_actions(normalized.get("actions", {})),
+        "rule_id": normalized.get("rule_id", ""),
+        "event_type": normalized.get("event_type", ""),
+        "source": normalized.get("source", ""),
+        "process_names": list(normalized.get("process_names", [])),
+        "browser_process_names": list(normalized.get("browser_process_names", [])),
+        "window_title_patterns": list(normalized.get("window_title_patterns", [])),
+        "match_mode": normalized.get("match_mode", "contains"),
+        "priority": int(normalized.get("priority", 0) or 0),
+        "source_incident_id": normalized.get("source_incident_id", ""),
+        "matching_history": [],
+        "previous_matching_entries": list(normalized.get("previous_matching_entries", [])),
+        "match_count": 0,
+        "affected_students": [],
+        "affected_student_count": 0,
+        "opened_students": [],
+        "resolved_students": [],
+        "closed_students": [],
+        "last_seen": "",
+        "active": False,
+        "resolved": False,
+        "warning": normalized.get("status") == "warning",
+        "created_at": normalized.get("created_at", ""),
+        "updated_at": normalized.get("updated_at", ""),
+        "decided_at": normalized.get("decided_at", ""),
+        "decided_by": normalized.get("decided_by", ""),
+        "match_summary": _incident_rule_match_summary(normalized),
+    }
+
+
 def _status_from_incident(incident: dict) -> str:
     rule_id = str(incident.get("rule_id", "") or "")
     if rule_id == "process_blacklist":
@@ -698,6 +1054,35 @@ def _status_from_incident(incident: dict) -> str:
     if isinstance(matched, dict) and matched.get("status"):
         return str(matched.get("status"))
     return "unknown"
+
+
+def _incident_rule_status_from_incident(incident: dict) -> str:
+    severity = str(incident.get("severity", "") or "").strip().lower()
+    if severity == "violation":
+        return "blacklist"
+    if severity == "warning":
+        return "warning"
+    return "unknown"
+
+
+def _incident_rule_match_summary(rule: dict) -> str:
+    normalized = normalize_incident_rule(rule)
+    parts = []
+    for key, label in (
+        ("rule_id", "rule"),
+        ("event_type", "event"),
+        ("source", "source"),
+    ):
+        value = str(normalized.get(key, "") or "")
+        if value:
+            parts.append(f"{label}={value}")
+    if normalized.get("process_names"):
+        parts.append("process=" + ", ".join(normalized.get("process_names", [])[:3]))
+    if normalized.get("browser_process_names"):
+        parts.append("browser=" + ", ".join(normalized.get("browser_process_names", [])[:3]))
+    if normalized.get("window_title_patterns"):
+        parts.append("title=" + ", ".join(normalized.get("window_title_patterns", [])[:3]))
+    return "; ".join(parts) if parts else "-"
 
 
 def _previous_matching_definitions(row_or_definition: dict, definitions: list[dict]) -> list[dict]:
@@ -719,6 +1104,39 @@ def _previous_matching_definitions(row_or_definition: dict, definitions: list[di
                 "match_scope": normalized.get("match_scope", ""),
                 "process_path": normalized.get("process_path", ""),
                 "process_dir": normalized.get("process_dir", ""),
+                "actions": normalize_actions(normalized.get("actions", {})),
+                "updated_at": normalized.get("updated_at", ""),
+                "decided_at": normalized.get("decided_at", ""),
+                "decided_by": normalized.get("decided_by", ""),
+            }
+        )
+    return previous
+
+
+def _previous_matching_incident_rules(row_or_definition: dict, definitions: list[dict]) -> list[dict]:
+    current_id = str(row_or_definition.get("definition_id", "") or "")
+    current_key = str(row_or_definition.get("rule_key", "") or "")
+    previous = []
+    reference = normalize_incident_rule(row_or_definition)
+    for definition in definitions:
+        normalized = normalize_incident_rule(definition)
+        if normalized.get("definition_id") == current_id or normalized.get("rule_key") == current_key:
+            continue
+        probe = {
+            "rule_id": reference.get("rule_id", ""),
+            "event_type": reference.get("event_type", ""),
+            "source": reference.get("source", ""),
+            "process_name": (reference.get("process_names") or reference.get("browser_process_names") or [""])[0],
+            "window_title": (reference.get("window_title_patterns") or [""])[0],
+        }
+        if not incident_matches_rule(probe, normalized):
+            continue
+        previous.append(
+            {
+                "definition_id": normalized.get("definition_id", ""),
+                "rule_key": normalized.get("rule_key", ""),
+                "status": normalized.get("status", ""),
+                "match_summary": _incident_rule_match_summary(normalized),
                 "actions": normalize_actions(normalized.get("actions", {})),
                 "updated_at": normalized.get("updated_at", ""),
                 "decided_at": normalized.get("decided_at", ""),

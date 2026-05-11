@@ -30,6 +30,8 @@ PROCESS_DATABASE_FILTERS = (
     "Resolved",
 )
 
+INCIDENT_RULE_FILTERS = PROCESS_DATABASE_FILTERS
+
 CLIENT_COLUMNS = (
     ("login_id", "Login ID"),
     ("status", "Status"),
@@ -45,6 +47,18 @@ PROCESS_COLUMNS = (
     ("status", "Status"),
     ("path", "Path / Directory"),
     ("scope", "Scope"),
+    ("matches", "Matches"),
+    ("students", "Affected Students"),
+    ("last_seen", "Last Seen"),
+    ("actions", "Saved Actions"),
+    ("availability", "Action Availability"),
+)
+
+INCIDENT_RULE_COLUMNS = (
+    ("rule_key", "Rule Key"),
+    ("name", "Name"),
+    ("status", "Status"),
+    ("match", "Match"),
     ("matches", "Matches"),
     ("students", "Affected Students"),
     ("last_seen", "Last Seen"),
@@ -81,7 +95,18 @@ def process_row_matches_filter(row: dict, filter_name: str) -> bool:
     return _process_matches_filter(row, str(filter_name or "All"))
 
 
+def incident_rule_row_matches_filter(row: dict, filter_name: str) -> bool:
+    return _process_matches_filter(row, str(filter_name or "All"))
+
+
 def process_row_matches_filters(row: dict, filters: set[str]) -> bool:
+    active = active_filter_names(filters)
+    if not active:
+        return True
+    return any(_process_matches_filter(row, label) for label in active)
+
+
+def incident_rule_row_matches_filters(row: dict, filters: set[str]) -> bool:
     active = active_filter_names(filters)
     if not active:
         return True
@@ -134,6 +159,20 @@ def sorted_process_rows(
     )
 
 
+def sorted_incident_rule_rows(
+    rows: list[dict],
+    filters: set[str],
+    sort_column: str,
+    descending: bool,
+) -> list[dict]:
+    filtered = [row for row in rows if incident_rule_row_matches_filters(row, filters)]
+    return sorted(
+        filtered,
+        key=lambda row: (_incident_rule_sort_value(row, sort_column), _text(row.get("rule_key"))),
+        reverse=descending,
+    )
+
+
 def client_window_title(data: dict) -> str:
     return str(data.get("last_focus_window") or "").strip()
 
@@ -154,6 +193,10 @@ def affected_students_display(row: dict, limit: int = 4) -> str:
     if len(students) > limit:
         text += " ..."
     return text or "-"
+
+
+def incident_rule_match_display(row: dict) -> str:
+    return str(row.get("match_summary") or "-")
 
 
 def _client_matches_filter(data: dict, label: str) -> bool:
@@ -273,6 +316,28 @@ def _process_sort_value(row: dict, column: str):
     if column == "availability":
         return _text(row.get("action_availability") or "")
     return _text(row.get("process_name") or row.get("normalized_process_name"))
+
+
+def _incident_rule_sort_value(row: dict, column: str):
+    if column == "rule_key":
+        return _text(row.get("rule_key"))
+    if column == "name":
+        return _text(row.get("name"))
+    if column == "status":
+        return _text(row.get("status"))
+    if column == "match":
+        return _text(row.get("match_summary"))
+    if column == "matches":
+        return _number(row.get("match_count"))
+    if column == "students":
+        return _number(row.get("affected_student_count") or len(row.get("affected_students", [])))
+    if column == "last_seen":
+        return _text(row.get("last_seen"))
+    if column == "actions":
+        return _text(row.get("saved_action_labels"))
+    if column == "availability":
+        return _text(row.get("action_availability") or "")
+    return _text(row.get("name"))
 
 
 def _text(value) -> str:

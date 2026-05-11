@@ -11,7 +11,8 @@ from .custommodules.replay_recorder import ReplayRecorder
 from .auth import check_health, perform_login
 from .exam import fetch_exam_prep
 from .incident_buffer import IncidentBuffer
-from .ws_client import run_ws
+from .preflight import fetch_auth_status
+from .ws_client import WebSocketSession, run_ws_with_runtime
 
 
 def _run_blocking(loop: asyncio.AbstractEventLoop, func):
@@ -81,6 +82,11 @@ async def resolve_server_target(args) -> tuple[str, int]:
 async def establish_session(base_url: str, args, recorder_manager: RecorderManager) -> str:
     ad_domain = getattr(args, "ad_domain", None) or None
     ad_secret = getattr(args, "auth_secret", None) or None
+    auth_status = await fetch_auth_status(base_url, args.login_id)
+    if isinstance(auth_status, dict) and not bool(auth_status.get("ad_required", bool(ad_domain and ad_secret))):
+        print("[AUTH] Server temporarily allows AD auth bypass for this login.")
+        ad_domain = None
+        ad_secret = None
     session_uuid = await perform_login(
         base_url, args.login_id, args.password,
         ad_domain=ad_domain,
@@ -97,8 +103,9 @@ async def establish_session(base_url: str, args, recorder_manager: RecorderManag
 
 
 async def prepare_client(base_url: str, session_uuid: str):
-    await fetch_exam_prep(base_url, session_uuid)
+    exam_files_info = await fetch_exam_prep(base_url, session_uuid)
     await check_health(base_url)
+    return exam_files_info
 
 
 def build_base_url(host: str, port: int) -> str:
@@ -114,6 +121,7 @@ async def main_loop(args):
     recorder_manager = RecorderManager(record_enabled=args.record)
     incident_buffer = IncidentBuffer()
     active_session_uuid = None
+    active_runtime: WebSocketSession | None = None
 
     print(f"=== Client [{args.login_id}] (awaiting session assignment) ===\n")
 
@@ -131,10 +139,14 @@ async def main_loop(args):
                     )
                 active_session_uuid = session_uuid
 
-                await prepare_client(base_url, session_uuid)
+                exam_files_info = await prepare_client(base_url, session_uuid)
 
                 print()
-                submission_completed = await run_ws(
+                if active_runtime is not None and active_runtime.session_uuid != session_uuid:
+                    await active_runtime.close_runtime()
+                    active_runtime = None
+
+                submission_completed, active_runtime = await run_ws_with_runtime(
                     build_ws_url(host, port, session_uuid),
                     base_url,
                     session_uuid,
@@ -143,6 +155,8 @@ async def main_loop(args):
                     gui_ui=getattr(args, "ui", "tk") or "tk",
                     ipc_transport=getattr(args, "ipc_transport", "auto") or "auto",
                     incident_buffer=incident_buffer,
+                    runtime=active_runtime,
+                    exam_files_info=exam_files_info,
                 )
                 if submission_completed:
                     print("[EXAM] Submission complete. Exiting client.")
@@ -156,6 +170,8 @@ async def main_loop(args):
             print(f"[!] Reconnecting in {args.reconnect} seconds...\n")
             await asyncio.sleep(args.reconnect)
     finally:
+        if active_runtime is not None:
+            await active_runtime.close_runtime()
         await recorder_manager.stop()
 
 

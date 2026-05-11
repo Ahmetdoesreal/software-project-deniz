@@ -59,6 +59,8 @@ def _client_detail_rows(client_id: str, data: dict) -> list[tuple[str, str]]:
         ("Current Window At", str(data.get("last_focus_event_at") or "-")),
         ("Current Window Severity", str(data.get("last_focus_severity") or "-")),
         ("IP Address", str(data.get("ip") or "-")),
+        ("Client Exam Folder", str(data.get("exam_folder_path") or "-")),
+        ("Client Exam ZIP", str(data.get("exam_files_zip_path") or "-")),
         ("Submission", str(data.get("submission_name") or "-")),
         ("Submission Size", _format_bytes(int(data.get("submission_size_bytes", 0)))),
         ("Submitted At", str(data.get("submitted_at") or "-")),
@@ -68,6 +70,7 @@ def _client_detail_rows(client_id: str, data: dict) -> list[tuple[str, str]]:
 
 def _server_info_rows(info: dict) -> list[tuple[str, str]]:
     all_host_ips = ", ".join(str(ip) for ip in info.get("all_host_ips", []) if str(ip).strip()) or "-"
+    auth_bypass = info.get("auth_bypass") or {}
     return [
         ("Server ID", str(info.get("server_id", "-"))),
         ("Host", str(info.get("host", "-"))),
@@ -83,11 +86,16 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
         ("Exam Files Path", str(info.get("exam_files_path") or "-")),
         ("Blacklist Entries", str(info.get("process_blacklist_count", 0))),
         ("Process Definitions", str(info.get("process_definition_count", 0))),
+        ("Incident Rules", str(info.get("incident_rule_count", 0))),
         ("Blacklist Version", str(info.get("process_blacklist_version", "-"))),
         ("Blacklist File", str(info.get("process_blacklist_file", "-"))),
+        ("Incident Rules Version", str(info.get("incident_rules_version", "-"))),
+        ("Incident Rules File", str(info.get("incident_rules_file", "-"))),
         ("Policy Version", str(info.get("policy_version", "-"))),
         ("Policy File", str(info.get("policy_file", "-"))),
         ("Remember Settings", "Yes" if info.get("remember_settings", True) else "No"),
+        ("CATS Auth Disabled", f"{auth_bypass.get('cats_disabled', False)} ({auth_bypass.get('cats_remaining_seconds', 0)}s)"),
+        ("AD Auth Disabled", f"{auth_bypass.get('ad_disabled', False)} ({auth_bypass.get('ad_remaining_seconds', 0)}s)"),
         ("Incidents", str(info.get("incident_count", 0))),
         ("Active Incidents", str(info.get("active_incident_count", 0))),
     ]
@@ -124,6 +132,30 @@ class DashboardPopupMixin:
             window_key=window_key,
             title="Server Info Details",
             rows=_server_info_rows(info),
+        )
+
+    def show_folder_info(self):
+        client_id, data = self._selected_client_data()
+        if not client_id:
+            messagebox.showinfo("Folders", "Select a client first.")
+            return
+        data = data or {}
+        rows = [
+            ("Login ID", str(data.get("login_id") or "-")),
+            ("UUID", str(client_id)),
+            ("Client Exam Folder", str(data.get("exam_folder_path") or "Desktop\\Exam\\DD-MM-YYYY")),
+            ("Client Exam ZIP", str(data.get("exam_files_zip_path") or "-")),
+            ("Latest Incident Artifact", str(data.get("latest_incident_artifact_path") or "-")),
+            ("Submission Path", str(data.get("submission_path") or "-")),
+            ("Submission Name", str(data.get("submission_name") or "-")),
+        ]
+        window_key = ("folders", client_id)
+        if self._focus_existing_window(window_key):
+            return
+        self._open_detail_window(
+            window_key=window_key,
+            title=f"Folders: {data.get('login_id', 'Unknown')}",
+            rows=rows,
         )
 
     def show_options(self):

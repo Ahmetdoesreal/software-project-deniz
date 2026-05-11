@@ -1,7 +1,9 @@
 import json
+import os
 import sys
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from pathlib import Path
 from threading import Thread
 from tkinter import filedialog, messagebox, ttk
@@ -37,6 +39,16 @@ def _format_time(seconds: int) -> str:
     return f"{minutes:02d}:{remaining_seconds:02d}"
 
 
+def _open_folder(path: str):
+    folder = Path(path).expanduser()
+    if not folder.exists():
+        raise FileNotFoundError(str(folder))
+    if os.name == "nt":
+        os.startfile(str(folder))  # type: ignore[attr-defined]
+    else:
+        webbrowser.open(folder.resolve().as_uri())
+
+
 class ExamTimerGUI:
     def __init__(self, root, *, standalone_mode: bool = False):
         self.root = root
@@ -51,6 +63,7 @@ class ExamTimerGUI:
         self.timer_text = tk.StringVar(value="Waiting")
         self.status_text = tk.StringVar(value="Waiting for exam start.")
         self.footer_text = tk.StringVar(value="Ready.")
+        self.exam_folder_path = ""
 
         self._configure_window()
         self._build_widgets()
@@ -113,6 +126,13 @@ class ExamTimerGUI:
             command=self.open_finish_window,
             state=tk.DISABLED,
         )
+        self.exam_folder_btn = ttk.Button(
+            self.button_frame,
+            text="Exam Folder",
+            command=self.show_exam_folder,
+            state=tk.DISABLED,
+        )
+        self.exam_folder_btn.pack(fill=tk.X, pady=(6, 0))
 
         self.footer_label = tk.Label(
             self.main_frame,
@@ -235,6 +255,23 @@ class ExamTimerGUI:
         self.footer_text.set(text)
         if self.submission_window and self.submission_window.winfo_exists():
             self.submission_window.set_upload_step(text)
+
+    def set_exam_files(self, info: dict):
+        folder = str(info.get("extracted_dir", "") or "").strip()
+        if not folder:
+            return
+        self.exam_folder_path = folder
+        self.exam_folder_btn.config(state=tk.NORMAL)
+        self.footer_text.set(f"Exam folder: {folder}")
+
+    def show_exam_folder(self):
+        if not self.exam_folder_path:
+            messagebox.showinfo("Exam Folder", "No exam folder is available yet.")
+            return
+        try:
+            _open_folder(self.exam_folder_path)
+        except Exception as exc:
+            messagebox.showinfo("Exam Folder", f"{self.exam_folder_path}\n\n{exc}")
 
     def pause_timer(self, remaining_seconds: int, reason: str = ""):
         self.started = True
@@ -609,6 +646,9 @@ def _handle_ipc_line(app: ExamTimerGUI, line: str):
             app.root.after(0, app.handle_upload_error, value)
         elif command == "UPLOAD_STEP":
             app.root.after(0, app.handle_upload_step, value)
+        elif command == "EXAM_FILES":
+            payload = json.loads(value) if value else {}
+            app.root.after(0, app.set_exam_files, payload)
     except Exception:
         pass
 

@@ -2,6 +2,7 @@ import json
 import hashlib
 import os
 import tarfile
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -22,6 +23,24 @@ def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
         content_type="application/json",
         text=json.dumps({"error": message, "code": code}),
     )
+
+
+def _auth_bypass_until(request: web.Request, name: str) -> float:
+    bypass = request.app.get("auth_bypass") or {}
+    try:
+        return float(bypass.get(f"{name}_until", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _auth_bypass_active(request: web.Request, name: str) -> bool:
+    return _auth_bypass_until(request, name) > time.time()
+
+
+def _iso_from_epoch(epoch_seconds: float) -> str:
+    if epoch_seconds <= time.time():
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_seconds))
 
 
 def _safe_close_message(reason: str, max_bytes: int = 120) -> bytes:
@@ -131,11 +150,12 @@ def _sync_time_payload(request: web.Request, user: dict, *, reason: str = "") ->
 
 
 def _configured_process_actions(incident: dict) -> dict:
-    if str(incident.get("rule_id", "") or "") != PROCESS_DEFINITIONS_RULE_ID:
-        return normalize_actions({})
     actions = incident.get("configured_actions")
     if not isinstance(actions, dict):
         matched = incident.get("matched_definition", {})
+        actions = matched.get("actions", {}) if isinstance(matched, dict) else {}
+    if not any(normalize_actions(actions).values()):
+        matched = incident.get("matched_incident_rule", {})
         actions = matched.get("actions", {}) if isinstance(matched, dict) else {}
     return normalize_actions(actions)
 
@@ -153,7 +173,7 @@ async def _apply_configured_process_actions(
         return []
 
     results: list[dict] = []
-    reason = f"Process policy decision: {incident.get('process_name') or incident.get('rule_id')}"
+    reason = f"Incident policy decision: {incident.get('process_name') or incident.get('rule_id')}"
     pid = int(incident.get("pid", 0) or 0)
     process_name = str(incident.get("process_name", "") or "")
 
@@ -369,16 +389,26 @@ async def _handle_ping_event(ws: web.WebSocketResponse, client_id: str, data: di
 
 def _handle_client_info(client_id: str, data: dict):
     computer_name = str(data.get("computer_name", "")).strip()
-    if not computer_name:
-        return
+    exam_folder_path = str(data.get("exam_folder_path", "") or "").strip()
+    exam_files_zip_path = str(data.get("exam_files_zip_path", "") or "").strip()
 
     client_data = state.clients.get(client_id)
     if client_data is not None:
-        client_data["computer_name"] = computer_name
+        if computer_name:
+            client_data["computer_name"] = computer_name
+        if exam_folder_path:
+            client_data["exam_folder_path"] = exam_folder_path
+        if exam_files_zip_path:
+            client_data["exam_files_zip_path"] = exam_files_zip_path
 
     _, user = state.find_user_by_uuid(client_id)
     if user is not None:
-        user["computer_name"] = computer_name
+        if computer_name:
+            user["computer_name"] = computer_name
+        if exam_folder_path:
+            user["exam_folder_path"] = exam_folder_path
+        if exam_files_zip_path:
+            user["exam_files_zip_path"] = exam_files_zip_path
         state.save_users()
 
 
@@ -551,6 +581,7 @@ async def _handle_incident_report_event(
     if status == "opened":
         action_results = await _apply_configured_process_actions(ws, request, client_id, login_id, user, incident)
         if action_results:
+            incident["auto_action_results"] = action_results
             incident["process_auto_action_results"] = action_results
             state.save_incidents()
 
@@ -662,6 +693,33 @@ async def health(request: web.Request) -> web.Response:
         "clients_connected": len(state.clients),
     })
 
+
+async def auth_status(request: web.Request) -> web.Response:
+    login_id = str(request.query.get("login_id", "") or "").strip()
+    allowed_user = bool(login_id and login_id in state.allowed_users)
+    cats_until = _auth_bypass_until(request, "cats")
+    ad_until = _auth_bypass_until(request, "ad")
+    cats_bypass = cats_until > time.time()
+    ad_bypass = ad_until > time.time() and allowed_user
+    auth_secret = str(request.app.get("auth_secret") or "")
+    if not allowed_user:
+        reason = "login_id is not in allowed_users.json" if login_id else "login_id is required"
+    elif ad_bypass or cats_bypass:
+        reason = "temporary auth bypass active"
+    else:
+        reason = "normal auth required"
+    return web.json_response(
+        {
+            "allowed_user": allowed_user,
+            "cats_required": not cats_bypass,
+            "ad_required": bool(auth_secret) and not ad_bypass,
+            "cats_bypass_until": _iso_from_epoch(cats_until),
+            "ad_bypass_until": _iso_from_epoch(ad_until if allowed_user else 0.0),
+            "server_time": protocol.now_iso(),
+            "reason": reason,
+        }
+    )
+
 def _verify_token(login_id: str, token: str, secret: str) -> bool:
     """
     Verify the HMAC-SHA256 token produced by check_user.exe --gen-token.
@@ -691,6 +749,9 @@ def _validate_token(request: web.Request, login_id: str, token: str) -> web.Resp
     secret = str(request.app.get("auth_secret") or "")
     if not secret:
         return None  # dev/testing: no secret set, skip token verification
+    if _auth_bypass_active(request, "ad") and login_id in state.allowed_users and str(token or "").strip():
+        print(f"[AUTH] Temporary AD bypass used for {login_id}.")
+        return None
     if not _verify_token(login_id, token, secret):
         return _json_error("Invalid credentials.", 401)
     return None

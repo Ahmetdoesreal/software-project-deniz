@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from client.incidents import ClientIncidentEngine
+from common.incident_rules import default_incident_rules
 
 
 PROCESS_BLACKLIST_POLICY = {
@@ -408,6 +409,105 @@ class ClientIncidentEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(incidents, [])
+
+    def test_incident_rules_default_new_tab_whitelist_suppresses_browser_focus(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update({"allowed_process_names": ["exam.exe"], "open_after_consecutive": 1})
+        policy["rules"].append(
+            {
+                "rule_id": "incident_rules",
+                "source": "incident_rules",
+                "type": "incident_rules",
+                "enabled": True,
+                "definitions": default_incident_rules(),
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "msedge.exe", "window_title": "New Tab - Microsoft Edge", "process_id": 1}
+        )
+
+        self.assertEqual(incidents, [])
+
+    def test_incident_rules_cats_whitelist_is_configurable_by_title(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update({"allowed_process_names": ["exam.exe"], "open_after_consecutive": 1})
+        policy["rules"].append(
+            {
+                "rule_id": "incident_rules",
+                "source": "incident_rules",
+                "type": "incident_rules",
+                "enabled": True,
+                "definitions": [
+                    {
+                        "name": "Approved CATS title",
+                        "status": "whitelist",
+                        "event_type": "focused_window_policy",
+                        "source": "focused_window",
+                        "browser_process_names": ["chrome.exe"],
+                        "window_title_patterns": ["CATS"],
+                        "match_mode": "contains",
+                    }
+                ],
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "chrome.exe", "window_title": "CATS - Exam Portal - Google Chrome", "process_id": 1}
+        )
+
+        self.assertEqual(incidents, [])
+
+    def test_incident_rules_blocked_title_opens_with_configured_actions(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update(
+            {
+                "allowed_process_names": [],
+                "blocked_process_names": [],
+                "blocked_window_titles": [],
+                "open_after_consecutive": 1,
+            }
+        )
+        policy["rules"].append(
+            {
+                "rule_id": "incident_rules",
+                "source": "incident_rules",
+                "type": "incident_rules",
+                "enabled": True,
+                "definitions": [
+                    {
+                        "name": "Discord title",
+                        "status": "blacklist",
+                        "event_type": "focused_window_policy",
+                        "source": "focused_window",
+                        "window_title_patterns": ["Discord"],
+                        "actions": {"pause_exam": True, "kill_pid": True},
+                    }
+                ],
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "chrome.exe", "window_title": "Discord - Chat", "process_id": 1234}
+        )
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["severity"], "violation")
+        self.assertTrue(incidents[0]["configured_actions"]["pause_exam"])
+        self.assertTrue(incidents[0]["configured_actions"]["kill_pid"])
+        self.assertEqual(incidents[0]["matched_incident_rule"]["status"], "blacklist")
 
     def test_focused_window_title_matching_ignores_invisible_browser_separators(self):
         engine = ClientIncidentEngine()

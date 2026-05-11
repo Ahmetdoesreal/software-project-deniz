@@ -88,12 +88,18 @@ def _extract_finish_path(text: str) -> str | None:
 async def _wait_for_queue_or_event(
     input_queue: asyncio.Queue,
     event: asyncio.Event,
+    extra_event: asyncio.Event | None = None,
 ) -> tuple[object | None, bool]:
     queue_task = asyncio.create_task(input_queue.get())
     event_task = asyncio.create_task(event.wait())
+    tasks = [queue_task, event_task]
+    extra_task = None
+    if extra_event is not None:
+        extra_task = asyncio.create_task(extra_event.wait())
+        tasks.append(extra_task)
 
     done, pending = await asyncio.wait(
-        [queue_task, event_task],
+        tasks,
         return_when=asyncio.FIRST_COMPLETED,
     )
 
@@ -101,6 +107,8 @@ async def _wait_for_queue_or_event(
         task.cancel()
 
     if event_task in done and event.is_set():
+        return None, True
+    if extra_task is not None and extra_task in done and extra_event and extra_event.is_set():
         return None, True
 
     return queue_task.result(), False
@@ -273,6 +281,9 @@ class ClientGUIBridge:
 
     def send_upload_step(self, message: str):
         self._write(f"UPLOAD_STEP:{message}\n")
+
+    def send_exam_files(self, info: dict):
+        self._write(f"EXAM_FILES:{json.dumps(info, ensure_ascii=True)}\n")
 
     def close(self):
         process = self.process
@@ -571,6 +582,9 @@ class WebSocketSession:
             if restored:
                 print(f"[INCIDENT] Restored {restored} unacked incident(s) from previous session.")
         self._background_tasks: set[asyncio.Task] = set()
+        self._runtime_closed = False
+        self._evidence_uploading: set[str] = set()
+        self.exam_files_info: dict = {}
         self.replay_save_queue = ReplaySaveQueue(recorder, self.loop)
         self.process_monitor = self._create_process_monitor()
         self.hardware_monitor = self._create_hardware_monitor()
@@ -578,6 +592,31 @@ class WebSocketSession:
         self.focused_window_monitor = self._create_focused_window_monitor()
         self.idle_monitor = self._create_idle_monitor()
         self._record_timer_transition(timer_state="idle", source="client", reason="session_initialized")
+
+    def attach_connection(self, ws_url: str, base_url: str, password: str, ws):
+        self.ws_url = ws_url
+        self.base_url = base_url
+        self.password = password
+        self.ws = ws
+        self.security = security.build_session_context(self.session_uuid, password)
+        self.state.disconnected.clear()
+        self.state.intentional_shutdown = False
+        self._runtime_closed = False
+        self._record_timer_transition(
+            timer_state="reconnected",
+            source="client",
+            reason="WebSocket connection established.",
+        )
+
+    def set_exam_files_info(self, info: dict | None):
+        self.exam_files_info = dict(info or {})
+        if self.exam_files_info.get("extracted_dir"):
+            self.gui.ensure_started()
+            self.gui.send_exam_files(self.exam_files_info)
+
+    def _send_cached_exam_files_info(self):
+        if self.exam_files_info.get("extracted_dir"):
+            self.gui.send_exam_files(self.exam_files_info)
 
     def _create_process_monitor(self):
         monitor = ProcessMonitor(
@@ -690,6 +729,7 @@ class WebSocketSession:
 
     async def run(self):
         await self._flush_incident_buffer()
+        await self._flush_pending_evidence()
         listener_task = asyncio.create_task(self.listener())
         try:
             await self.sender()
@@ -697,16 +737,37 @@ class WebSocketSession:
             pass
         finally:
             listener_task.cancel()
-            self.gui.close()
-            await self.stdin.close()
-            self._stop_runtime_monitors()
-            await self.replay_save_queue.aclose()
-            for task in list(self._background_tasks):
-                task.cancel()
 
         if self.state.disconnected.is_set() and not self.state.intentional_shutdown:
+            self._mark_reconnecting()
             raise ConnectionError("Server disconnected")
         return self.state.intentional_shutdown
+
+    def _mark_reconnecting(self):
+        if self.state.submission_completed or self._runtime_closed:
+            return
+        reason = "Connection lost. Reconnecting..."
+        remaining = int(self.state.current_remaining_seconds or 0)
+        self._update_timer_state(
+            remaining_seconds=remaining,
+            timer_state="reconnecting",
+            source="client",
+            reason=reason,
+        )
+        self.gui.ensure_started()
+        self.gui.send_pause(remaining, reason)
+        print(f"[WS] {reason}")
+
+    async def close_runtime(self):
+        if self._runtime_closed:
+            return
+        self._runtime_closed = True
+        self.gui.close()
+        await self.stdin.close()
+        self._stop_runtime_monitors()
+        await self.replay_save_queue.aclose()
+        for task in list(self._background_tasks):
+            task.cancel()
 
     async def prompt_start_exam(self):
         print("\n--- PRE-EXAM PREPARATION ---")
@@ -717,6 +778,7 @@ class WebSocketSession:
             command, event_triggered = await _wait_for_queue_or_event(
                 self.stdin.queue,
                 self.state.start_event,
+                self.state.disconnected,
             )
             if event_triggered:
                 break
@@ -736,6 +798,9 @@ class WebSocketSession:
 
             print("Type 'start' or use the GUI when you are ready.")
 
+        if self.state.disconnected.is_set() and not self.state.start_event.is_set():
+            return
+
         if self.state.submission_only:
             print("[EXAM] Submission is required. Use the finish window to upload your file.\n")
             return
@@ -753,6 +818,8 @@ class WebSocketSession:
 
     async def sender(self):
         await self.prompt_start_exam()
+        if self.state.disconnected.is_set():
+            return
         if self.state.submission_only:
             print("Use the finish window to upload your file, or type 'finish <file_path>'.\n")
         else:
@@ -810,7 +877,14 @@ class WebSocketSession:
         if event == events.WELCOME:
             print(f"[WS] Connected! Server assigned ID: {data['id']}")
             self.gui.ensure_started()
-            await self._send_payload(events.client_info(_computer_name()))
+            self._send_cached_exam_files_info()
+            await self._send_payload(
+                events.client_info(
+                    _computer_name(),
+                    exam_folder_path=str(self.exam_files_info.get("extracted_dir", "") or ""),
+                    exam_files_zip_path=str(self.exam_files_info.get("zip_path", "") or ""),
+                )
+            )
             return
 
         if event == events.EXAM_POLICY:
@@ -1245,7 +1319,7 @@ class WebSocketSession:
             print(f"[FOCUS] Failed to send focused window status: {exc}")
 
     async def _process_local_incidents(self, incidents: list[dict]):
-        if not incidents or self.state.disconnected.is_set():
+        if not incidents:
             return
         for incident in incidents:
             await self._report_incident(incident)
@@ -1270,17 +1344,29 @@ class WebSocketSession:
         incident_payload = dict(incident)
         incident_payload["session_uuid"] = self.session_uuid
         incident_payload["computer_name"] = _computer_name()
-        incident_payload["reported_at"] = protocol.now_iso()
+        reported_at = protocol.now_iso()
+        incident_payload["reported_at"] = reported_at
+        incident_payload.setdefault("queued_at", reported_at)
 
         needs_evidence = bool(incident_payload.get("needs_evidence"))
         if needs_evidence:
             incident_payload["evidence_status"] = "pending"
 
         incident_buffer = getattr(self, "incident_buffer", None)
+        offline = self.state.disconnected.is_set()
+        incident_payload["buffered"] = bool(offline)
         if incident_buffer:
             incident_payload = incident_buffer.enqueue(incident_payload)
+            if needs_evidence:
+                incident_buffer.mark_evidence_pending(incident_payload)
 
         seq = incident_payload.get("seq")
+        if offline:
+            incident_id = incident_payload.get("incident_id")
+            seq_label = f" seq={seq}" if seq is not None else ""
+            print(f"[INCIDENT] Queued {incident_id}{seq_label}: WebSocket disconnected.")
+            return
+
         try:
             await self._send_payload(events.incident_report(incident_payload))
             if incident_buffer and seq is not None:
@@ -1288,6 +1374,8 @@ class WebSocketSession:
         except Exception as exc:
             incident_id = incident_payload.get("incident_id")
             seq_label = f" seq={seq}" if seq is not None else ""
+            if incident_buffer and seq is not None:
+                incident_buffer.mark_buffered(seq, "send_failed")
             print(f"[INCIDENT] Failed to send {incident_id}{seq_label}: {exc} — queued on disk.")
             return
 
@@ -1299,6 +1387,23 @@ class WebSocketSession:
         if needs_evidence:
             self._schedule_background_task(
                 self._upload_and_report_incident_evidence(dict(incident_payload))
+            )
+
+    async def _flush_pending_evidence(self):
+        incident_buffer = getattr(self, "incident_buffer", None)
+        if not incident_buffer or self.state.disconnected.is_set():
+            return
+        if not hasattr(self, "_evidence_uploading"):
+            self._evidence_uploading = set()
+        pending = incident_buffer.get_pending_evidence()
+        if pending:
+            print(f"[INCIDENT] Retrying evidence for {len(pending)} pending incident(s).")
+        for incident in pending:
+            incident_id = str(incident.get("incident_id", "") or "")
+            if not incident_id or incident_id in self._evidence_uploading:
+                continue
+            self._schedule_background_task(
+                self._upload_and_report_incident_evidence(dict(incident), retry=True)
             )
 
     async def _upload_incident_evidence(self, incident: dict) -> str | None:
@@ -1341,37 +1446,54 @@ class WebSocketSession:
             return None
 
     async def _upload_and_report_incident_evidence(self, incident: dict, *, retry: bool = False):
+        incident_id = str(incident.get("incident_id", "") or "")
+        incident_buffer = getattr(self, "incident_buffer", None)
+        if not hasattr(self, "_evidence_uploading"):
+            self._evidence_uploading = set()
+        if incident_buffer:
+            incident_buffer.mark_evidence_pending(incident)
         if self.state.disconnected.is_set():
             return
 
-        artifact_path = await self._upload_incident_evidence(incident)
-        update_payload = dict(incident)
-        update_payload["reported_at"] = protocol.now_iso()
-        update_payload["needs_evidence"] = False
-        if artifact_path:
-            update_payload["status"] = "evidence_uploaded"
-            update_payload["evidence_status"] = "uploaded"
-            update_payload["artifact_path"] = artifact_path
-            update_payload["evidence_upload_failed"] = False
-            if retry:
-                update_payload["evidence_retry"] = True
-        else:
-            update_payload["status"] = "evidence_failed"
-            update_payload["evidence_status"] = "failed"
-            update_payload["evidence_upload_failed"] = True
-            if not retry:
-                self._schedule_background_task(self._retry_incident_evidence_upload(dict(incident)))
-
+        if incident_id:
+            self._evidence_uploading.add(incident_id)
         try:
-            await self._send_payload(events.incident_report(update_payload))
+            artifact_path = await self._upload_incident_evidence(incident)
+            update_payload = dict(incident)
+            update_payload["reported_at"] = protocol.now_iso()
+            update_payload["needs_evidence"] = False
+            update_payload["buffered"] = bool(retry or update_payload.get("buffered"))
             if artifact_path:
-                print(f"[INCIDENT] Evidence uploaded for {incident.get('incident_id')}.")
-            elif retry:
-                print(f"[INCIDENT] Evidence retry failed for {incident.get('incident_id')}.")
+                update_payload["status"] = "evidence_uploaded"
+                update_payload["evidence_status"] = "uploaded"
+                update_payload["artifact_path"] = artifact_path
+                update_payload["evidence_upload_failed"] = False
+                if retry:
+                    update_payload["evidence_retry"] = True
             else:
-                print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}; retry scheduled.")
-        except Exception as exc:
-            print(f"[INCIDENT] Failed to report evidence status: {exc}")
+                update_payload["status"] = "evidence_failed"
+                update_payload["evidence_status"] = "failed"
+                update_payload["evidence_upload_failed"] = True
+                if not retry:
+                    self._schedule_background_task(self._retry_incident_evidence_upload(dict(incident)))
+
+            try:
+                await self._send_payload(events.incident_report(update_payload))
+                if artifact_path:
+                    if incident_buffer:
+                        incident_buffer.mark_evidence_complete(incident_id, artifact_path)
+                    print(f"[INCIDENT] Evidence uploaded for {incident.get('incident_id')}.")
+                elif retry:
+                    print(f"[INCIDENT] Evidence retry failed for {incident.get('incident_id')}.")
+                else:
+                    print(f"[INCIDENT] Evidence upload failed for {incident.get('incident_id')}; retry scheduled.")
+            except Exception as exc:
+                if incident_buffer:
+                    incident_buffer.mark_evidence_pending(update_payload)
+                print(f"[INCIDENT] Failed to report evidence status: {exc}")
+        finally:
+            if incident_id:
+                self._evidence_uploading.discard(incident_id)
 
     async def _save_replay_with_timeout(
         self,
@@ -1472,11 +1594,45 @@ async def run_ws(
     incident_buffer: IncidentBuffer | None = None,
 ):
     """Connect via WebSocket, handle exam flow and pings."""
+    result, runtime = await run_ws_with_runtime(
+        ws_url,
+        base_url,
+        session_uuid,
+        password,
+        recorder,
+        gui_ui=gui_ui,
+        ipc_transport=ipc_transport,
+        incident_buffer=incident_buffer,
+    )
+    await runtime.close_runtime()
+    return result
+
+
+async def run_ws_with_runtime(
+    ws_url: str,
+    base_url: str,
+    session_uuid: str,
+    password: str,
+    recorder: ReplayRecorder | None,
+    *,
+    gui_ui: str = "tk",
+    ipc_transport: str = "auto",
+    incident_buffer: IncidentBuffer | None = None,
+    runtime: WebSocketSession | None = None,
+    exam_files_info: dict | None = None,
+) -> tuple[bool, WebSocketSession]:
+    """Connect via WebSocket using a persistent per-session runtime."""
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(ws_url) as ws:
-            return await WebSocketSession(
-                ws_url, base_url, session_uuid, password, ws, recorder,
-                gui_ui=gui_ui,
-                ipc_transport=ipc_transport,
-                incident_buffer=incident_buffer,
-            ).run()
+            if runtime is None:
+                runtime = WebSocketSession(
+                    ws_url, base_url, session_uuid, password, ws, recorder,
+                    gui_ui=gui_ui,
+                    ipc_transport=ipc_transport,
+                    incident_buffer=incident_buffer,
+                )
+            else:
+                runtime.attach_connection(ws_url, base_url, password, ws)
+            if exam_files_info is not None:
+                runtime.set_exam_files_info(exam_files_info)
+            return await runtime.run(), runtime

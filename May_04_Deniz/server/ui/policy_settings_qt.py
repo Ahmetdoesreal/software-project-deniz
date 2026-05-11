@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from ui.theme import M
 from ui.widgets import make_button, monospace_font
 from common.process_definitions import build_google_search_url
+from server.ui.process_database_helpers import build_incident_rule_decision_payload
 
 SEVERITY_VALUES = ("info", "warning", "violation")
 WINDOW_TITLE_MATCH_MODES = ("contains", "exact")
@@ -284,6 +285,140 @@ class ProcessDecisionDialog(QDialog):
         self.accept()
 
 
+class IncidentRuleDecisionDialog(QDialog):
+    decision_applied = Signal(dict)
+
+    def __init__(self, row: dict, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.row = row
+        title = row.get("name") or row.get("rule_id") or "Incident Rule"
+        self.setWindowTitle(f"Incident Rule: {title}")
+        self.resize(1040, 760)
+        self.setMinimumSize(920, 660)
+
+        self._build_layout()
+
+    def _build_layout(self):
+        layout = QVBoxLayout(self)
+
+        identity_box = QGroupBox("Rule Match")
+        identity_layout = QVBoxLayout(identity_box)
+        rows = [
+            ("Name", self.row.get("name") or "-"),
+            ("Rule ID", self.row.get("rule_id") or "-"),
+            ("Event Type", self.row.get("event_type") or "-"),
+            ("Source", self.row.get("source") or "-"),
+            ("Processes", ", ".join(self.row.get("process_names", [])) or "-"),
+            ("Browser Processes", ", ".join(self.row.get("browser_process_names", [])) or "-"),
+            ("Title Patterns", ", ".join(self.row.get("window_title_patterns", [])) or "-"),
+            ("Match Mode", self.row.get("match_mode") or "-"),
+            ("Matches", str(self.row.get("match_count", 0) or len(self.row.get("matching_history", [])))),
+        ]
+        for label, value in rows:
+            row_layout = QHBoxLayout()
+            lbl = QLabel(f"{label}:")
+            lbl.setFixedWidth(180)
+            val = QLabel(str(value))
+            val.setFont(monospace_font())
+            val.setWordWrap(True)
+            row_layout.addWidget(lbl)
+            row_layout.addWidget(val, stretch=1)
+            identity_layout.addLayout(row_layout)
+        layout.addWidget(identity_box)
+
+        controls_box = QGroupBox("Decision")
+        controls_layout = QVBoxLayout(controls_box)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Status:"))
+        self.status_combo = style_combo(QComboBox())
+        self.status_combo.addItems(["unknown", "whitelist", "warning", "blacklist"])
+        self.status_combo.setCurrentText(str(self.row.get("status") or "unknown"))
+        row1.addWidget(self.status_combo)
+
+        row1.addSpacing(20)
+        row1.addWidget(QLabel("Priority:"))
+        self.priority_entry = QLineEdit(str(self.row.get("priority", 0) or 0))
+        self.priority_entry.setMinimumWidth(90)
+        self.priority_entry.setMinimumHeight(CONTROL_HEIGHT)
+        row1.addWidget(self.priority_entry)
+        row1.addStretch()
+        controls_layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        actions = self.row.get("actions", {})
+        self.chk_ban = QCheckBox("Ban")
+        self.chk_ban.setChecked(bool(actions.get("ban", False)))
+        self.chk_kick = QCheckBox("Kick")
+        self.chk_kick.setChecked(bool(actions.get("kick", False)))
+        self.chk_pause = QCheckBox("Pause Exam")
+        self.chk_pause.setChecked(bool(actions.get("pause_exam", False)))
+        self.chk_kill = QCheckBox("Kill PID")
+        self.chk_kill.setChecked(bool(actions.get("kill_pid", False)))
+        row2.addWidget(self.chk_ban)
+        row2.addWidget(self.chk_kick)
+        row2.addWidget(self.chk_pause)
+        row2.addWidget(self.chk_kill)
+        row2.addStretch()
+        controls_layout.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        self.chk_save = QCheckBox("Save decision to policy")
+        self.chk_save.setChecked(True)
+        row3.addWidget(self.chk_save)
+        row3.addStretch()
+        btn_apply = style_action_button(make_button("Apply Rule", "filled"))
+        btn_apply.clicked.connect(self._on_apply)
+        row3.addWidget(btn_apply)
+        controls_layout.addLayout(row3)
+        layout.addWidget(controls_box)
+
+        history_box = QGroupBox("Matching Incidents")
+        history_layout = QVBoxLayout(history_box)
+        self.history_tree = QTreeWidget()
+        self.history_tree.setColumnCount(6)
+        self.history_tree.setHeaderLabels(["Student", "Rule", "Status", "PID", "Active", "Summary"])
+        apply_table_style(self.history_tree)
+        configure_tree_columns(
+            self.history_tree,
+            ((140, 95), (165, 110), (95, 75), (80, 60), (80, 60), (460, 180)),
+        )
+        for incident in self.row.get("matching_history", []):
+            item = QTreeWidgetItem([
+                incident.get("login_id") or incident.get("client_id") or "-",
+                incident.get("rule_id") or "-",
+                incident.get("status") or "-",
+                str(incident.get("pid") or "-"),
+                "Yes" if incident.get("active") else "No",
+                incident.get("summary") or "-",
+            ])
+            self.history_tree.addTopLevelItem(item)
+        history_layout.addWidget(self.history_tree)
+        layout.addWidget(history_box, stretch=1)
+
+    def _on_apply(self):
+        try:
+            priority = int(str(self.priority_entry.text() or "0").strip())
+        except ValueError:
+            QMessageBox.warning(self, "Incident Rule", "Priority must be an integer.")
+            return
+        actions = {
+            "ban": self.chk_ban.isChecked(),
+            "kick": self.chk_kick.isChecked(),
+            "pause_exam": self.chk_pause.isChecked(),
+            "kill_pid": self.chk_kill.isChecked(),
+        }
+        payload = build_incident_rule_decision_payload(
+            self.row,
+            status=self.status_combo.currentText(),
+            actions=actions,
+            save_policy=self.chk_save.isChecked(),
+            priority=priority,
+        )
+        self.decision_applied.emit(payload)
+        self.accept()
+
+
 class PolicySettingsDialog(QDialog):
     settings_saved = Signal(dict)
     export_requested = Signal()
@@ -292,6 +427,8 @@ class PolicySettingsDialog(QDialog):
     apply_policy_requested = Signal()
     edit_definitions_requested = Signal()
     apply_definitions_requested = Signal()
+    edit_incident_rules_requested = Signal()
+    apply_incident_rules_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -340,6 +477,7 @@ class PolicySettingsDialog(QDialog):
         self._build_process_lists_tab()
         self._build_window_rules_tab()
         self._build_definitions_tab()
+        self._build_incident_rules_tab()
         layout.addWidget(self.tabs, stretch=1)
 
     def _mark_dirty(self):
@@ -352,10 +490,12 @@ class PolicySettingsDialog(QDialog):
         version = str(self.snapshot.get("policy_version", "") or "")
         blacklist_version = str(self.snapshot.get("process_blacklist_version", "") or "")
         definitions_version = str(self.snapshot.get("process_definitions_version", "") or "")
+        incident_rules_version = str(self.snapshot.get("incident_rules_version", "") or "")
         label = (
             f"Policy {version[:12] or '-'} | "
             f"Blacklist {blacklist_version[:12] or '-'} | "
-            f"Definitions {definitions_version[:12] or '-'}"
+            f"Definitions {definitions_version[:12] or '-'} | "
+            f"Incident Rules {incident_rules_version[:12] or '-'}"
         )
         if self._dirty:
             label += " | Unsaved changes"
@@ -540,6 +680,26 @@ class PolicySettingsDialog(QDialog):
         self._add_check(options, "rules.process_definitions.allow_remote_kill", "Allow remote kill")
         self.tabs.addTab(tab, "Process Definitions")
 
+    def _build_incident_rules_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self._add_combo(layout, "rules.incident_rules.severity", "Severity:", list(SEVERITY_VALUES))
+        actions = QHBoxLayout()
+        btn_edit = style_action_button(make_button("Open Incident Rules File", "tonal"), 230)
+        btn_edit.clicked.connect(self.edit_incident_rules_requested.emit)
+        actions.addWidget(btn_edit)
+        btn_apply = style_action_button(make_button("Apply Incident Rules File", "outlined"), 230)
+        btn_apply.clicked.connect(self.apply_incident_rules_requested.emit)
+        actions.addWidget(btn_apply)
+        actions.addStretch()
+        layout.addLayout(actions)
+        options = self._add_group(layout, "Options")
+        self._add_check(options, "rules.incident_rules.enabled", "Enabled")
+        self._add_check(options, "rules.incident_rules.auto_violation_pause", "Auto pause on violation")
+        self._add_check(options, "rules.incident_rules.allow_remote_kill", "Allow remote kill")
+        layout.addStretch()
+        self.tabs.addTab(tab, "Incident Rules")
+
     def set_val(self, key: str, value):
         w = self.vars.get(key)
         if not w: return
@@ -670,6 +830,11 @@ class PolicySettingsDialog(QDialog):
             self.set_val("rules.process_definitions.baseline_existing_processes", pd.get("baseline_existing_processes", True))
             self.set_val("rules.process_definitions.auto_violation_pause", pd.get("auto_violation_pause", False))
             self.set_val("rules.process_definitions.allow_remote_kill", pd.get("allow_remote_kill", True))
+            ir = rules.get("incident_rules", {}) or {}
+            self.set_val("rules.incident_rules.enabled", ir.get("enabled", True))
+            self.set_val("rules.incident_rules.severity", ir.get("severity", "warning"))
+            self.set_val("rules.incident_rules.auto_violation_pause", ir.get("auto_violation_pause", False))
+            self.set_val("rules.incident_rules.allow_remote_kill", ir.get("allow_remote_kill", True))
             pc = rules.get("process_path_clarification", {}) or {}
             self.set_val("rules.process_path_clarification.enabled", pc.get("enabled", True))
             self.set_val("rules.process_path_clarification.severity", pc.get("severity", "warning"))
@@ -775,6 +940,12 @@ class PolicySettingsDialog(QDialog):
                         "baseline_existing_processes": self.get_bool("rules.process_definitions.baseline_existing_processes"),
                         "auto_violation_pause": self.get_bool("rules.process_definitions.auto_violation_pause"),
                         "allow_remote_kill": self.get_bool("rules.process_definitions.allow_remote_kill"),
+                    },
+                    "incident_rules": {
+                        "enabled": self.get_bool("rules.incident_rules.enabled"),
+                        "severity": self.get_str("rules.incident_rules.severity"),
+                        "auto_violation_pause": self.get_bool("rules.incident_rules.auto_violation_pause"),
+                        "allow_remote_kill": self.get_bool("rules.incident_rules.allow_remote_kill"),
                     },
                     "process_path_clarification": {
                         "enabled": self.get_bool("rules.process_path_clarification.enabled"),

@@ -4,6 +4,7 @@ import os
 from typing import Iterable
 
 from common.process_definitions import normalize_definitions
+from common.incident_rules import default_incident_rules, normalize_incident_rules
 
 from . import session_state
 
@@ -12,6 +13,7 @@ ALLOWED_USERS_FILE = "allowed_users.json"
 PROCESS_BLACKLIST_FILE = "data/server/process_blacklist.txt"
 EXAM_POLICY_FILE = "data/server/exam_policy.json"
 PROCESS_DEFINITIONS_FILE = "data/server/process_definitions.json"
+INCIDENT_RULES_FILE = "data/server/incident_rules.json"
 INCIDENTS_FILE = "data/server/incidents.jsonl"
 AUDIT_FILE = "data/server/session_audit.jsonl"
 SETTINGS_EXPORT_SCHEMA_VERSION = 1
@@ -25,6 +27,8 @@ class ServerState:
         self.process_blacklist_version: str = ""
         self.process_definitions: list[dict] = []
         self.process_definitions_version: str = ""
+        self.incident_rules: list[dict] = []
+        self.incident_rules_version: str = ""
         self.exam_policy_config: dict = {}
         self.incidents: list[dict] = []
         self.active_incidents: dict[str, dict] = {}
@@ -60,6 +64,7 @@ class ServerState:
         self.load_process_blacklist()
         self.load_exam_policy()
         self.load_process_definitions()
+        self.load_incident_rules()
         self.load_incidents()
 
     def save_users(self):
@@ -172,6 +177,53 @@ class ServerState:
         except Exception as e:
             print(f"[!] Failed to save {PROCESS_DEFINITIONS_FILE}: {e}")
 
+    def ensure_incident_rules_file(self):
+        os.makedirs(os.path.dirname(INCIDENT_RULES_FILE), exist_ok=True)
+        if os.path.exists(INCIDENT_RULES_FILE):
+            return
+
+        try:
+            with open(INCIDENT_RULES_FILE, "w", encoding="utf-8") as rules_file:
+                json.dump(default_incident_rules(), rules_file, indent=2)
+        except Exception as e:
+            print(f"[!] Failed to initialize {INCIDENT_RULES_FILE}: {e}")
+
+    def load_incident_rules(self):
+        embedded_rules = self._embedded_incident_rules()
+        if embedded_rules and not os.path.exists(INCIDENT_RULES_FILE):
+            self.incident_rules = embedded_rules
+            self.save_incident_rules()
+            self._remove_embedded_incident_rules()
+            self.save_exam_policy()
+            return
+
+        self.ensure_incident_rules_file()
+        try:
+            with open(INCIDENT_RULES_FILE, "r", encoding="utf-8") as rules_file:
+                loaded = json.load(rules_file)
+            if isinstance(loaded, dict):
+                loaded = loaded.get("entries", [])
+            normalized = normalize_incident_rules(loaded)
+            self.incident_rules = normalized or default_incident_rules()
+            if not normalized:
+                self.save_incident_rules()
+            else:
+                self.incident_rules_version = self._incident_rules_version_stamp()
+            self._remove_embedded_incident_rules()
+        except Exception as e:
+            print(f"[!] Failed to load {INCIDENT_RULES_FILE}: {e}")
+            self.incident_rules = default_incident_rules()
+            self.incident_rules_version = self._incident_rules_version_stamp()
+
+    def save_incident_rules(self):
+        self.ensure_incident_rules_file()
+        try:
+            with open(INCIDENT_RULES_FILE, "w", encoding="utf-8") as rules_file:
+                json.dump(normalize_incident_rules(self.incident_rules), rules_file, indent=2)
+            self.incident_rules_version = self._incident_rules_version_stamp()
+        except Exception as e:
+            print(f"[!] Failed to save {INCIDENT_RULES_FILE}: {e}")
+
     def load_incidents(self):
         self.incidents = []
         self.active_incidents = {}
@@ -208,6 +260,8 @@ class ServerState:
         user.setdefault("kick_count", 0)
         user.setdefault("last_action", "")
         user.setdefault("computer_name", "")
+        user.setdefault("exam_folder_path", "")
+        user.setdefault("exam_files_zip_path", "")
         user.setdefault("submitted_at", "")
         user.setdefault("submission_name", "")
         user.setdefault("submission_path", "")
@@ -302,6 +356,10 @@ class ServerState:
             config = dict(self.exam_policy_config.get("rules", {}).get("process_definitions", {}))
             config["definitions"] = self._current_process_definitions()
             return config
+        if rule_id == "incident_rules":
+            config = dict(self.exam_policy_config.get("rules", {}).get("incident_rules", {}))
+            config["definitions"] = self._current_incident_rules()
+            return config
         if rule_id == "process_path_clarification":
             return dict(self.exam_policy_config.get("rules", {}).get("process_path_clarification", {}))
         if rule_id == "focused_window_policy":
@@ -322,6 +380,7 @@ class ServerState:
         idle_policy = rules_config.get("idle_policy", {})
         unexpected_process = rules_config.get("unexpected_process", {})
         process_definitions = self.rule_config("process_definitions")
+        incident_rules = self.rule_config("incident_rules")
         process_path_clarification = rules_config.get("process_path_clarification", {})
         payload = {
             "policy_version": "",
@@ -400,6 +459,16 @@ class ServerState:
                     "baseline_existing_processes": bool(process_definitions.get("baseline_existing_processes", True)),
                     "auto_violation_pause": bool(process_definitions.get("auto_violation_pause", False)),
                     "allow_remote_kill": bool(process_definitions.get("allow_remote_kill", True)),
+                },
+                {
+                    "rule_id": "incident_rules",
+                    "source": "server_policy",
+                    "type": "incident_rules",
+                    "enabled": bool(incident_rules.get("enabled", True)),
+                    "severity": str(incident_rules.get("severity", "warning")),
+                    "definitions": normalize_incident_rules(incident_rules.get("definitions", [])),
+                    "auto_violation_pause": bool(incident_rules.get("auto_violation_pause", False)),
+                    "allow_remote_kill": bool(incident_rules.get("allow_remote_kill", True)),
                 },
                 {
                     "rule_id": "process_path_clarification",
@@ -484,6 +553,10 @@ class ServerState:
                 "entries": self._current_process_definitions(),
                 "version": self.process_definitions_version,
             },
+            "incident_rules": {
+                "entries": self._current_incident_rules(),
+                "version": self.incident_rules_version,
+            },
             "operator_defaults": dict(self.exam_policy_config.get("operator_defaults", {})),
         }
         return bundle
@@ -519,6 +592,17 @@ class ServerState:
             self.process_definitions = self._embedded_process_definitions(normalized)
         self._remove_embedded_process_definitions()
 
+        incident_rules_payload = bundle.get("incident_rules")
+        if isinstance(incident_rules_payload, dict):
+            self.incident_rules = normalize_incident_rules(incident_rules_payload.get("entries", []))
+        elif isinstance(incident_rules_payload, list):
+            self.incident_rules = normalize_incident_rules(incident_rules_payload)
+        else:
+            self.incident_rules = self._embedded_incident_rules(normalized)
+        if not self.incident_rules:
+            self.incident_rules = default_incident_rules()
+        self._remove_embedded_incident_rules()
+
         blacklist = bundle.get("process_blacklist", {})
         if isinstance(blacklist, dict):
             self.process_blacklist = self._parse_process_blacklist_lines(
@@ -532,6 +616,7 @@ class ServerState:
         self.save_exam_policy()
         self.save_process_blacklist()
         self.save_process_definitions()
+        self.save_incident_rules()
 
     def _parse_process_blacklist_lines(self, lines: Iterable[str]) -> list[str]:
         entries = []
@@ -559,6 +644,12 @@ class ServerState:
         except OSError:
             return "0"
 
+    def _incident_rules_version_stamp(self) -> str:
+        try:
+            return str(os.stat(INCIDENT_RULES_FILE).st_mtime_ns)
+        except OSError:
+            return "0"
+
     def _embedded_process_definitions(self, policy: dict | None = None) -> list[dict]:
         source = policy if isinstance(policy, dict) else self.exam_policy_config
         return normalize_definitions(
@@ -573,6 +664,20 @@ class ServerState:
             return embedded_definitions
         return normalize_definitions(self.process_definitions)
 
+    def _embedded_incident_rules(self, policy: dict | None = None) -> list[dict]:
+        source = policy if isinstance(policy, dict) else self.exam_policy_config
+        return normalize_incident_rules(
+            source.get("rules", {})
+            .get("incident_rules", {})
+            .get("definitions", [])
+        )
+
+    def _current_incident_rules(self) -> list[dict]:
+        embedded_rules = self._embedded_incident_rules()
+        if embedded_rules:
+            return embedded_rules
+        return normalize_incident_rules(self.incident_rules)
+
     def _remove_embedded_process_definitions(self):
         rules = self.exam_policy_config.get("rules", {})
         if not isinstance(rules, dict):
@@ -580,6 +685,14 @@ class ServerState:
         process_definitions = rules.get("process_definitions", {})
         if isinstance(process_definitions, dict):
             process_definitions.pop("definitions", None)
+
+    def _remove_embedded_incident_rules(self):
+        rules = self.exam_policy_config.get("rules", {})
+        if not isinstance(rules, dict):
+            return
+        incident_rules = rules.get("incident_rules", {})
+        if isinstance(incident_rules, dict):
+            incident_rules.pop("definitions", None)
 
     def _policy_without_process_definitions(self, policy: dict | None = None) -> dict:
         source = policy if isinstance(policy, dict) else self.exam_policy_config
@@ -589,6 +702,9 @@ class ServerState:
             process_definitions = rules.get("process_definitions", {})
             if isinstance(process_definitions, dict):
                 process_definitions.pop("definitions", None)
+            incident_rules = rules.get("incident_rules", {})
+            if isinstance(incident_rules, dict):
+                incident_rules.pop("definitions", None)
         return policy_copy
 
     def _default_exam_policy_config(self) -> dict:
@@ -647,6 +763,12 @@ class ServerState:
                     "detect_unknown_processes": True,
                     "unknown_severity": "warning",
                     "baseline_existing_processes": True,
+                    "auto_violation_pause": False,
+                    "allow_remote_kill": True,
+                },
+                "incident_rules": {
+                    "enabled": True,
+                    "severity": "warning",
                     "auto_violation_pause": False,
                     "allow_remote_kill": True,
                 },
@@ -724,6 +846,7 @@ class ServerState:
             idle_policy = rules.get("idle_policy", {})
             unexpected_process = rules.get("unexpected_process", {})
             process_definitions = rules.get("process_definitions", {})
+            incident_rules = rules.get("incident_rules", {})
             process_path_clarification = rules.get("process_path_clarification", {})
         else:
             focused_window = {}
@@ -731,6 +854,7 @@ class ServerState:
             idle_policy = {}
             unexpected_process = {}
             process_definitions = {}
+            incident_rules = {}
             process_path_clarification = {}
 
         legacy_focused_window = config.get("focused_window", {})
@@ -859,6 +983,25 @@ class ServerState:
             )
             normalized["rules"]["process_definitions"]["allow_remote_kill"] = bool(
                 process_definitions.get("allow_remote_kill", True)
+            )
+        if isinstance(incident_rules, dict):
+            normalized["rules"]["incident_rules"]["enabled"] = bool(
+                incident_rules.get("enabled", True)
+            )
+            normalized["rules"]["incident_rules"]["severity"] = str(
+                incident_rules.get(
+                    "severity",
+                    normalized["rules"]["incident_rules"]["severity"],
+                )
+            )
+            definitions = normalize_incident_rules(incident_rules.get("definitions", []))
+            if definitions:
+                normalized["rules"]["incident_rules"]["definitions"] = definitions
+            normalized["rules"]["incident_rules"]["auto_violation_pause"] = bool(
+                incident_rules.get("auto_violation_pause", False)
+            )
+            normalized["rules"]["incident_rules"]["allow_remote_kill"] = bool(
+                incident_rules.get("allow_remote_kill", True)
             )
         if isinstance(process_path_clarification, dict):
             normalized["rules"]["process_path_clarification"]["enabled"] = bool(

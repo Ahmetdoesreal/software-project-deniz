@@ -31,8 +31,8 @@ from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_stan
 
 
 try:
-    from PySide6.QtCore import Qt, QObject, QTimer, Signal
-    from PySide6.QtGui import QFont
+    from PySide6.QtCore import Qt, QObject, QTimer, QUrl, Signal
+    from PySide6.QtGui import QDesktopServices, QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -96,6 +96,7 @@ class _IPCSignals(QObject):
     upload_ok = Signal(str)
     upload_error = Signal(str)
     upload_step = Signal(str)
+    exam_files = Signal(str)
     parent_closed = Signal()
 
 
@@ -332,6 +333,7 @@ class ExamTimerGUI(QMainWindow):
         self.pause_reason = ""
         self.submission_window: Optional[SubmissionWindow] = None
         self.finish_in_progress = False
+        self.exam_folder_path = ""
 
         self.setWindowTitle("Exam Timer")
         self.resize(500, 320)
@@ -378,6 +380,10 @@ class ExamTimerGUI(QMainWindow):
         self.finish_button.clicked.connect(self.open_finish_window)
         self.finish_button.hide()
         commands_layout.addWidget(self.finish_button)
+        self.exam_folder_button = make_button("Exam Folder", "tonal")
+        self.exam_folder_button.setEnabled(False)
+        self.exam_folder_button.clicked.connect(self.show_exam_folder)
+        commands_layout.addWidget(self.exam_folder_button)
         outer.addWidget(commands_box)
 
         self.footer_label = QLabel("Ready.")
@@ -531,6 +537,28 @@ class ExamTimerGUI(QMainWindow):
         if self.submission_window is not None and self.submission_window.isVisible():
             self.submission_window.set_upload_step(text)
 
+    def set_exam_files_json(self, raw: str) -> None:
+        try:
+            info = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return
+        folder = str(info.get("extracted_dir", "") or "").strip()
+        if not folder:
+            return
+        self.exam_folder_path = folder
+        self.exam_folder_button.setEnabled(True)
+        self.footer_label.setText(f"Exam folder: {folder}")
+
+    def show_exam_folder(self) -> None:
+        if not self.exam_folder_path:
+            QMessageBox.information(self, "Exam Folder", "No exam folder is available yet.")
+            return
+        folder = Path(self.exam_folder_path).expanduser()
+        if not folder.exists():
+            QMessageBox.information(self, "Exam Folder", f"{folder}\n\nFolder does not exist.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
     def pause_timer(self, remaining_seconds: int, reason: str = "") -> None:
         self.started = True
         self.timer_state = "paused"
@@ -607,6 +635,8 @@ def _handle_ipc_line(signals: _IPCSignals, line: str) -> None:
             signals.upload_error.emit(value)
         elif command == "UPLOAD_STEP":
             signals.upload_step.emit(value)
+        elif command == "EXAM_FILES":
+            signals.exam_files.emit(value)
     except Exception:
         pass
 
@@ -654,6 +684,7 @@ def run() -> int:
     signals.upload_ok.connect(gui.handle_upload_success)
     signals.upload_error.connect(gui.handle_upload_error)
     signals.upload_step.connect(gui.handle_upload_step)
+    signals.exam_files.connect(gui.set_exam_files_json)
     if not standalone:
         signals.parent_closed.connect(gui.force_close)
     if use_ws_ipc:

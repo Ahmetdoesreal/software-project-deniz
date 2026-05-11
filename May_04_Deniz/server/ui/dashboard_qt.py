@@ -33,7 +33,7 @@ from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_stan
 
 
 try:
-    from PySide6.QtCore import Qt, QObject, QTimer, Signal
+    from PySide6.QtCore import QEvent, Qt, QObject, QTimer, Signal
     from PySide6.QtGui import QBrush, QColor, QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -62,7 +62,7 @@ try:
         QVBoxLayout,
         QWidget,
     )
-    from server.ui.policy_settings_qt import PolicySettingsDialog, ProcessDecisionDialog
+    from server.ui.policy_settings_qt import IncidentRuleDecisionDialog, PolicySettingsDialog, ProcessDecisionDialog
 except ImportError:  # pragma: no cover - import guard
     write_text_stderr(_missing_pyside6_message())
     raise
@@ -74,20 +74,31 @@ from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
     CLIENT_FILTERS,
     INCIDENT_FILTERS,
+    INCIDENT_RULE_COLUMNS,
+    INCIDENT_RULE_FILTERS,
     PROCESS_COLUMNS,
     PROCESS_DATABASE_FILTERS,
     active_filter_names,
     affected_students_display,
     client_window_title,
+    incident_rule_match_display,
     process_path_display,
     sorted_client_items,
     sorted_incidents,
+    sorted_incident_rule_rows,
     sorted_process_rows,
 )
 from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
     build_process_decision_payload,
     process_row_google_search_url,
+)
+from server.ui.row_refresh import (
+    RowSnapshot,
+    changed_row_indexes,
+    reorder_rows_by_previous_keys,
+    row_snapshot,
+    same_row_order,
 )
 from ui.widgets import apply_glass_theme, make_button, monospace_font, style_button
 from ui.theme import M, STATE_COLORS
@@ -123,6 +134,18 @@ PROCESS_COLUMN_WIDTHS = {
     "status": (100, 80),
     "path": (360, 180),
     "scope": (100, 80),
+    "matches": (90, 70),
+    "students": (180, 120),
+    "last_seen": (165, 120),
+    "actions": (155, 110),
+    "availability": (245, 150),
+}
+
+INCIDENT_RULE_COLUMN_WIDTHS = {
+    "rule_key": (0, 0),
+    "name": (180, 110),
+    "status": (100, 80),
+    "match": (380, 170),
     "matches": (90, 70),
     "students": (180, 120),
     "last_seen": (165, 120),
@@ -187,6 +210,8 @@ def _detail_lines(client_id: str, data: dict) -> list[tuple[str, str]]:
         ("Current Window At", str(data.get("last_focus_event_at") or "-")),
         ("Current Window Severity", str(data.get("last_focus_severity") or "-")),
         ("IP Address", str(data.get("ip") or "-")),
+        ("Client Exam Folder", str(data.get("exam_folder_path") or "-")),
+        ("Client Exam ZIP", str(data.get("exam_files_zip_path") or "-")),
         ("Submission", str(data.get("submission_name") or "-")),
         ("Submission Size", _format_bytes(int(data.get("submission_size_bytes", 0)))),
         ("Submitted At", str(data.get("submitted_at") or "-")),
@@ -271,6 +296,7 @@ def _multi_incident_detail_lines(incidents: list[dict]) -> list[tuple[str, str]]
 
 def _server_info_rows(info: dict) -> list[tuple[str, str]]:
     all_host_ips = ", ".join(str(ip) for ip in info.get("all_host_ips", []) if str(ip).strip()) or "-"
+    auth_bypass = info.get("auth_bypass") or {}
     return [
         ("Server ID", str(info.get("server_id", "-"))),
         ("Host", str(info.get("host", "-"))),
@@ -286,11 +312,16 @@ def _server_info_rows(info: dict) -> list[tuple[str, str]]:
         ("Exam Files Path", str(info.get("exam_files_path") or "-")),
         ("Blacklist Entries", str(info.get("process_blacklist_count", 0))),
         ("Process Definitions", str(info.get("process_definition_count", 0))),
+        ("Incident Rules", str(info.get("incident_rule_count", 0))),
         ("Blacklist Version", str(info.get("process_blacklist_version", "-"))),
         ("Blacklist File", str(info.get("process_blacklist_file", "-"))),
+        ("Incident Rules Version", str(info.get("incident_rules_version", "-"))),
+        ("Incident Rules File", str(info.get("incident_rules_file", "-"))),
         ("Policy Version", str(info.get("policy_version", "-"))),
         ("Policy File", str(info.get("policy_file", "-"))),
         ("Remember Settings", "Yes" if info.get("remember_settings", True) else "No"),
+        ("CATS Auth Disabled", f"{auth_bypass.get('cats_disabled', False)} ({auth_bypass.get('cats_remaining_seconds', 0)}s)"),
+        ("AD Auth Disabled", f"{auth_bypass.get('ad_disabled', False)} ({auth_bypass.get('ad_remaining_seconds', 0)}s)"),
         ("Incidents", str(info.get("incident_count", 0))),
         ("Active Incidents", str(info.get("active_incident_count", 0))),
     ]
@@ -486,7 +517,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.clients_data: dict[str, dict] = {}
         self.incidents_data: list[dict] = []
         self.process_database_data: list[dict] = []
+        self.incident_rules_data: list[dict] = []
         self.process_database_items: dict[str, str] = {}
+        self.incident_rules_items: dict[str, str] = {}
         self.server_info: dict = {}
         self.settings_snapshot: dict = {}
         self._open_dialogs: dict[tuple[str, str], QDialog] = {}
@@ -495,11 +528,19 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             "clients": ("login_id", False),
             "incidents": ("time", True),
             "processes": ("executable", False),
+            "incident_rules": ("last_seen", True),
         }
         self._mono = _monospace_font()
         self._allow_close = False
         self._incident_tree_refreshing = False
         self._process_tree_refreshing = False
+        self._incident_rules_tree_refreshing = False
+        self._row_snapshots: dict[str, RowSnapshot] = {}
+        self._force_table_rebuilds: set[str] = set()
+        self._hover_rows: dict[object, int] = {}
+        self._hover_tree_items: dict[object, QTreeWidgetItem | None] = {}
+        self._hover_viewports: dict[object, object] = {}
+        self._hover_brush = QBrush(QColor(255, 255, 255, 18))
 
         self.setWindowTitle("Server Monitor Dashboard")
         self.resize(1200, 760)
@@ -533,6 +574,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.apply_policy_requested.connect(self.apply_policy)
         dialog.edit_definitions_requested.connect(self.edit_process_definitions)
         dialog.apply_definitions_requested.connect(self.apply_process_definitions)
+        dialog.edit_incident_rules_requested.connect(self.edit_incident_rules)
+        dialog.apply_incident_rules_requested.connect(self.apply_incident_rules)
         
         if hasattr(self, 'settings_snapshot') and self.settings_snapshot:
             dialog.update_snapshot(self.settings_snapshot)
@@ -557,12 +600,15 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.overview_tab = QWidget()
         self.rules_tab = QWidget()
         self.process_database_tab = QWidget()
+        self.incident_rules_tab = QWidget()
         self.tabs.addTab(self.overview_tab, "Overview")
         self.tabs.addTab(self.rules_tab, "Rule Breakings")
         self.tabs.addTab(self.process_database_tab, "Process Database")
+        self.tabs.addTab(self.incident_rules_tab, "Incident Rules")
         self._build_overview_tab()
         self._build_rule_breakings_tab()
         self._build_process_database_tab()
+        self._build_incident_rules_tab()
 
         cmd_row = QHBoxLayout()
         cmd_row.addWidget(QLabel("Admin Command:"))
@@ -666,6 +712,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             checks["All"].blockSignals(True)
             checks["All"].setChecked(True)
             checks["All"].blockSignals(False)
+        self._force_table_rebuilds.add(table_name)
         rebuild_callback()
 
     def _active_filters(self, table_name: str) -> set[str]:
@@ -681,6 +728,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             current_column = column
             descending = False
         self.sort_state[table_name] = (current_column, descending)
+        self._force_table_rebuilds.add(table_name)
         rebuild_callback()
 
     def _heading_text(self, table_name: str, column: str, label: str) -> str:
@@ -700,6 +748,93 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         for index, (column, label) in enumerate(PROCESS_COLUMNS):
             header_item.setText(index, self._heading_text("processes", column, label))
 
+    def _refresh_incident_rule_headers(self) -> None:
+        header_item = self.incident_rules_tree.headerItem()
+        for index, (column, label) in enumerate(INCIDENT_RULE_COLUMNS):
+            header_item.setText(index, self._heading_text("incident_rules", column, label))
+
+    def _prepare_rows_for_refresh(self, table_name: str, rows):
+        previous = self._row_snapshots.get(table_name)
+        if table_name not in self._force_table_rebuilds:
+            rows = reorder_rows_by_previous_keys(rows, previous)
+        snapshot = row_snapshot(rows)
+        force_rebuild = table_name in self._force_table_rebuilds
+        self._force_table_rebuilds.discard(table_name)
+        return rows, snapshot, previous, force_rebuild
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        if event.type() == QEvent.Leave and watched in self._hover_viewports:
+            widget = self._hover_viewports.get(watched)
+            if isinstance(widget, QTableWidget):
+                self._set_table_hover_row(widget, -1)
+            elif isinstance(widget, QTreeWidget):
+                self._set_tree_hover_item(widget, None)
+        return super().eventFilter(watched, event)
+
+    def _install_table_hover(self, table: QTableWidget) -> None:
+        table.setMouseTracking(True)
+        table.viewport().setMouseTracking(True)
+        table.viewport().installEventFilter(self)
+        self._hover_viewports[table.viewport()] = table
+        self._hover_rows[table] = -1
+        table.itemEntered.connect(lambda item, widget=table: self._set_table_hover_row(widget, item.row()))
+        table.itemSelectionChanged.connect(lambda widget=table: self._refresh_table_hover(widget))
+
+    def _install_tree_hover(self, tree: QTreeWidget) -> None:
+        tree.setMouseTracking(True)
+        tree.viewport().setMouseTracking(True)
+        tree.viewport().installEventFilter(self)
+        self._hover_viewports[tree.viewport()] = tree
+        self._hover_tree_items[tree] = None
+        tree.itemEntered.connect(lambda item, _column, widget=tree: self._set_tree_hover_item(widget, item))
+        tree.itemSelectionChanged.connect(lambda widget=tree: self._refresh_tree_hover(widget))
+
+    def _set_table_hover_row(self, table: QTableWidget, row: int) -> None:
+        previous = self._hover_rows.get(table, -1)
+        if previous == row:
+            return
+        self._paint_table_hover_row(table, previous, enabled=False)
+        self._hover_rows[table] = row
+        self._paint_table_hover_row(table, row, enabled=True)
+
+    def _paint_table_hover_row(self, table: QTableWidget, row: int, *, enabled: bool) -> None:
+        if row < 0 or row >= table.rowCount():
+            return
+        if enabled and row in {index.row() for index in table.selectionModel().selectedRows()}:
+            return
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is not None:
+                item.setBackground(self._hover_brush if enabled else QBrush())
+
+    def _refresh_table_hover(self, table: QTableWidget) -> None:
+        row = self._hover_rows.get(table, -1)
+        if row >= 0:
+            self._paint_table_hover_row(table, row, enabled=False)
+            self._paint_table_hover_row(table, row, enabled=True)
+
+    def _set_tree_hover_item(self, tree: QTreeWidget, item: QTreeWidgetItem | None) -> None:
+        previous = self._hover_tree_items.get(tree)
+        if previous is item:
+            return
+        self._paint_tree_hover_item(tree, previous, enabled=False)
+        self._hover_tree_items[tree] = item
+        self._paint_tree_hover_item(tree, item, enabled=True)
+
+    def _paint_tree_hover_item(self, tree: QTreeWidget, item: QTreeWidgetItem | None, *, enabled: bool) -> None:
+        if item is None:
+            return
+        if enabled and item.isSelected():
+            return
+        for column in range(tree.columnCount()):
+            item.setBackground(column, self._hover_brush if enabled else QBrush())
+
+    def _refresh_tree_hover(self, tree: QTreeWidget) -> None:
+        item = self._hover_tree_items.get(tree)
+        if item is not None:
+            self._paint_tree_hover_item(tree, item, enabled=False)
+            self._paint_tree_hover_item(tree, item, enabled=True)
+
     def _build_client_tree_area(self, parent_layout: QVBoxLayout) -> None:
         self._build_filter_bar(parent_layout, "clients", CLIENT_FILTERS, self._rebuild_client_table)
         self.client_table = QTableWidget(0, len(CLIENT_COLUMNS))
@@ -714,6 +849,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             lambda index: self._set_sort("clients", CLIENT_COLUMNS[index][0], self._rebuild_client_table)
         )
         self.client_table.itemSelectionChanged.connect(self._update_selected_client_panel)
+        self._install_table_hover(self.client_table)
         parent_layout.addWidget(self.client_table, stretch=1)
 
     def _build_log_area(self, parent_layout: QVBoxLayout) -> None:
@@ -804,6 +940,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.selected_details_button.setEnabled(False)
         self.selected_details_button.clicked.connect(self.show_info)
         actions_layout.addWidget(self.selected_details_button)
+        self.selected_folders_button = make_button("Folders", "tonal")
+        self.selected_folders_button.setEnabled(False)
+        self.selected_folders_button.clicked.connect(self.show_folder_info)
+        actions_layout.addWidget(self.selected_folders_button)
         self.selected_actions_button = make_button("Actions", "filled")
         self.selected_actions_button.setEnabled(False)
         self.selected_actions_button.clicked.connect(self.show_options)
@@ -859,6 +999,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.forgive_violation_button = self._action_button(
             actions_layout, "Forgive Violation", self.forgive_selected_violation
         )
+        self.save_incident_rule_button = self._action_button(
+            actions_layout, "Save as Rule", self.save_selected_incident_as_rule
+        )
         actions_layout.addStretch(1)
         layout.addWidget(actions_box)
 
@@ -882,6 +1025,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             lambda index: self._set_sort("incidents", self.INCIDENT_COLUMNS[index][0], self._rebuild_incident_table)
         )
         self.incident_table.itemSelectionChanged.connect(self._update_incident_detail)
+        self._install_table_hover(self.incident_table)
         history_layout.addWidget(self.incident_table)
         center_layout.addWidget(history_box, stretch=1)
 
@@ -945,9 +1089,53 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         )
         self.process_tree.itemSelectionChanged.connect(self._sync_process_buttons)
         self.process_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_process_options_clicked())
+        self._install_tree_hover(self.process_tree)
 
         process_box_layout.addWidget(self.process_tree)
         layout.addWidget(process_box, stretch=1)
+
+    def _build_incident_rules_tab(self) -> None:
+        layout = QVBoxLayout(self.incident_rules_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self._build_filter_bar(layout, "incident_rules", INCIDENT_RULE_FILTERS, self._rebuild_incident_rules_tree)
+        toolbar = QHBoxLayout()
+        self.incident_rule_options_button = make_button("Options", "tonal")
+        self.incident_rule_options_button.setEnabled(False)
+        self.incident_rule_options_button.clicked.connect(self._on_incident_rule_options_clicked)
+        toolbar.addWidget(self.incident_rule_options_button)
+
+        toolbar.addStretch(1)
+        open_button = make_button("Open Rules File", "text")
+        open_button.clicked.connect(self.edit_incident_rules)
+        toolbar.addWidget(open_button)
+        apply_button = make_button("Apply Rules File", "text")
+        apply_button.clicked.connect(self.apply_incident_rules)
+        toolbar.addWidget(apply_button)
+        layout.addLayout(toolbar)
+
+        rules_box = QGroupBox("Incident Rules And Evidence")
+        rules_box_layout = QVBoxLayout(rules_box)
+
+        self.incident_rules_tree = QTreeWidget()
+        self.incident_rules_tree.setColumnCount(len(INCIDENT_RULE_COLUMNS))
+        self.incident_rules_tree.setHeaderLabels([label for _column, label in INCIDENT_RULE_COLUMNS])
+        self.incident_rules_tree.setColumnHidden(0, True)
+        self.incident_rules_tree.setFont(self._mono)
+        self.incident_rules_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.incident_rules_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.incident_rules_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.incident_rules_tree.setRootIsDecorated(False)
+        _configure_table_columns(self.incident_rules_tree, INCIDENT_RULE_COLUMNS, INCIDENT_RULE_COLUMN_WIDTHS)
+        self.incident_rules_tree.header().sectionClicked.connect(
+            lambda index: self._set_sort("incident_rules", INCIDENT_RULE_COLUMNS[index][0], self._rebuild_incident_rules_tree)
+        )
+        self.incident_rules_tree.itemSelectionChanged.connect(self._sync_incident_rule_buttons)
+        self.incident_rules_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_incident_rule_options_clicked())
+        self._install_tree_hover(self.incident_rules_tree)
+
+        rules_box_layout.addWidget(self.incident_rules_tree)
+        layout.addWidget(rules_box, stretch=1)
 
     def _on_process_options_clicked(self) -> None:
         row = self._selected_process_row()
@@ -980,6 +1168,63 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             f"[ADMIN] Google search for {row.get('process_name') or row.get('normalized_process_name')}"
         )
 
+    def _on_incident_rule_options_clicked(self) -> None:
+        self.show_incident_rule_decision_window()
+
+    def show_incident_rule_decision_window(self, row: Optional[dict] = None) -> None:
+        row = row or self._selected_incident_rule_row()
+        if not row:
+            QMessageBox.information(self, "Incident Rules", "Select an incident rule entry first.")
+            return
+
+        key = ("incident_rule_decision", str(row.get("rule_key") or row.get("source_incident_id") or id(row)))
+        if self._focus_existing_dialog(key):
+            return
+
+        dialog = IncidentRuleDecisionDialog(row, parent=self)
+        self._register_dialog(key, dialog)
+        dialog.decision_applied.connect(self._on_incident_rule_decision_applied)
+        dialog.show()
+
+    def _on_incident_rule_decision_applied(self, payload: dict) -> None:
+        _emit_command(payload)
+        definition = payload.get("definition", {}) if isinstance(payload.get("definition"), dict) else {}
+        self._append_log(
+            f"[ADMIN] Applied incident rule decision for {definition.get('name') or definition.get('rule_key') or 'Incident rule'}"
+        )
+
+    def save_selected_incident_as_rule(self) -> None:
+        incident = self._selected_incident()
+        if not incident:
+            return
+        self.show_incident_rule_decision_window(self._incident_to_rule_row(incident))
+
+    def _incident_to_rule_row(self, incident: dict) -> dict:
+        details = incident.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        window_title = str(incident.get("window_title") or details.get("window_title") or "").strip()
+        process_name = str(incident.get("process_name") or "").strip()
+        return {
+            "rule_key": "",
+            "definition_id": "",
+            "name": str(incident.get("rule_name") or incident.get("rule_id") or "Incident rule"),
+            "status": "unknown",
+            "actions": {},
+            "rule_id": str(incident.get("rule_id") or ""),
+            "event_type": str(incident.get("event_type") or incident.get("rule_id") or ""),
+            "source": str(incident.get("source") or ""),
+            "process_names": [process_name] if process_name else [],
+            "browser_process_names": [],
+            "window_title_patterns": [window_title] if window_title else [],
+            "match_mode": "contains" if window_title else "exact",
+            "priority": 0,
+            "source_incident_id": str(incident.get("incident_id") or ""),
+            "matching_history": [incident],
+            "previous_matching_entries": [],
+            "action_states": [],
+        }
+
     # ------------------------------------------------------------------ process database helpers
     def _selected_process_row(self) -> Optional[dict]:
         items = self.process_tree.selectedItems()
@@ -1000,35 +1245,87 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
     def _rebuild_process_database_tree(self) -> None:
         selected_row = self._selected_process_row()
         selected_key = str((selected_row or {}).get("process_key", "") or "")
-        self.process_tree.clear()
+        vertical_value = self.process_tree.verticalScrollBar().value()
+        horizontal_value = self.process_tree.horizontalScrollBar().value()
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("processes", self._process_tree_rows())
         self._refresh_process_headers()
+        if not force_rebuild and same_row_order(previous, snapshot):
+            for index in changed_row_indexes(previous, snapshot):
+                _process_key, values = rows[index]
+                item = self.process_tree.topLevelItem(index)
+                if item is not None:
+                    for column, value in enumerate(values):
+                        item.setText(column, str(value))
+            self._row_snapshots["processes"] = snapshot
+            self._sync_process_buttons()
+            return
+
+        self.process_tree.blockSignals(True)
+        self._set_tree_hover_item(self.process_tree, None)
+        self.process_tree.clear()
         restored_item = None
-        sort_column, descending = self.sort_state.get("processes", ("executable", False))
-        for row in sorted_process_rows(
-            self.process_database_data,
-            self._active_filters("processes"),
-            sort_column,
-            descending,
-        ):
-            process_key = str(row.get("process_key", "") or "")
-            item = QTreeWidgetItem([
-                process_key,
-                row.get("process_name") or row.get("normalized_process_name") or "",
-                row.get("status", ""),
-                process_path_display(row),
-                row.get("match_scope", ""),
-                str(row.get("match_count", 0)),
-                affected_students_display(row),
-                row.get("last_seen", ""),
-                row.get("saved_action_labels", ""),
-                format_process_action_availability(row),
-            ])
+        for process_key, values in rows:
+            item = QTreeWidgetItem([str(value) for value in values])
             self.process_tree.addTopLevelItem(item)
             if selected_key and process_key == selected_key:
                 restored_item = item
         if restored_item is not None:
             self.process_tree.setCurrentItem(restored_item)
+        self.process_tree.blockSignals(False)
+        self.process_tree.verticalScrollBar().setValue(vertical_value)
+        self.process_tree.horizontalScrollBar().setValue(horizontal_value)
+        self._row_snapshots["processes"] = snapshot
         self._sync_process_buttons()
+
+    # ------------------------------------------------------------------ incident rule helpers
+    def _selected_incident_rule_row(self) -> Optional[dict]:
+        items = self.incident_rules_tree.selectedItems()
+        if not items:
+            return None
+        rule_key = items[0].text(0)
+        for row in self.incident_rules_data:
+            if str(row.get("rule_key", "") or "") == str(rule_key):
+                return row
+        return None
+
+    def _sync_incident_rule_buttons(self) -> None:
+        has_selection = self._selected_incident_rule_row() is not None
+        self.incident_rule_options_button.setEnabled(has_selection)
+
+    def _rebuild_incident_rules_tree(self) -> None:
+        selected_row = self._selected_incident_rule_row()
+        selected_key = str((selected_row or {}).get("rule_key", "") or "")
+        vertical_value = self.incident_rules_tree.verticalScrollBar().value()
+        horizontal_value = self.incident_rules_tree.horizontalScrollBar().value()
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incident_rules", self._incident_rule_tree_rows())
+        self._refresh_incident_rule_headers()
+        if not force_rebuild and same_row_order(previous, snapshot):
+            for index in changed_row_indexes(previous, snapshot):
+                _rule_key, values = rows[index]
+                item = self.incident_rules_tree.topLevelItem(index)
+                if item is not None:
+                    for column, value in enumerate(values):
+                        item.setText(column, str(value))
+            self._row_snapshots["incident_rules"] = snapshot
+            self._sync_incident_rule_buttons()
+            return
+
+        self.incident_rules_tree.blockSignals(True)
+        self._set_tree_hover_item(self.incident_rules_tree, None)
+        self.incident_rules_tree.clear()
+        restored_item = None
+        for rule_key, values in rows:
+            item = QTreeWidgetItem([str(value) for value in values])
+            self.incident_rules_tree.addTopLevelItem(item)
+            if selected_key and rule_key == selected_key:
+                restored_item = item
+        if restored_item is not None:
+            self.incident_rules_tree.setCurrentItem(restored_item)
+        self.incident_rules_tree.blockSignals(False)
+        self.incident_rules_tree.verticalScrollBar().setValue(vertical_value)
+        self.incident_rules_tree.horizontalScrollBar().setValue(horizontal_value)
+        self._row_snapshots["incident_rules"] = snapshot
+        self._sync_incident_rule_buttons()
 
     # ------------------------------------------------------------------ selection
     def _selected_client_id(self) -> Optional[str]:
@@ -1054,6 +1351,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             for label in self.selected_field_labels.values():
                 label.setText("-")
             self.selected_details_button.setEnabled(False)
+            self.selected_folders_button.setEnabled(False)
             self.selected_actions_button.setEnabled(False)
             return
 
@@ -1088,6 +1386,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             if key in self.selected_field_labels:
                 self.selected_field_labels[key].setText(value)
         self.selected_details_button.setEnabled(True)
+        self.selected_folders_button.setEnabled(True)
         self.selected_actions_button.setEnabled(bool(connected or data))
 
     def _selected_incident_ids(self) -> list[str]:
@@ -1107,6 +1406,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             for incident in self.incidents_data
             if str(incident.get("incident_id", "") or "") in selected_ids
         ]
+
+    def _selected_incident(self) -> Optional[dict]:
+        incidents = self._selected_incidents()
+        return incidents[0] if len(incidents) == 1 else None
 
     def _incident_connected(self, incident: dict) -> bool:
         client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
@@ -1135,9 +1438,24 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         return f"{len(incidents)} selected {plural_label}"
 
     # ------------------------------------------------------------------ ticking
-    def _tick_running_timers(self) -> None:
+    def _update_client_remaining_cells(self, client_ids: set[str]) -> None:
         changed = False
-        for data in self.clients_data.values():
+        for row in range(self.client_table.rowCount()):
+            id_item = self.client_table.item(row, 5)
+            if id_item is None or id_item.text() not in client_ids:
+                continue
+            remaining = _format_remaining(self.clients_data.get(id_item.text(), {}).get("remaining", 0))
+            item = self.client_table.item(row, 2)
+            if item is not None and item.text() == remaining:
+                continue
+            self._set_table_item_text(self.client_table, row, 2, remaining)
+            changed = True
+        if changed:
+            self._row_snapshots["clients"] = self._current_table_snapshot(self.client_table, 5)
+
+    def _tick_running_timers(self) -> None:
+        changed_client_ids: set[str] = set()
+        for client_id, data in self.clients_data.items():
             if not data:
                 continue
             if data.get("exam_state") != "Running":
@@ -1145,9 +1463,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             if data.get("remaining", 0) <= 0:
                 continue
             data["remaining"] -= 1
-            changed = True
-        if changed:
-            self._rebuild_client_table()
+            changed_client_ids.add(client_id)
+        if changed_client_ids:
+            self._update_client_remaining_cells(changed_client_ids)
+            self._update_selected_client_panel()
 
     # ------------------------------------------------------------------ details
     def show_info(self) -> None:
@@ -1177,6 +1496,32 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         if self._focus_existing_dialog(key):
             return
         dialog = _DetailsDialog("Server Info Details", _server_info_rows(self.server_info), parent=self)
+        self._register_dialog(key, dialog)
+        dialog.show()
+
+    def show_folder_info(self) -> None:
+        client_id, data = self._selected_client_data()
+        if not client_id:
+            QMessageBox.information(self, "Folders", "Select a client first.")
+            return
+        data = data or {}
+        key = ("folders", client_id)
+        if self._focus_existing_dialog(key):
+            return
+        rows = [
+            ("Login ID", str(data.get("login_id") or "-")),
+            ("UUID", str(client_id)),
+            ("Client Exam Folder", str(data.get("exam_folder_path") or "Desktop\\Exam\\DD-MM-YYYY")),
+            ("Client Exam ZIP", str(data.get("exam_files_zip_path") or "-")),
+            ("Latest Incident Artifact", str(data.get("latest_incident_artifact_path") or "-")),
+            ("Submission Path", str(data.get("submission_path") or "-")),
+            ("Submission Name", str(data.get("submission_name") or "-")),
+        ]
+        dialog = _DetailsDialog(
+            f"Folders: {data.get('login_id', 'Unknown')}",
+            rows,
+            parent=self,
+        )
         self._register_dialog(key, dialog)
         dialog.show()
 
@@ -1393,6 +1738,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         _emit_command({"cmd": "apply_process_definitions"})
         self._append_log("[ADMIN] Applying process definitions")
 
+    def edit_incident_rules(self) -> None:
+        _emit_command({"cmd": "edit_incident_rules"})
+        self._append_log("[ADMIN] Opening incident rules file")
+
+    def apply_incident_rules(self) -> None:
+        _emit_command({"cmd": "apply_incident_rules"})
+        self._append_log("[ADMIN] Applying incident rules")
+
     def export_settings(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1519,6 +1872,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._rebuild_incident_table()
         self.process_database_data = payload.get("process_database", [])
         self._rebuild_process_database_tree()
+        self.incident_rules_data = payload.get("incident_rules_database", [])
+        self._rebuild_incident_rules_tree()
         active_warnings = sum(
             1
             for incident in incidents
@@ -1563,76 +1918,214 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         )
         self.server_info_label.setText(text)
 
-    def _rebuild_client_table(self) -> None:
-        selected_id = self._selected_client_id()
+    def _client_table_rows(self):
         sort_column, descending = self.sort_state.get("clients", ("login_id", False))
-        ordered = sorted_client_items(
-            self.clients_data,
-            self._active_filters("clients"),
+        return [
+            (
+                client_id,
+                (
+                    str(data.get("login_id", "")),
+                    str(data.get("status_label", "Unknown")),
+                    _format_remaining(data.get("remaining", 0)),
+                    client_window_title(data),
+                    str(data.get("ip") or ""),
+                    str(client_id),
+                ),
+            )
+            for client_id, data in sorted_client_items(
+                self.clients_data,
+                self._active_filters("clients"),
+                sort_column,
+                descending,
+            )
+        ]
+
+    def _incident_table_rows(self):
+        sort_column, descending = self.sort_state.get("incidents", ("time", True))
+        rows = []
+        for incident in sorted_incidents(
+            self.incidents_data,
+            self._active_filters("incidents"),
             sort_column,
             descending,
-        )
+        ):
+            incident_id = str(incident.get("incident_id", "") or "")
+            status_text = str(incident.get("status", "") or "")
+            if incident.get("active"):
+                status_text = f"{status_text} (active)"
+            rows.append(
+                (
+                    incident_id,
+                    (
+                        incident_id,
+                        str(incident.get("event_at", "") or ""),
+                        str(incident.get("login_id", "") or ""),
+                        str(incident.get("severity", "") or ""),
+                        str(incident.get("rule_name", "") or ""),
+                        str(incident.get("source", "") or ""),
+                        str(incident.get("process_name", "") or ""),
+                        str(incident.get("pid", "") if incident.get("pid") not in (None, "") else ""),
+                        str(incident.get("auto_action_state_label", "") or ""),
+                        status_text,
+                    ),
+                )
+            )
+        return rows
+
+    def _process_tree_rows(self):
+        sort_column, descending = self.sort_state.get("processes", ("executable", False))
+        return [
+            (
+                str(row.get("process_key", "") or ""),
+                (
+                    str(row.get("process_key", "") or ""),
+                    row.get("process_name") or row.get("normalized_process_name") or "",
+                    row.get("status", ""),
+                    process_path_display(row),
+                    row.get("match_scope", ""),
+                    str(row.get("match_count", 0)),
+                    affected_students_display(row),
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                ),
+            )
+            for row in sorted_process_rows(
+                self.process_database_data,
+                self._active_filters("processes"),
+                sort_column,
+                descending,
+            )
+        ]
+
+    def _incident_rule_tree_rows(self):
+        sort_column, descending = self.sort_state.get("incident_rules", ("last_seen", True))
+        return [
+            (
+                str(row.get("rule_key", "") or ""),
+                (
+                    str(row.get("rule_key", "") or ""),
+                    row.get("name") or "",
+                    row.get("status", ""),
+                    incident_rule_match_display(row),
+                    str(row.get("match_count", 0)),
+                    affected_students_display(row),
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                ),
+            )
+            for row in sorted_incident_rule_rows(
+                self.incident_rules_data,
+                self._active_filters("incident_rules"),
+                sort_column,
+                descending,
+            )
+        ]
+
+    def _set_table_item_text(self, table: QTableWidget, row: int, column: int, value: str, *, foreground: str | None = None) -> None:
+        item = table.item(row, column)
+        if item is None:
+            item = QTableWidgetItem(value)
+            table.setItem(row, column, item)
+        elif item.text() != value:
+            item.setText(value)
+        if foreground:
+            item.setForeground(QBrush(QColor(foreground)))
+
+    def _current_table_snapshot(self, table: QTableWidget, key_column: int) -> RowSnapshot:
+        rows = []
+        for row in range(table.rowCount()):
+            key_item = table.item(row, key_column)
+            if key_item is None:
+                continue
+            values = tuple((table.item(row, column).text() if table.item(row, column) else "") for column in range(table.columnCount()))
+            rows.append((key_item.text(), values))
+        return row_snapshot(rows)
+
+    def _rebuild_client_table(self) -> None:
+        selected_id = self._selected_client_id()
+        vertical_value = self.client_table.verticalScrollBar().value()
+        horizontal_value = self.client_table.horizontalScrollBar().value()
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("clients", self._client_table_rows())
         self.client_table.setHorizontalHeaderLabels(self._client_headers())
-        self.client_table.setRowCount(len(ordered))
+        if not force_rebuild and same_row_order(previous, snapshot):
+            for row in changed_row_indexes(previous, snapshot):
+                _client_id, values = rows[row]
+                for col, value in enumerate(values):
+                    foreground = None
+                    if col == 1:
+                        data = self.clients_data.get(str(values[5]), {})
+                        fg, _bg = STATE_COLORS.get(str(data.get("exam_state", "")).lower(), (M["on_surface_variant"], ""))
+                        foreground = fg
+                    self._set_table_item_text(self.client_table, row, col, str(value), foreground=foreground)
+            self._row_snapshots["clients"] = snapshot
+            self._update_selected_client_panel()
+            return
+
+        self.client_table.blockSignals(True)
+        self._set_table_hover_row(self.client_table, -1)
+        self.client_table.setRowCount(len(rows))
         new_row = -1
-        for row, (client_id, data) in enumerate(ordered):
-            self.client_table.setItem(row, 0, QTableWidgetItem(str(data.get("login_id", ""))))
-            status_item = QTableWidgetItem(str(data.get("status_label", "Unknown")))
-            exam_state = str(data.get("exam_state", "")).lower()
-            fg, _bg = STATE_COLORS.get(exam_state, (M["on_surface_variant"], ""))
-            status_item.setForeground(QBrush(QColor(fg)))
-            self.client_table.setItem(row, 1, status_item)
-            self.client_table.setItem(row, 2, QTableWidgetItem(_format_remaining(data.get("remaining", 0))))
-            self.client_table.setItem(row, 3, QTableWidgetItem(client_window_title(data)))
-            self.client_table.setItem(row, 4, QTableWidgetItem(str(data.get("ip") or "")))
-            self.client_table.setItem(row, 5, QTableWidgetItem(str(client_id)))
+        for row, (client_id, values) in enumerate(rows):
+            for col, value in enumerate(values):
+                foreground = None
+                if col == 1:
+                    data = self.clients_data.get(str(client_id), {})
+                    fg, _bg = STATE_COLORS.get(str(data.get("exam_state", "")).lower(), (M["on_surface_variant"], ""))
+                    foreground = fg
+                self._set_table_item_text(self.client_table, row, col, str(value), foreground=foreground)
             if client_id == selected_id:
                 new_row = row
         if new_row >= 0:
             self.client_table.selectRow(new_row)
         else:
             self.client_table.clearSelection()
+        self.client_table.blockSignals(False)
+        self.client_table.verticalScrollBar().setValue(vertical_value)
+        self.client_table.horizontalScrollBar().setValue(horizontal_value)
+        self._row_snapshots["clients"] = snapshot
         self._update_selected_client_panel()
 
     def _rebuild_incident_table(self) -> None:
         selected_ids = set(self._selected_incident_ids())
-        sort_column, descending = self.sort_state.get("incidents", ("time", True))
-        rows = sorted_incidents(
-            self.incidents_data,
-            self._active_filters("incidents"),
-            sort_column,
-            descending,
-        )
+        vertical_value = self.incident_table.verticalScrollBar().value()
+        horizontal_value = self.incident_table.horizontalScrollBar().value()
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incidents", self._incident_table_rows())
         self.incident_table.setHorizontalHeaderLabels(self._incident_headers())
         self._incident_tree_refreshing = True
         try:
+            if not force_rebuild and same_row_order(previous, snapshot):
+                for row in changed_row_indexes(previous, snapshot):
+                    _incident_id, values = rows[row]
+                    for col, value in enumerate(values):
+                        self._set_table_item_text(self.incident_table, row, col, str(value))
+                self._row_snapshots["incidents"] = snapshot
+                self._incident_tree_refreshing = False
+                self._update_incident_detail()
+                return
+
+            self.incident_table.blockSignals(True)
+            self._set_table_hover_row(self.incident_table, -1)
             self.incident_table.setRowCount(len(rows))
             restored_rows: list[int] = []
-            for row, incident in enumerate(rows):
-                incident_id = str(incident.get("incident_id", "") or "")
-                status_text = str(incident.get("status", "") or "")
-                if incident.get("active"):
-                    status_text = f"{status_text} (active)"
-                values = [
-                    incident_id,
-                    str(incident.get("event_at", "") or ""),
-                    str(incident.get("login_id", "") or ""),
-                    str(incident.get("severity", "") or ""),
-                    str(incident.get("rule_name", "") or ""),
-                    str(incident.get("source", "") or ""),
-                    str(incident.get("process_name", "") or ""),
-                    str(incident.get("pid", "") if incident.get("pid") not in (None, "") else ""),
-                    str(incident.get("auto_action_state_label", "") or ""),
-                    status_text,
-                ]
+            for row, (incident_id, values) in enumerate(rows):
                 for col, value in enumerate(values):
-                    self.incident_table.setItem(row, col, QTableWidgetItem(value))
+                    self._set_table_item_text(self.incident_table, row, col, str(value))
                 if incident_id in selected_ids:
                     restored_rows.append(row)
             self.incident_table.clearSelection()
             for row in restored_rows:
                 self.incident_table.selectRow(row)
+            self.incident_table.blockSignals(False)
+            self.incident_table.verticalScrollBar().setValue(vertical_value)
+            self.incident_table.horizontalScrollBar().setValue(horizontal_value)
+            self._row_snapshots["incidents"] = snapshot
         finally:
+            try:
+                self.incident_table.blockSignals(False)
+            except Exception:
+                pass
             self._incident_tree_refreshing = False
         self._update_incident_detail()
 
@@ -1660,6 +2153,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
                 self.pause_exam_button,
                 self.resume_exam_button,
                 self.forgive_violation_button,
+                self.save_incident_rule_button,
             ):
                 button.setEnabled(False)
             return
@@ -1690,6 +2184,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
                 for incident in incidents
             )
         )
+        self.save_incident_rule_button.setEnabled(len(incidents) == 1)
 
 
 def _ipc_reader(q: queue.Queue) -> None:

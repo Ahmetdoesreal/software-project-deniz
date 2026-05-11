@@ -12,13 +12,16 @@ from aiohttp import web
 from common.discovery import ServerAnnouncer
 from common import events, protocol, security
 from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
-from .state import EXAM_POLICY_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
+from .state import EXAM_POLICY_FILE, INCIDENT_RULES_FILE, PROCESS_BLACKLIST_FILE, PROCESS_DEFINITIONS_FILE, state
 from . import session_state
 from . import ip_guard
 from .settings_service import (
     apply_process_decision,
+    apply_incident_rule_decision,
+    build_incident_rules_database,
     build_process_database,
     get_settings_snapshot,
+    update_incident_rules,
     update_exam_policy,
     update_process_blacklist,
     update_process_definitions,
@@ -126,6 +129,7 @@ def _push_gui_state(app: web.Application):
             "clients": _build_gui_clients(exam_duration_sec),
             "incidents": _build_gui_incidents(),
             "process_database": build_process_database(state),
+            "incident_rules_database": build_incident_rules_database(state),
         }
     )
 
@@ -294,6 +298,8 @@ def _build_gui_clients(exam_duration_sec: int) -> list[dict]:
                 "last_focus_window": user.get("last_focus_window", ""),
                 "ip": client_connection.get("ip"),
                 "computer_name": client_connection.get("computer_name") or user.get("computer_name", ""),
+                "exam_folder_path": client_connection.get("exam_folder_path") or user.get("exam_folder_path", ""),
+                "exam_files_zip_path": client_connection.get("exam_files_zip_path") or user.get("exam_files_zip_path", ""),
                 "short_id": client_connection.get("short_id"),
                 "exam_finished": user.get("exam_finished", False),
                 "submitted_at": user.get("submitted_at", ""),
@@ -327,16 +333,42 @@ def _build_server_info(app: web.Application) -> dict:
         "exam_files_path": app["exam_files"],
         "process_blacklist_count": len(state.process_blacklist),
         "process_definition_count": len(state.rule_config("process_definitions").get("definitions", [])),
+        "incident_rule_count": len(state.rule_config("incident_rules").get("definitions", [])),
         "process_blacklist_file": PROCESS_BLACKLIST_FILE,
         "process_blacklist_version": state.process_blacklist_version,
         "process_definitions_file": PROCESS_DEFINITIONS_FILE,
         "process_definitions_version": state.process_definitions_version,
+        "incident_rules_file": INCIDENT_RULES_FILE,
+        "incident_rules_version": state.incident_rules_version,
         "policy_file": EXAM_POLICY_FILE,
         "policy_version": state.current_exam_policy().get("policy_version", ""),
         "operator_defaults": state.operator_defaults(),
         "remember_settings": state.session_policy().get("remember_settings", True),
         "incident_count": len(state.incidents),
         "active_incident_count": len(state.active_incidents),
+        "auth_bypass": _auth_bypass_snapshot(app),
+    }
+
+
+def _auth_bypass_snapshot(app: web.Application) -> dict:
+    bypass = app.get("auth_bypass") or {}
+    now = time.time()
+
+    def remaining(name: str) -> int:
+        try:
+            until = float(bypass.get(f"{name}_until", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            until = 0.0
+        return max(0, int(round(until - now)))
+
+    cats_remaining = remaining("cats")
+    ad_remaining = remaining("ad")
+    return {
+        "cats_disabled": cats_remaining > 0,
+        "ad_disabled": ad_remaining > 0,
+        "cats_remaining_seconds": cats_remaining,
+        "ad_remaining_seconds": ad_remaining,
+        "auth_secret_required": bool(str(app.get("auth_secret") or "")),
     }
 
 
@@ -362,6 +394,12 @@ def _build_gui_incidents() -> list[dict]:
                 auto_action_state = "released"
             else:
                 auto_action_state = "configured"
+        if incident.get("auto_action_results") or incident.get("process_auto_action_results"):
+            results = incident.get("auto_action_results") or incident.get("process_auto_action_results") or []
+            names = [str(result.get("action", "") or "") for result in results if isinstance(result, dict)]
+            states = [str(result.get("state", "") or "") for result in results if isinstance(result, dict)]
+            auto_action_name = ", ".join(name for name in names if name) or "configured_actions"
+            auto_action_state = ", ".join(state for state in states if state) or "applied"
         incidents.append(
             {
                 "incident_id": incident_id,
@@ -535,6 +573,27 @@ async def _handle_edit_process_definitions():
         print(f"[CMD] Opened process definitions file: {os.path.abspath(PROCESS_DEFINITIONS_FILE)}")
 
 
+async def _handle_apply_incident_rules():
+    previous_version = state.current_exam_policy().get("policy_version", "")
+    previous_rule_version = state.incident_rules_version
+    previous_count = len(state.rule_config("incident_rules").get("definitions", []))
+    state.load_incident_rules()
+    sent_count = await _broadcast_exam_policy(update=True)
+    print(
+        f"[CMD] Applied incident rules from {INCIDENT_RULES_FILE}. "
+        f"{previous_count} -> {len(state.rule_config('incident_rules').get('definitions', []))} rule(s), "
+        f"incident rules version {previous_rule_version} -> {state.incident_rules_version}, "
+        f"policy {previous_version} -> {state.current_exam_policy().get('policy_version', '')}. "
+        f"Updated {sent_count} connected client(s)."
+    )
+
+
+async def _handle_edit_incident_rules():
+    state.ensure_incident_rules_file()
+    if _open_text_file(INCIDENT_RULES_FILE):
+        print(f"[CMD] Opened incident rules file: {os.path.abspath(INCIDENT_RULES_FILE)}")
+
+
 async def _handle_export_settings(parts: list[str]):
     if len(parts) < 2:
         print("[CMD] Usage: /exportsettings <path>")
@@ -574,6 +633,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
     policy_changed = False
     blacklist_changed = False
     definitions_changed = False
+    incident_rules_changed = False
 
     try:
         if "runtime" in request:
@@ -625,6 +685,18 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
             errors.extend(definitions_result.errors)
             definitions_changed = bool(definitions_result.changed)
 
+        if "incident_rules" in request:
+            incident_rules_payload = request.get("incident_rules", {})
+            if isinstance(incident_rules_payload, dict):
+                incident_rules = incident_rules_payload.get("entries", [])
+            else:
+                incident_rules = incident_rules_payload
+            incident_rules_result = update_incident_rules(state, incident_rules, actor="gui")
+            messages.append(incident_rules_result.message)
+            changed_paths.extend(incident_rules_result.changed_paths)
+            errors.extend(incident_rules_result.errors)
+            incident_rules_changed = bool(incident_rules_result.changed)
+
         if errors:
             _write_to_gui(
                 {
@@ -640,7 +712,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
 
         policy_sent = 0
         blacklist_sent = 0
-        if policy_changed or blacklist_changed or definitions_changed:
+        if policy_changed or blacklist_changed or definitions_changed or incident_rules_changed:
             blacklist_sent = await _broadcast_process_blacklist()
             policy_sent = await _broadcast_exam_policy(update=True)
 
@@ -663,6 +735,7 @@ async def _handle_save_settings_from_gui(request: dict, app: web.Application):
                 "policy_version": state.current_exam_policy().get("policy_version", ""),
                 "process_blacklist_version": state.process_blacklist_version,
                 "process_definitions_version": state.process_definitions_version,
+                "incident_rules_version": state.incident_rules_version,
                 "details": [msg for msg in messages if msg],
             }
         )
@@ -697,6 +770,44 @@ async def _handle_set_remember_settings(parts: list[str]):
     state.exam_policy_config["session"]["remember_settings"] = enabled
     state.save_exam_policy()
     print(f"[CMD] Remember settings set to {'on' if enabled else 'off'}.")
+
+
+AUTH_BYPASS_DEFAULT_SECONDS = 60
+AUTH_BYPASS_MAX_SECONDS = 300
+
+
+def _parse_auth_bypass_seconds(parts: list[str]) -> int:
+    if len(parts) < 2:
+        return AUTH_BYPASS_DEFAULT_SECONDS
+    try:
+        seconds = int(float(parts[1]))
+    except ValueError:
+        return AUTH_BYPASS_DEFAULT_SECONDS
+    return max(1, min(AUTH_BYPASS_MAX_SECONDS, seconds))
+
+
+def _set_auth_bypass(app: web.Application, name: str, seconds: int):
+    bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
+    bypass[f"{name}_until"] = time.time() + seconds
+    print(f"[AUTH] Temporarily disabled {name.upper()} auth for {seconds} second(s).")
+
+
+def _clear_auth_bypass(app: web.Application, name: str):
+    bypass = app.setdefault("auth_bypass", {"cats_until": 0.0, "ad_until": 0.0})
+    bypass[f"{name}_until"] = 0.0
+    print(f"[AUTH] Re-enabled {name.upper()} auth.")
+
+
+def _print_auth_status(app: web.Application):
+    snapshot = _auth_bypass_snapshot(app)
+    print(
+        "[AUTH] "
+        f"CATS disabled={snapshot['cats_disabled']} "
+        f"({snapshot['cats_remaining_seconds']}s remaining); "
+        f"AD disabled={snapshot['ad_disabled']} "
+        f"({snapshot['ad_remaining_seconds']}s remaining); "
+        f"server token required={snapshot['auth_secret_required']}"
+    )
 
 
 def _print_connected_clients():
@@ -1304,6 +1415,103 @@ async def _handle_apply_process_decision(request: dict, app: web.Application):
     _push_gui_state(app)
 
 
+async def _handle_apply_incident_rule_decision(request: dict, app: web.Application):
+    result = apply_incident_rule_decision(state, request, actor="admin_gui")
+    if not result.get("ok"):
+        print(f"[INCIDENT RULE] Decision failed: {result.get('message')}")
+        _push_gui_state(app)
+        return
+
+    definition = result.get("definition", {})
+    actions = definition.get("actions", {})
+    history_by_login = {
+        str(entry.get("login_id", "") or ""): entry
+        for entry in result.get("matching_history", [])
+        if str(entry.get("login_id", "") or "")
+    }
+    live_results = []
+
+    if actions.get("kill_pid"):
+        for student_state in result.get("action_states", []):
+            kill_state = student_state.get("actions", {}).get("kill_pid", {})
+            if kill_state.get("state") != "possible":
+                continue
+            client_id = str(student_state.get("client_id", "") or "")
+            pid = int(student_state.get("pid", 0) or 0)
+            if not client_id or pid <= 0:
+                continue
+            sent = await send_to_client(
+                client_id,
+                events.kill_process(
+                    pid,
+                    incident_id=str(student_state.get("incident_id", "") or ""),
+                    process_name=str(student_state.get("process_name", "") or definition.get("name", "")),
+                    reason="Requested by incident rule decision.",
+                ),
+            )
+            live_results.append(
+                {
+                    "login_id": student_state.get("login_id", ""),
+                    "action": "kill_pid",
+                    "state": "applied" if sent else "not_possible",
+                    "reason": "requested" if sent else "disconnected",
+                }
+            )
+
+    if actions.get("pause_exam"):
+        for student_state in result.get("action_states", []):
+            pause_state = student_state.get("actions", {}).get("pause_exam", {})
+            if pause_state.get("state") != "possible":
+                continue
+            login_id = str(student_state.get("login_id", "") or "")
+            user = state.users_db.get(login_id)
+            if not user:
+                continue
+            remaining = _session_remaining_seconds(app["exam_duration"] * 60, user)
+            session_state.set_state(
+                user,
+                session_state.ADMIN_PAUSED,
+                reason="Paused by incident rule decision.",
+                remaining_seconds=remaining,
+            )
+            user["last_action"] = "Incident rule decision pause"
+            state.save_users()
+            await _sync_client_timer_state(user["uuid"], app, reason="Paused by incident rule decision.")
+            live_results.append({"login_id": login_id, "action": "pause_exam", "state": "applied", "reason": "paused"})
+
+    for login_id in result.get("banned_login_ids", []):
+        user = state.users_db.get(login_id)
+        if not user:
+            continue
+        await _disconnect_client(user["uuid"], "banned by incident rule decision")
+        live_results.append({"login_id": login_id, "action": "ban", "state": "applied", "reason": "disconnected"})
+
+    if actions.get("kick") and not actions.get("ban"):
+        for student_state in result.get("action_states", []):
+            kick_state = student_state.get("actions", {}).get("kick", {})
+            if kick_state.get("state") != "possible":
+                continue
+            login_id = str(student_state.get("login_id", "") or "")
+            user = state.users_db.get(login_id)
+            if not user:
+                continue
+            user["kick_count"] = int(user.get("kick_count", 0)) + 1
+            user["last_action"] = "Incident rule decision kick"
+            state.save_users()
+            await _disconnect_client(user["uuid"], "kicked by incident rule decision")
+            live_results.append({"login_id": login_id, "action": "kick", "state": "applied", "reason": "disconnected"})
+
+    if result.get("saved_to_policy"):
+        sent_count = await _broadcast_exam_policy(update=True)
+        print(f"[INCIDENT RULE] Saved incident rule policy and updated {sent_count} client(s).")
+
+    print(
+        f"[INCIDENT RULE] Applied decision for {definition.get('name') or definition.get('rule_key')} "
+        f"to {len(history_by_login)} historical user(s). Live actions: {live_results}"
+    )
+    _push_gui_state(app)
+
+
 async def handle_admin_command(line: str, app: web.Application):
     """Common handler for administrative commands from CLI or GUI."""
     command_line = line.strip()
@@ -1406,6 +1614,14 @@ async def handle_admin_command(line: str, app: web.Application):
         await _handle_apply_process_definitions()
         return
 
+    if command == "/editincidentrules":
+        await _handle_edit_incident_rules()
+        return
+
+    if command == "/applyincidentrules":
+        await _handle_apply_incident_rules()
+        return
+
     if command == "/exportsettings":
         await _handle_export_settings(parts)
         return
@@ -1416,6 +1632,26 @@ async def handle_admin_command(line: str, app: web.Application):
 
     if command == "/remembersettings":
         await _handle_set_remember_settings(parts)
+        return
+
+    if command == "/disablecatsauth":
+        _set_auth_bypass(app, "cats", _parse_auth_bypass_seconds(parts))
+        return
+
+    if command == "/disableadauth":
+        _set_auth_bypass(app, "ad", _parse_auth_bypass_seconds(parts))
+        return
+
+    if command == "/enablecatsauth":
+        _clear_auth_bypass(app, "cats")
+        return
+
+    if command == "/enableadauth":
+        _clear_auth_bypass(app, "ad")
+        return
+
+    if command == "/authstatus":
+        _print_auth_status(app)
         return
 
     if command == "/kick":
@@ -1455,9 +1691,16 @@ async def handle_admin_command(line: str, app: web.Application):
         print("  /applypolicy          - Reload and broadcast the exam policy")
         print("  /editdefinitions      - Open the process definitions file for editing")
         print("  /applydefinitions     - Reload and broadcast process definitions")
+        print("  /editincidentrules    - Open the incident rules file for editing")
+        print("  /applyincidentrules   - Reload and broadcast incident rules")
         print("  /exportsettings <p>   - Export blacklist + policy settings bundle")
         print("  /importsettings <p>   - Import blacklist + policy settings bundle")
         print("  /remembersettings on|off - Toggle remembered policy settings")
+        print("  /disablecatsauth [s]  - Temporarily skip CATS preflight (default 60s)")
+        print("  /disableadauth [s]    - Temporarily skip AD token auth for allowed users")
+        print("  /enablecatsauth       - Re-enable CATS preflight immediately")
+        print("  /enableadauth         - Re-enable AD token auth immediately")
+        print("  /authstatus           - Show temporary auth bypass status")
         print("  /kick <id>            - Disconnect a specific client")
         print("  /ban <id>             - Ban and disconnect a specific user")
         print("  /unban <id>           - Remove a user's ban")
@@ -1548,6 +1791,20 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
         )
         return
 
+    if command == "edit_incident_rules":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/editincidentrules", app),
+            loop,
+        )
+        return
+
+    if command == "apply_incident_rules":
+        asyncio.run_coroutine_threadsafe(
+            handle_admin_command("/applyincidentrules", app),
+            loop,
+        )
+        return
+
     if command == "save_settings":
         asyncio.run_coroutine_threadsafe(
             _handle_save_settings_from_gui(request, app),
@@ -1558,6 +1815,13 @@ def _dispatch_gui_request(loop, app: web.Application, request: dict):
     if command == "apply_process_decision":
         asyncio.run_coroutine_threadsafe(
             _handle_apply_process_decision(request, app),
+            loop,
+        )
+        return
+
+    if command == "apply_incident_rule_decision":
+        asyncio.run_coroutine_threadsafe(
+            _handle_apply_incident_rule_decision(request, app),
             loop,
         )
         return

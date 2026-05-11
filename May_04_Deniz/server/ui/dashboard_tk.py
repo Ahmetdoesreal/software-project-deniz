@@ -22,20 +22,32 @@ from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
     CLIENT_FILTERS,
     INCIDENT_FILTERS,
+    INCIDENT_RULE_COLUMNS,
+    INCIDENT_RULE_FILTERS,
     PROCESS_COLUMNS,
     PROCESS_DATABASE_FILTERS,
     active_filter_names,
     affected_students_display,
     client_window_title,
+    incident_rule_match_display,
     process_path_display,
     sorted_client_items,
+    sorted_incident_rule_rows,
     sorted_incidents,
     sorted_process_rows,
 )
 from server.ui.policy_settings_tk import PolicySettingsMixin
 from server.ui.process_database_helpers import (
+    build_incident_rule_decision_payload,
     build_process_decision_payload,
     process_row_google_search_url,
+)
+from server.ui.row_refresh import (
+    RowSnapshot,
+    changed_row_indexes,
+    reorder_rows_by_previous_keys,
+    row_snapshot,
+    same_row_order,
 )
 
 _IPC_CLIENT = None
@@ -168,6 +180,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.incident_items: dict[str, str] = {}
         self.process_database_data: list[dict] = []
         self.process_database_items: dict[str, str] = {}
+        self.incident_rules_data: list[dict] = []
+        self.incident_rules_items: dict[str, str] = {}
         self.server_info: dict = {}
         self.open_windows = {}
         self.remember_settings_var = tk.BooleanVar(value=True)
@@ -176,6 +190,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             "clients": ("login_id", False),
             "incidents": ("time", True),
             "processes": ("executable", False),
+            "incident_rules": ("last_seen", True),
         }
         self.selected_client_info_var = tk.StringVar(value="Select a client to see basic details.")
         self.selected_client_title_var = tk.StringVar(value="No client selected")
@@ -185,6 +200,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self._init_policy_settings()
         self._incident_tree_refreshing = False
         self._process_tree_refreshing = False
+        self._incident_rules_tree_refreshing = False
+        self._row_snapshots: dict[str, RowSnapshot] = {}
+        self._force_table_rebuilds: set[str] = set()
+        self._tree_hover_items: dict[object, str] = {}
 
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
@@ -194,6 +213,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.header_font.configure(weight="bold")
         self.tree_style = ttk.Style(self)
         self.tree_style.configure("Monospace.Treeview", font=self.mono_font)
+        self.tree_style.map(
+            "Monospace.Treeview",
+            background=[("selected", "#00296b")],
+            foreground=[("selected", "#ffffff")],
+        )
         self.tree_style.configure("Mono.TLabel", font=self.mono_font)
         install_close_guard(self, self.on_close_request, bind_all=True)
 
@@ -210,13 +234,16 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.overview_tab = ttk.Frame(self.notebook)
         self.rules_tab = ttk.Frame(self.notebook)
         self.process_database_tab = ttk.Frame(self.notebook)
+        self.incident_rules_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.overview_tab, text="Overview")
         self.notebook.add(self.rules_tab, text="Rule Breakings")
         self.notebook.add(self.process_database_tab, text="Process Database")
+        self.notebook.add(self.incident_rules_tab, text="Incident Rules")
 
         self._build_overview_tab()
         self._build_rule_breakings_tab()
         self._build_process_database_tab()
+        self._build_incident_rules_tab()
         self._build_command_bar()
         self._build_stats_bar()
 
@@ -331,6 +358,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             table_vars["All"].set(False)
         if not any(var.get() for var in table_vars.values()):
             table_vars["All"].set(True)
+        self._force_table_rebuilds.add(table_name)
         rebuild_callback()
 
     def _active_filters(self, table_name: str) -> set[str]:
@@ -346,6 +374,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             current_column = column
             descending = False
         self.sort_state[table_name] = (current_column, descending)
+        self._force_table_rebuilds.add(table_name)
         rebuild_callback()
 
     def _heading_text(self, table_name: str, column: str, label: str) -> str:
@@ -361,6 +390,43 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 text=self._heading_text(table_name, column, label),
                 command=lambda col=column: self._set_sort(table_name, col, rebuild_callback),
             )
+
+    def _install_tree_hover(self, tree):
+        hover_tag = "_hover"
+        tree.tag_configure(hover_tag, background="#232a37")
+        self._tree_hover_items[tree] = ""
+
+        def clear_hover():
+            item_id = self._tree_hover_items.get(tree, "")
+            if item_id and tree.exists(item_id):
+                tags = tuple(tag for tag in tree.item(item_id, "tags") if tag != hover_tag)
+                tree.item(item_id, tags=tags)
+            self._tree_hover_items[tree] = ""
+
+        def on_motion(event):
+            item_id = tree.identify_row(event.y)
+            if item_id == self._tree_hover_items.get(tree, ""):
+                return
+            clear_hover()
+            if not item_id or item_id in tree.selection():
+                return
+            tags = tuple(tree.item(item_id, "tags"))
+            if hover_tag not in tags:
+                tree.item(item_id, tags=tags + (hover_tag,))
+            self._tree_hover_items[tree] = item_id
+
+        tree.bind("<Motion>", on_motion, add="+")
+        tree.bind("<Leave>", lambda _event: clear_hover(), add="+")
+        tree.bind("<<TreeviewSelect>>", lambda _event: clear_hover(), add="+")
+
+    def _prepare_rows_for_refresh(self, table_name: str, rows):
+        previous = self._row_snapshots.get(table_name)
+        if table_name not in self._force_table_rebuilds:
+            rows = reorder_rows_by_previous_keys(rows, previous)
+        snapshot = row_snapshot(rows)
+        force_rebuild = table_name in self._force_table_rebuilds
+        self._force_table_rebuilds.discard(table_name)
+        return rows, snapshot, previous, force_rebuild
 
     def _build_client_tree_area(self, parent):
         tree_frame = ttk.Frame(parent)
@@ -384,6 +450,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.tree.column("ip", width=120, minwidth=110, stretch=True)
         self.tree.column("uuid", width=280, minwidth=160, stretch=True)
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_selected_client_panel())
+        self._install_tree_hover(self.tree)
 
         y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -503,6 +570,13 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             state=tk.DISABLED,
         )
         self.selected_details_button.pack(fill=tk.X, pady=(0, 6))
+        self.selected_folders_button = ttk.Button(
+            actions,
+            text="Folders",
+            command=self.show_folder_info,
+            state=tk.DISABLED,
+        )
+        self.selected_folders_button.pack(fill=tk.X, pady=(0, 6))
         self.selected_actions_button = ttk.Button(
             actions,
             text="Actions",
@@ -561,6 +635,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         self.forgive_violation_button.pack(fill=tk.X, padx=10, pady=6)
 
+        self.save_incident_rule_button = ttk.Button(
+            left,
+            text="Save as Rule",
+            command=self.save_selected_incident_as_rule,
+            state=tk.DISABLED,
+        )
+        self.save_incident_rule_button.pack(fill=tk.X, padx=10, pady=6)
+
         middle = ttk.Frame(container)
         middle.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -600,6 +682,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.incident_tree.column("auto_action", width=115, minwidth=100, anchor=tk.CENTER, stretch=True)
         self.incident_tree.column("status", width=100, minwidth=90, anchor=tk.CENTER, stretch=True)
         self.incident_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_incident_detail())
+        self._install_tree_hover(self.incident_tree)
 
         incident_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.incident_tree.yview)
         incident_x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.incident_tree.xview)
@@ -687,6 +770,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.process_tree.column("availability", width=220, minwidth=150, stretch=True)
         self.process_tree.bind("<<TreeviewSelect>>", lambda _event: self._sync_process_buttons())
         self.process_tree.bind("<Double-1>", lambda _event: self.show_process_decision_window())
+        self._install_tree_hover(self.process_tree)
 
         process_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.process_tree.yview)
         process_x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.process_tree.xview)
@@ -697,6 +781,65 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.process_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         process_x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         process_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _build_incident_rules_tab(self):
+        container = ttk.Frame(self.incident_rules_tab, padding=10)
+        container.pack(fill=tk.BOTH, expand=True)
+        self._build_filter_bar(container, "incident_rules", INCIDENT_RULE_FILTERS, self._rebuild_incident_rules_tree)
+
+        toolbar = ttk.Frame(container)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+
+        self.incident_rule_options_button = ttk.Button(
+            toolbar,
+            text="Options",
+            command=self.show_incident_rule_decision_window,
+            state=tk.DISABLED,
+        )
+        self.incident_rule_options_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            toolbar,
+            text="Open Rules File",
+            command=self.edit_incident_rules,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            toolbar,
+            text="Apply Rules File",
+            command=self.apply_incident_rules,
+        ).pack(side=tk.LEFT)
+
+        tree_frame = ttk.LabelFrame(container, text="Incident Rules And Evidence")
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = tuple(column for column, _label in INCIDENT_RULE_COLUMNS)
+        self.incident_rules_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            style="Monospace.Treeview",
+        )
+        self._configure_sort_headings(self.incident_rules_tree, "incident_rules", INCIDENT_RULE_COLUMNS, self._rebuild_incident_rules_tree)
+        self.incident_rules_tree.column("rule_key", width=0, minwidth=0, stretch=False)
+        self.incident_rules_tree.column("name", width=180, minwidth=120, stretch=True)
+        self.incident_rules_tree.column("status", width=90, minwidth=80, anchor=tk.CENTER, stretch=False)
+        self.incident_rules_tree.column("match", width=360, minwidth=180, stretch=True)
+        self.incident_rules_tree.column("matches", width=80, minwidth=70, anchor=tk.CENTER, stretch=False)
+        self.incident_rules_tree.column("students", width=160, minwidth=120, stretch=True)
+        self.incident_rules_tree.column("last_seen", width=150, minwidth=120, stretch=True)
+        self.incident_rules_tree.column("actions", width=145, minwidth=110, stretch=True)
+        self.incident_rules_tree.column("availability", width=220, minwidth=150, stretch=True)
+        self.incident_rules_tree.bind("<<TreeviewSelect>>", lambda _event: self._sync_incident_rule_buttons())
+        self.incident_rules_tree.bind("<Double-1>", lambda _event: self.show_incident_rule_decision_window())
+        self._install_tree_hover(self.incident_rules_tree)
+
+        scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.incident_rules_tree.yview)
+        x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.incident_rules_tree.xview)
+        self.incident_rules_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
+        self.incident_rules_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_command_bar(self):
         cmd_frame = ttk.Frame(self, padding=5)
@@ -748,6 +891,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             for var in self.selected_client_fields.values():
                 var.set("-")
             self.selected_details_button.config(state=tk.DISABLED)
+            self.selected_folders_button.config(state=tk.DISABLED)
             self.selected_actions_button.config(state=tk.DISABLED)
             return
 
@@ -784,6 +928,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             if var is not None:
                 var.set(value)
         self.selected_details_button.config(state=tk.NORMAL)
+        self.selected_folders_button.config(state=tk.NORMAL)
         self.selected_actions_button.config(state=tk.NORMAL if connected or data else tk.DISABLED)
 
     def _selected_incident(self):
@@ -824,6 +969,22 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 return row
         return None
 
+    def _selected_incident_rule_key(self):
+        selected = self.incident_rules_tree.selection()
+        if not selected:
+            return None
+        values = self.incident_rules_tree.item(selected[0], "values")
+        return values[0] if values else None
+
+    def _selected_incident_rule_row(self):
+        rule_key = self._selected_incident_rule_key()
+        if not rule_key:
+            return None
+        for row in self.incident_rules_data:
+            if str(row.get("rule_key", "") or "") == str(rule_key):
+                return row
+        return None
+
     def _incident_connected(self, incident: dict) -> bool:
         client = self.clients_data.get(str(incident.get("client_id", "") or ""), {})
         return client.get("connection_status") == "Connected"
@@ -850,17 +1011,41 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             return str(incidents[0].get("login_id") or incidents[0].get("client_id") or "Unknown")
         return f"{len(incidents)} selected {plural_label}"
 
-    def update_timers(self):
+    def _update_client_remaining_cells(self, client_ids: set[str]):
         changed = False
+        for client_id in client_ids:
+            item_id = self.tree_items.get(client_id)
+            if not item_id or not self.tree.exists(item_id):
+                continue
+            values = list(self.tree.item(item_id, "values"))
+            if len(values) < 3:
+                continue
+            next_remaining = _format_remaining(self.clients_data.get(client_id, {}).get("remaining", 0))
+            if str(values[2]) == next_remaining:
+                continue
+            values[2] = next_remaining
+            self.tree.item(item_id, values=tuple(values))
+            changed = True
+        if changed:
+            visible_rows = []
+            for item_id in self.tree.get_children():
+                values = self.tree.item(item_id, "values")
+                if len(values) > 5:
+                    visible_rows.append((str(values[5]), values))
+            self._row_snapshots["clients"] = row_snapshot(visible_rows)
+
+    def update_timers(self):
+        changed_client_ids: set[str] = set()
         for client_id, data in self.clients_data.items():
             if data.get("exam_state") != "Running":
                 continue
             if data.get("remaining", 0) <= 0:
                 continue
             data["remaining"] -= 1
-            changed = True
-        if changed:
-            self._rebuild_client_tree()
+            changed_client_ids.add(client_id)
+        if changed_client_ids:
+            self._update_client_remaining_cells(changed_client_ids)
+            self._update_selected_client_panel()
 
         self.after(1000, self.update_timers)
 
@@ -1044,6 +1229,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
                 self.pause_exam_button,
                 self.resume_exam_button,
                 self.forgive_violation_button,
+                self.save_incident_rule_button,
             ):
                 button.config(state=tk.DISABLED)
             return
@@ -1078,6 +1264,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             )
             else tk.DISABLED
         )
+        self.save_incident_rule_button.config(state=tk.NORMAL if len(incidents) == 1 else tk.DISABLED)
 
     def start_exam_globally(self):
         _emit_command({"cmd": "start_exam_global"})
@@ -1102,6 +1289,166 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def apply_process_definitions(self):
         _emit_command({"cmd": "apply_process_definitions"})
         self._append_log("[ADMIN] Applying process definitions")
+
+    def edit_incident_rules(self):
+        _emit_command({"cmd": "edit_incident_rules"})
+        self._append_log("[ADMIN] Opening incident rules file")
+
+    def apply_incident_rules(self):
+        _emit_command({"cmd": "apply_incident_rules"})
+        self._append_log("[ADMIN] Applying incident rules")
+
+    def save_selected_incident_as_rule(self):
+        incident = self._selected_incident()
+        if not incident:
+            return
+        self.show_incident_rule_decision_window(self._incident_to_rule_row(incident))
+
+    def _incident_to_rule_row(self, incident: dict) -> dict:
+        window_title = str(incident.get("window_title") or incident.get("details", {}).get("window_title") or "").strip()
+        process_name = str(incident.get("process_name") or "").strip()
+        return {
+            "rule_key": "",
+            "definition_id": "",
+            "name": str(incident.get("rule_name") or incident.get("rule_id") or "Incident rule"),
+            "status": "unknown",
+            "actions": {},
+            "rule_id": str(incident.get("rule_id") or ""),
+            "event_type": str(incident.get("event_type") or incident.get("rule_id") or ""),
+            "source": str(incident.get("source") or ""),
+            "process_names": [process_name] if process_name else [],
+            "browser_process_names": [],
+            "window_title_patterns": [window_title] if window_title else [],
+            "match_mode": "contains" if window_title else "exact",
+            "priority": 0,
+            "source_incident_id": str(incident.get("incident_id") or ""),
+            "matching_history": [incident],
+            "previous_matching_entries": [],
+            "action_states": [],
+        }
+
+    def show_incident_rule_decision_window(self, row: dict | None = None):
+        row = row or self._selected_incident_rule_row()
+        if not row:
+            messagebox.showinfo("Incident Rules", "Select an incident rule entry first.")
+            return
+        key = ("incident_rule_decision", str(row.get("rule_key") or row.get("source_incident_id") or id(row)))
+        if key in self.open_windows and self.open_windows[key].winfo_exists():
+            self.open_windows[key].lift()
+            return
+
+        top = tk.Toplevel(self)
+        top.title(f"Incident Rule: {row.get('name') or 'Rule'}")
+        top.geometry("940x680")
+        top.minsize(760, 540)
+        self._register_window(key, top)
+
+        frame = ttk.Frame(top, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+
+        identity = ttk.LabelFrame(frame, text="Rule Match")
+        identity.grid(row=0, column=0, sticky=tk.EW, pady=(0, 10))
+        identity.columnconfigure(1, weight=1)
+        rows = [
+            ("Name", row.get("name") or "-"),
+            ("Rule ID", row.get("rule_id") or "-"),
+            ("Event Type", row.get("event_type") or "-"),
+            ("Source", row.get("source") or "-"),
+            ("Processes", ", ".join(row.get("process_names", [])) or "-"),
+            ("Browser Processes", ", ".join(row.get("browser_process_names", [])) or "-"),
+            ("Title Patterns", ", ".join(row.get("window_title_patterns", [])) or "-"),
+            ("Match Mode", row.get("match_mode") or "-"),
+            ("Matches", str(row.get("match_count", 0) or len(row.get("matching_history", [])))),
+        ]
+        for index, (label, value) in enumerate(rows):
+            ttk.Label(identity, text=f"{label}:").grid(row=index, column=0, sticky=tk.W, padx=(8, 8), pady=2)
+            ttk.Label(identity, text=str(value), style="Mono.TLabel", wraplength=760).grid(row=index, column=1, sticky=tk.W, pady=2)
+
+        controls = ttk.LabelFrame(frame, text="Decision")
+        controls.grid(row=1, column=0, sticky=tk.EW, pady=(0, 10))
+        for column in range(5):
+            controls.columnconfigure(column, weight=1)
+        status_var = tk.StringVar(value=str(row.get("status") or "unknown"))
+        save_var = tk.BooleanVar(value=True)
+        priority_var = tk.StringVar(value=str(row.get("priority", 0) or 0))
+        action_vars = {
+            "ban": tk.BooleanVar(value=bool(row.get("actions", {}).get("ban", False))),
+            "kick": tk.BooleanVar(value=bool(row.get("actions", {}).get("kick", False))),
+            "pause_exam": tk.BooleanVar(value=bool(row.get("actions", {}).get("pause_exam", False))),
+            "kill_pid": tk.BooleanVar(value=bool(row.get("actions", {}).get("kill_pid", False))),
+        }
+        ttk.Label(controls, text="Status").grid(row=0, column=0, sticky=tk.W, padx=8, pady=6)
+        ttk.Combobox(controls, textvariable=status_var, values=("unknown", "whitelist", "warning", "blacklist"), state="readonly").grid(row=0, column=1, sticky=tk.EW, padx=(0, 12), pady=6)
+        ttk.Label(controls, text="Priority").grid(row=0, column=2, sticky=tk.W, padx=8, pady=6)
+        ttk.Entry(controls, textvariable=priority_var, width=10).grid(row=0, column=3, sticky=tk.EW, padx=(0, 12), pady=6)
+        ttk.Checkbutton(controls, text="Ban", variable=action_vars["ban"]).grid(row=1, column=0, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Kick", variable=action_vars["kick"]).grid(row=1, column=1, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Pause Exam", variable=action_vars["pause_exam"]).grid(row=1, column=2, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Kill PID", variable=action_vars["kill_pid"]).grid(row=1, column=3, sticky=tk.W, padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Save decision to policy", variable=save_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=8, pady=6)
+        ttk.Button(
+            controls,
+            text="Apply Rule",
+            command=lambda: self._emit_incident_rule_decision(
+                top,
+                row,
+                status_var.get(),
+                {name: var.get() for name, var in action_vars.items()},
+                save_var.get(),
+                priority_var.get(),
+            ),
+        ).grid(row=2, column=3, columnspan=2, sticky=tk.EW, padx=8, pady=6)
+
+        history_frame = ttk.LabelFrame(frame, text="Matching Incidents")
+        history_frame.grid(row=2, column=0, sticky=tk.NSEW)
+        history_columns = ("student", "rule", "status", "pid", "active", "summary")
+        history_tree = ttk.Treeview(history_frame, columns=history_columns, show="headings", style="Monospace.Treeview")
+        for column, text, width in (
+            ("student", "Student", 130),
+            ("rule", "Rule", 150),
+            ("status", "Status", 90),
+            ("pid", "PID", 70),
+            ("active", "Active", 70),
+            ("summary", "Summary", 430),
+        ):
+            history_tree.heading(column, text=text)
+            history_tree.column(column, width=width, minwidth=60, anchor=tk.W)
+        history_scroll = ttk.Scrollbar(history_frame, orient=tk.VERTICAL, command=history_tree.yview)
+        history_tree.configure(yscrollcommand=history_scroll.set)
+        history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        history_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for entry in row.get("matching_history", []):
+            history_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    entry.get("login_id") or entry.get("client_id") or "-",
+                    entry.get("rule_id") or "-",
+                    entry.get("status") or "-",
+                    entry.get("pid") or "-",
+                    "Yes" if entry.get("active") else "No",
+                    entry.get("summary") or "-",
+                ),
+            )
+
+    def _emit_incident_rule_decision(self, window, row: dict, status: str, actions: dict, save_policy: bool, priority_text: str):
+        try:
+            priority = int(str(priority_text or "0").strip())
+        except ValueError:
+            messagebox.showwarning("Incident Rule", "Priority must be an integer.")
+            return
+        payload = build_incident_rule_decision_payload(
+            row,
+            status=status,
+            actions=actions,
+            save_policy=save_policy,
+            priority=priority,
+        )
+        self._emit_command(payload)
+        window.destroy()
+        self._append_log(f"[ADMIN] Applied incident rule decision for {row.get('name') or row.get('rule_key')}")
 
     def export_settings(self):
         path = filedialog.asksaveasfilename(
@@ -1208,6 +1555,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self._rebuild_incident_tree()
         self.process_database_data = payload.get("process_database", [])
         self._rebuild_process_database_tree()
+        self.incident_rules_data = payload.get("incident_rules_database", [])
+        self._rebuild_incident_rules_tree()
         active_warning_count = sum(
             1
             for incident in incidents
@@ -1255,35 +1604,137 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         self.server_info_var.set(text)
 
+    def _client_tree_rows(self):
+        sort_column, descending = self.sort_state.get("clients", ("login_id", False))
+        return [
+            (
+                client_id,
+                (
+                    data.get("login_id", ""),
+                    data.get("status_label", "Unknown"),
+                    _format_remaining(data.get("remaining", 0)),
+                    client_window_title(data),
+                    data.get("ip") or "",
+                    client_id,
+                ),
+            )
+            for client_id, data in sorted_client_items(
+                self.clients_data,
+                self._active_filters("clients"),
+                sort_column,
+                descending,
+            )
+        ]
+
+    def _incident_tree_rows(self):
+        sort_column, descending = self.sort_state.get("incidents", ("time", True))
+        rows = []
+        for incident in sorted_incidents(
+            self.incidents_data,
+            self._active_filters("incidents"),
+            sort_column,
+            descending,
+        ):
+            incident_id = str(incident.get("incident_id", "") or "")
+            status_text = str(incident.get("status", "") or "")
+            if incident.get("active"):
+                status_text = f"{status_text} (active)"
+            rows.append(
+                (
+                    incident_id,
+                    (
+                        incident_id,
+                        incident.get("event_at", ""),
+                        incident.get("login_id", ""),
+                        incident.get("severity", ""),
+                        incident.get("rule_name", ""),
+                        incident.get("source", ""),
+                        incident.get("process_name", ""),
+                        incident.get("pid", ""),
+                        incident.get("auto_action_state_label", ""),
+                        status_text,
+                    ),
+                )
+            )
+        return rows
+
+    def _process_tree_rows(self):
+        sort_column, descending = self.sort_state.get("processes", ("executable", False))
+        return [
+            (
+                str(row.get("process_key", "") or ""),
+                (
+                    str(row.get("process_key", "") or ""),
+                    row.get("process_name") or row.get("normalized_process_name") or "",
+                    row.get("status", ""),
+                    process_path_display(row),
+                    row.get("match_scope", ""),
+                    row.get("match_count", 0),
+                    affected_students_display(row),
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                ),
+            )
+            for row in sorted_process_rows(
+                self.process_database_data,
+                self._active_filters("processes"),
+                sort_column,
+                descending,
+            )
+        ]
+
+    def _incident_rule_tree_rows(self):
+        sort_column, descending = self.sort_state.get("incident_rules", ("last_seen", True))
+        return [
+            (
+                str(row.get("rule_key", "") or ""),
+                (
+                    str(row.get("rule_key", "") or ""),
+                    row.get("name") or "",
+                    row.get("status", ""),
+                    incident_rule_match_display(row),
+                    row.get("match_count", 0),
+                    affected_students_display(row),
+                    row.get("last_seen", ""),
+                    row.get("saved_action_labels", ""),
+                    format_process_action_availability(row),
+                ),
+            )
+            for row in sorted_incident_rule_rows(
+                self.incident_rules_data,
+                self._active_filters("incident_rules"),
+                sort_column,
+                descending,
+            )
+        ]
+
     def _rebuild_client_tree(self):
         selected_id = self._selected_client_id()
         focus_item = self.tree.focus()
         focus_values = self.tree.item(focus_item, "values") if focus_item else ()
         focused_id = str(focus_values[5]) if focus_values and len(focus_values) > 5 else ""
         yview = self.tree.yview()
+        xview = self.tree.xview()
         restored_selection = ""
         restored_focus = ""
-        sort_column, descending = self.sort_state.get("clients", ("login_id", False))
         self._configure_sort_headings(self.tree, "clients", CLIENT_COLUMNS, self._rebuild_client_tree)
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("clients", self._client_tree_rows())
+        if not force_rebuild and same_row_order(previous, snapshot):
+            for index in changed_row_indexes(previous, snapshot):
+                key, values = rows[index]
+                item_id = self.tree_items.get(str(key))
+                if item_id and self.tree.exists(item_id):
+                    self.tree.item(item_id, values=values)
+            self._row_snapshots["clients"] = snapshot
+            self._update_selected_client_panel()
+            return
 
         for item_id in self.tree.get_children():
             self.tree.delete(item_id)
         self.tree_items = {}
 
-        for client_id, data in sorted_client_items(
-            self.clients_data,
-            self._active_filters("clients"),
-            sort_column,
-            descending,
-        ):
-            values = (
-                data.get("login_id", ""),
-                data.get("status_label", "Unknown"),
-                _format_remaining(data.get("remaining", 0)),
-                client_window_title(data),
-                data.get("ip") or "",
-                client_id,
-            )
+        for client_id, values in rows:
             item_id = self.tree.insert("", tk.END, values=values)
             self.tree_items[client_id] = item_id
             if selected_id and client_id == selected_id:
@@ -1303,6 +1754,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
         if yview:
             self.tree.yview_moveto(yview[0])
+        if xview:
+            self.tree.xview_moveto(xview[0])
+        self._row_snapshots["clients"] = snapshot
         self._update_selected_client_panel()
 
     def _rebuild_incident_tree(self):
@@ -1311,39 +1765,30 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         focus_values = self.incident_tree.item(focus_item, "values") if focus_item else ()
         focused_incident_id = str(focus_values[0]) if focus_values else ""
         yview = self.incident_tree.yview()
+        xview = self.incident_tree.xview()
         restored_selection: list[str] = []
         restored_focus = ""
-        sort_column, descending = self.sort_state.get("incidents", ("time", True))
         self._configure_sort_headings(self.incident_tree, "incidents", self.incident_columns, self._rebuild_incident_tree)
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incidents", self._incident_tree_rows())
 
         self._incident_tree_refreshing = True
         try:
+            if not force_rebuild and same_row_order(previous, snapshot):
+                for index in changed_row_indexes(previous, snapshot):
+                    key, values = rows[index]
+                    item_id = self.incident_items.get(str(key))
+                    if item_id and self.incident_tree.exists(item_id):
+                        self.incident_tree.item(item_id, values=values)
+                self._row_snapshots["incidents"] = snapshot
+                self._incident_tree_refreshing = False
+                self._update_incident_detail()
+                return
+
             for item_id in self.incident_tree.get_children():
                 self.incident_tree.delete(item_id)
             self.incident_items = {}
 
-            for incident in sorted_incidents(
-                self.incidents_data,
-                self._active_filters("incidents"),
-                sort_column,
-                descending,
-            ):
-                incident_id = str(incident.get("incident_id", "") or "")
-                status_text = str(incident.get("status", "") or "")
-                if incident.get("active"):
-                    status_text = f"{status_text} (active)"
-                values = (
-                    incident_id,
-                    incident.get("event_at", ""),
-                    incident.get("login_id", ""),
-                    incident.get("severity", ""),
-                    incident.get("rule_name", ""),
-                    incident.get("source", ""),
-                    incident.get("process_name", ""),
-                    incident.get("pid", ""),
-                    incident.get("auto_action_state_label", ""),
-                    status_text,
-                )
+            for incident_id, values in rows:
                 item_id = self.incident_tree.insert("", tk.END, values=values)
                 self.incident_items[incident_id] = item_id
                 if incident_id in selected_incidents:
@@ -1363,6 +1808,9 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
             if yview:
                 self.incident_tree.yview_moveto(yview[0])
+            if xview:
+                self.incident_tree.xview_moveto(xview[0])
+            self._row_snapshots["incidents"] = snapshot
         finally:
             self._incident_tree_refreshing = False
 
@@ -1374,36 +1822,30 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         focus_values = self.process_tree.item(focus_item, "values") if focus_item else ()
         focused_key = str(focus_values[0]) if focus_values else ""
         yview = self.process_tree.yview()
+        xview = self.process_tree.xview()
         restored_selection = ""
         restored_focus = ""
-        sort_column, descending = self.sort_state.get("processes", ("executable", False))
         self._configure_sort_headings(self.process_tree, "processes", PROCESS_COLUMNS, self._rebuild_process_database_tree)
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("processes", self._process_tree_rows())
 
         self._process_tree_refreshing = True
         try:
+            if not force_rebuild and same_row_order(previous, snapshot):
+                for index in changed_row_indexes(previous, snapshot):
+                    key, values = rows[index]
+                    item_id = self.process_database_items.get(str(key))
+                    if item_id and self.process_tree.exists(item_id):
+                        self.process_tree.item(item_id, values=values)
+                self._row_snapshots["processes"] = snapshot
+                self._process_tree_refreshing = False
+                self._sync_process_buttons()
+                return
+
             for item_id in self.process_tree.get_children():
                 self.process_tree.delete(item_id)
             self.process_database_items = {}
 
-            for row in sorted_process_rows(
-                self.process_database_data,
-                self._active_filters("processes"),
-                sort_column,
-                descending,
-            ):
-                process_key = str(row.get("process_key", "") or "")
-                values = (
-                    process_key,
-                    row.get("process_name") or row.get("normalized_process_name") or "",
-                    row.get("status", ""),
-                    process_path_display(row),
-                    row.get("match_scope", ""),
-                    row.get("match_count", 0),
-                    affected_students_display(row),
-                    row.get("last_seen", ""),
-                    row.get("saved_action_labels", ""),
-                    format_process_action_availability(row),
-                )
+            for process_key, values in rows:
                 item_id = self.process_tree.insert("", tk.END, values=values)
                 self.process_database_items[process_key] = item_id
                 if selected_key and process_key == selected_key:
@@ -1423,15 +1865,78 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
 
             if yview:
                 self.process_tree.yview_moveto(yview[0])
+            if xview:
+                self.process_tree.xview_moveto(xview[0])
+            self._row_snapshots["processes"] = snapshot
         finally:
             self._process_tree_refreshing = False
         self._sync_process_buttons()
+
+    def _rebuild_incident_rules_tree(self):
+        selected_key = self._selected_incident_rule_key()
+        focus_item = self.incident_rules_tree.focus()
+        focus_values = self.incident_rules_tree.item(focus_item, "values") if focus_item else ()
+        focused_key = str(focus_values[0]) if focus_values else ""
+        yview = self.incident_rules_tree.yview()
+        xview = self.incident_rules_tree.xview()
+        restored_selection = ""
+        restored_focus = ""
+        self._configure_sort_headings(self.incident_rules_tree, "incident_rules", INCIDENT_RULE_COLUMNS, self._rebuild_incident_rules_tree)
+        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incident_rules", self._incident_rule_tree_rows())
+
+        self._incident_rules_tree_refreshing = True
+        try:
+            if not force_rebuild and same_row_order(previous, snapshot):
+                for index in changed_row_indexes(previous, snapshot):
+                    key, values = rows[index]
+                    item_id = self.incident_rules_items.get(str(key))
+                    if item_id and self.incident_rules_tree.exists(item_id):
+                        self.incident_rules_tree.item(item_id, values=values)
+                self._row_snapshots["incident_rules"] = snapshot
+                self._incident_rules_tree_refreshing = False
+                self._sync_incident_rule_buttons()
+                return
+
+            for item_id in self.incident_rules_tree.get_children():
+                self.incident_rules_tree.delete(item_id)
+            self.incident_rules_items = {}
+
+            for rule_key, values in rows:
+                item_id = self.incident_rules_tree.insert("", tk.END, values=values)
+                self.incident_rules_items[rule_key] = item_id
+                if selected_key and rule_key == selected_key:
+                    restored_selection = item_id
+                if focused_key and rule_key == focused_key:
+                    restored_focus = item_id
+
+            if restored_selection:
+                self.incident_rules_tree.selection_set(restored_selection)
+            else:
+                self.incident_rules_tree.selection_remove(self.incident_rules_tree.selection())
+
+            if restored_focus:
+                self.incident_rules_tree.focus(restored_focus)
+            elif restored_selection:
+                self.incident_rules_tree.focus(restored_selection)
+
+            if yview:
+                self.incident_rules_tree.yview_moveto(yview[0])
+            if xview:
+                self.incident_rules_tree.xview_moveto(xview[0])
+            self._row_snapshots["incident_rules"] = snapshot
+        finally:
+            self._incident_rules_tree_refreshing = False
+        self._sync_incident_rule_buttons()
 
     def _sync_process_buttons(self):
         has_selection = self._selected_process_row() is not None
         state_name = tk.NORMAL if has_selection else tk.DISABLED
         self.process_options_button.config(state=state_name)
         self.process_google_button.config(state=state_name)
+
+    def _sync_incident_rule_buttons(self):
+        state_name = tk.NORMAL if self._selected_incident_rule_row() is not None else tk.DISABLED
+        self.incident_rule_options_button.config(state=state_name)
 
 
 def ipc_reader(app: ServerGUI):

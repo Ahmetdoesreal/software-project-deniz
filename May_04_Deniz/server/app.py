@@ -7,6 +7,7 @@ from common.runtime_logging import install_asyncio_exception_logging
 from .state import state
 from .shutdown import SHUTDOWN_GRACE_SECONDS, ServerShutdownRoutine
 from .handlers import (
+    auth_status,
     client_artifact_upload,
     health,
     login_handler,
@@ -126,6 +127,7 @@ def create_app(args) -> web.Application:
     app["python_executable"] = getattr(args, "python_executable", None)
     app["launch_gui_on_start"] = bool(getattr(args, "gui", False))
     app["auth_secret"] = str(getattr(args, "auth_secret", None) or "")
+    app["auth_bypass"] = {"cats_until": 0.0, "ad_until": 0.0}
     app["ipc_transport"] = str(getattr(args, "ipc_transport", "auto") or "auto")
     gui_ui = str(getattr(args, "ui", "tk") or "tk").strip().lower()
     if gui_ui not in {"tk", "qt"}:
@@ -133,6 +135,7 @@ def create_app(args) -> web.Application:
     app["gui_ui"] = gui_ui
     
     app.router.add_get("/health", health)
+    app.router.add_get("/auth/status", auth_status)
     app.router.add_post("/login", login_handler)
     app.router.add_get("/exam/config", exam_config)
     app.router.add_get("/exam/files", exam_files)

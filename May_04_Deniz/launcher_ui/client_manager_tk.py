@@ -19,7 +19,7 @@ from common.manager_support import (
     apply_dpi_awareness,
     install_close_guard,
 )
-from client.preflight import load_auth_config, run_preflight
+from client.preflight import load_auth_config, resolve_auth_status_sync, run_preflight
 
 
 class ClientManager(tk.Tk):
@@ -355,9 +355,17 @@ class ClientManager(tk.Tk):
         ad_domain  = self._auth_config.get("ad_domain", "")
         auth_secret = self._auth_config.get("auth_secret", "")
 
+        auth_status = resolve_auth_status_sync(
+            login_id,
+            server_id=self.v_id.get().strip() or "default",
+            host=self.v_host.get().strip() if self.v_adv.get() else None,
+            port=int(self.v_port.get()),
+            timeout=3.0,
+        )
+
         # Step 1: local preflight — CATS school auth + Windows AD auth in parallel
         preflight_ok, preflight_result = run_preflight(
-            login_id, password, ad_domain, auth_secret
+            login_id, password, ad_domain, auth_secret, auth_status=auth_status
         )
         if not preflight_ok:
             self.after(0, self._handle_validation_error, preflight_result)

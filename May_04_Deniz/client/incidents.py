@@ -15,6 +15,13 @@ from common.process_definitions import (
     normalize_actions,
     normalize_definitions,
 )
+from common.incident_rules import (
+    INCIDENT_RULES_RULE_ID,
+    apply_incident_rule_to_incident,
+    best_incident_rule,
+    incident_rule_summary,
+    normalize_incident_rules,
+)
 from common.process_users import current_process_usernames, normalize_process_username
 
 
@@ -129,6 +136,7 @@ class ClientIncidentEngine:
         self._open_process_incidents: dict[tuple[str, int, str], dict] = {}
         self._known_processes: set[str] = set()
         self._process_definitions: list[dict] = []
+        self._incident_rules: list[dict] = []
         self._unexpected_seen_identities: set[str] = set()
         self._unexpected_baseline_ready = False
         self._open_unexpected_process_incidents: dict[str, dict] = {}
@@ -161,6 +169,12 @@ class ClientIncidentEngine:
         self._rules_by_id = normalized_rules
         self._process_definitions = normalize_definitions(
             normalized_rules.get(PROCESS_DEFINITIONS_RULE_ID, {}).get("definitions", [])
+        )
+        incident_rules_config = normalized_rules.get(INCIDENT_RULES_RULE_ID, {})
+        self._incident_rules = normalize_incident_rules(
+            incident_rules_config.get("definitions", [])
+            if incident_rules_config.get("enabled", True)
+            else []
         )
         self._unexpected_seen_identities = set()
         self._unexpected_baseline_ready = False
@@ -266,6 +280,9 @@ class ClientIncidentEngine:
             incident["event_type"] = details["event_type"]
             if details.get("known_definition_candidates"):
                 incident["known_definition_candidates"] = details["known_definition_candidates"]
+            incident = self._finalize_candidate_incident(incident)
+            if incident is None:
+                continue
             self._open_process_incidents[key] = incident
             incidents.append(dict(incident))
 
@@ -299,9 +316,9 @@ class ClientIncidentEngine:
             _normalize_name(snapshot.get("process_name")),
             _normalize_name(snapshot.get("window_title")),
         )
-        out_of_policy = self._is_focus_out_of_policy(rule, snapshot)
+        out_of_policy, effective_rule = self._focus_policy_decision(rule, snapshot)
         if out_of_policy:
-            incidents.extend(self._handle_focus_violation(rule, snapshot, subject_key))
+            incidents.extend(self._handle_focus_violation(effective_rule, snapshot, subject_key))
         else:
             incidents.extend(self._handle_focus_clear(rule, subject_key))
         return incidents
@@ -369,6 +386,10 @@ class ClientIncidentEngine:
             incident = self._new_incident(incident_rule, status="opened", summary=summary)
             incident["idle_seconds"] = idle_seconds
             incident["event_type"] = f"idle_{new_level}"
+            incident = self._finalize_candidate_incident(incident)
+            if incident is None:
+                self._idle_level = "none"
+                return incidents
             self._idle_incident_id = incident["incident_id"]
             self._idle_level = new_level
             incidents.append(incident)
@@ -462,6 +483,9 @@ class ClientIncidentEngine:
             "needs_evidence": status in {"opened", "escalated"},
         }
 
+    def _finalize_candidate_incident(self, incident: dict) -> dict | None:
+        return apply_incident_rule_to_incident(self._incident_rules, incident)
+
     def _observe_process_definitions(self, processes: set[ProcessEntry]) -> tuple[list[dict], set[str]]:
         rule = self._rules_by_id.get(PROCESS_DEFINITIONS_RULE_ID, {})
         if not rule or not rule.get("enabled", True):
@@ -514,6 +538,9 @@ class ClientIncidentEngine:
                     "configured_actions": normalize_actions(definition.get("actions", {})),
                 }
             )
+            incident = self._finalize_candidate_incident(incident)
+            if incident is None:
+                continue
             self._open_process_incidents[key] = incident
             incidents.append(dict(incident))
 
@@ -620,6 +647,10 @@ class ClientIncidentEngine:
                     "raw_processes": raw_processes,
                 }
             )
+            incident = self._finalize_candidate_incident(incident)
+            if incident is None:
+                self._unexpected_seen_identities.add(identity)
+                continue
             self._open_unexpected_process_incidents[identity] = incident
             self._unexpected_seen_identities.add(identity)
             incidents.append(dict(incident))
@@ -792,9 +823,40 @@ class ClientIncidentEngine:
                 "recent_switches": recent_switches,
             }
         )
+        incident = self._finalize_candidate_incident(incident)
+        if incident is None:
+            return incidents
         state.open_incident_id = incident["incident_id"]
         incidents.append(incident)
         return incidents
+
+    def _focus_policy_decision(self, rule: dict, snapshot: dict) -> tuple[bool, dict]:
+        process_name = normalize_display_text(snapshot.get("process_name")) or ""
+        window_title = sanitize_window_title(snapshot.get("window_title")) or ""
+        candidate = {
+            "rule_id": "focused_window_policy",
+            "rule_name": "focused_window_policy",
+            "source": "focused_window",
+            "event_type": "focused_window_policy",
+            "status": "opened",
+            "severity": str(rule.get("severity", "warning") or "warning"),
+            "process_name": process_name,
+            "window_title": window_title,
+        }
+        matched_rule = best_incident_rule(self._incident_rules, candidate)
+        if matched_rule:
+            status = str(matched_rule.get("status", "unknown") or "unknown")
+            if status == "whitelist":
+                return False, rule
+            if status in {"warning", "blacklist"}:
+                effective_rule = {
+                    **rule,
+                    "severity": "violation" if status == "blacklist" else "warning",
+                    "_matched_incident_rule": incident_rule_summary(matched_rule),
+                    "configured_actions": normalize_actions(matched_rule.get("actions", {})),
+                }
+                return True, effective_rule
+        return self._is_focus_out_of_policy(rule, snapshot), rule
 
     def _is_focus_out_of_policy(self, rule: dict, snapshot: dict) -> bool:
         process_name = _normalize_process_name(snapshot.get("process_name"))
@@ -847,6 +909,13 @@ class ClientIncidentEngine:
         incident["process_name"] = process_name
         incident["window_title"] = window_title
         incident["pid"] = int(snapshot.get("process_id") or 0) or None
+        if rule.get("_matched_incident_rule"):
+            incident["matched_incident_rule"] = dict(rule.get("_matched_incident_rule") or {})
+            incident["matched_incident_rule_id"] = str(incident["matched_incident_rule"].get("definition_id", "") or "")
+            incident["configured_actions"] = normalize_actions(rule.get("configured_actions", {}))
+        incident = self._finalize_candidate_incident(incident)
+        if incident is None:
+            return incidents
         state.open_incident_id = incident["incident_id"]
         incidents.append(incident)
         return incidents

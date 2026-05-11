@@ -10,6 +10,7 @@ SETTINGS_TAB_LABELS = {
     "Process Lists": "Process Lists",
     "Window Rules": "Window Rules",
     "Process Definitions": "Process Definitions",
+    "Incident Rules": "Incident Rules",
 }
 
 
@@ -69,6 +70,7 @@ class PolicySettingsMixin:
         self._build_process_lists_settings_section()
         self._build_window_rules_settings_section()
         self._build_process_definition_settings_section()
+        self._build_incident_rules_settings_section()
 
     def _settings_section(self, title: str):
         frame = ttk.Frame(self.settings_notebook, padding=12)
@@ -244,6 +246,28 @@ class PolicySettingsMixin:
         self._settings_check(options, "rules.process_definitions.auto_violation_pause", "Auto pause on violation", 1, 2, columnspan=2)
         self._settings_check(options, "rules.process_definitions.allow_remote_kill", "Allow remote kill", 2, 0, columnspan=2)
 
+    def _build_incident_rules_settings_section(self):
+        frame = self._settings_section("Incident Rules")
+        self._settings_combo(frame, "Severity", "rules.incident_rules.severity", 0, 0, SEVERITY_VALUES)
+        file_actions = ttk.LabelFrame(frame, text="Rule File", padding=10)
+        file_actions.grid(row=1, column=0, columnspan=4, sticky=tk.EW, pady=(0, 10))
+        ttk.Button(
+            file_actions,
+            text="Open Incident Rules File",
+            command=self.edit_incident_rules,
+            width=24,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            file_actions,
+            text="Apply Incident Rules File",
+            command=self.apply_incident_rules,
+            width=24,
+        ).pack(side=tk.LEFT)
+        options = self._settings_group(frame, "Options", 2)
+        self._settings_check(options, "rules.incident_rules.enabled", "Enabled", 0, 0)
+        self._settings_check(options, "rules.incident_rules.auto_violation_pause", "Auto pause on violation", 0, 1, columnspan=2)
+        self._settings_check(options, "rules.incident_rules.allow_remote_kill", "Allow remote kill", 1, 0, columnspan=2)
+
     def open_policy_settings_window(self):
         window = self._settings_window
         if window is not None and window.winfo_exists():
@@ -347,10 +371,12 @@ class PolicySettingsMixin:
         version = str(self.settings_snapshot.get("policy_version", "") or "")
         blacklist_version = str(self.settings_snapshot.get("process_blacklist_version", "") or "")
         definitions_version = str(self.settings_snapshot.get("process_definitions_version", "") or "")
+        incident_rules_version = str(self.settings_snapshot.get("incident_rules_version", "") or "")
         label = (
             f"Policy {version[:12] or '-'} | "
             f"Blacklist {blacklist_version[:12] or '-'} | "
-            f"Definitions {definitions_version[:12] or '-'}"
+            f"Definitions {definitions_version[:12] or '-'} | "
+            f"Incident Rules {incident_rules_version[:12] or '-'}"
         )
         if self._settings_dirty:
             label += " | Unsaved changes"
@@ -364,6 +390,7 @@ class PolicySettingsMixin:
             str(snapshot.get("policy_version", "") or ""),
             str(snapshot.get("process_blacklist_version", "") or ""),
             str(snapshot.get("process_definitions_version", "") or ""),
+            str(snapshot.get("incident_rules_version", "") or ""),
             str(runtime.get("exam_duration", "") or ""),
             str(runtime.get("exam_files", "") or ""),
         )
@@ -404,6 +431,7 @@ class PolicySettingsMixin:
         idle_policy = rules.get("idle_policy", {}) if isinstance(rules.get("idle_policy"), dict) else {}
         unexpected_process = rules.get("unexpected_process", {}) if isinstance(rules.get("unexpected_process"), dict) else {}
         process_definitions = rules.get("process_definitions", {}) if isinstance(rules.get("process_definitions"), dict) else {}
+        incident_rules = rules.get("incident_rules", {}) if isinstance(rules.get("incident_rules"), dict) else {}
         path_clarification = (
             rules.get("process_path_clarification", {})
             if isinstance(rules.get("process_path_clarification"), dict)
@@ -494,6 +522,11 @@ class PolicySettingsMixin:
             self._set_settings_var(
                 "rules.process_definitions.allow_remote_kill",
                 process_definitions.get("allow_remote_kill", True),
+            )
+            self._set_rule_common("rules.incident_rules", incident_rules, default_enabled=True, default_severity="warning")
+            self._set_settings_var(
+                "rules.incident_rules.allow_remote_kill",
+                incident_rules.get("allow_remote_kill", True),
             )
             self._set_rule_common(
                 "rules.process_path_clarification",
@@ -663,6 +696,12 @@ class PolicySettingsMixin:
                     "baseline_existing_processes": self._settings_bool("rules.process_definitions.baseline_existing_processes"),
                     "auto_violation_pause": self._settings_bool("rules.process_definitions.auto_violation_pause"),
                     "allow_remote_kill": self._settings_bool("rules.process_definitions.allow_remote_kill"),
+                },
+                "incident_rules": {
+                    "enabled": self._settings_bool("rules.incident_rules.enabled"),
+                    "severity": str(self._settings_var_value("rules.incident_rules.severity") or "warning").strip(),
+                    "auto_violation_pause": self._settings_bool("rules.incident_rules.auto_violation_pause"),
+                    "allow_remote_kill": self._settings_bool("rules.incident_rules.allow_remote_kill"),
                 },
                 "process_path_clarification": {
                     "enabled": self._settings_bool("rules.process_path_clarification.enabled"),

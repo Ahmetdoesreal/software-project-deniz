@@ -14,8 +14,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-from server.ui.dashboard_table_helpers import PROCESS_DATABASE_FILTERS, process_row_matches_filter
+from server.ui.dashboard_table_helpers import (
+    INCIDENT_RULE_FILTERS,
+    PROCESS_DATABASE_FILTERS,
+    incident_rule_row_matches_filter,
+    process_row_matches_filter,
+)
 from server.ui.process_database_helpers import (
+    build_incident_rule_decision_payload,
     build_process_decision_payload,
     process_row_google_search_url,
 )

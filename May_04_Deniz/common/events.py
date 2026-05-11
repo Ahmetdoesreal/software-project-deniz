@@ -55,9 +55,11 @@ def ping(message: str) -> str:
 
 CLIENT_INFO = "client_info"
 
-def client_info(computer_name: str) -> str:
+def client_info(computer_name: str, **metadata) -> str:
     """Client sends identifying machine metadata to the server."""
-    return protocol.encode(CLIENT_INFO, {"computer_name": computer_name})
+    payload = {"computer_name": computer_name}
+    payload.update(metadata)
+    return protocol.encode(CLIENT_INFO, payload)
 
 EXAM_POLICY = "exam_policy"
 
