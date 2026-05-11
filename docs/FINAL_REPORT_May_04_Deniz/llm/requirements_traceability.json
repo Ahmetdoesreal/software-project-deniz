@@ -1,0 +1,118 @@
+{
+  "snapshot_date": "2026-05-11",
+  "source": "May_04_Deniz/",
+  "requirements": [
+    {
+      "id": "FR-SRV-001",
+      "summary": "Server starts with validated runtime arguments.",
+      "modules": ["server.main", "server.app"],
+      "interfaces": ["server CLI"],
+      "tests": ["tests/unit/test_server_main.py", "tests/unit/test_server_app.py"]
+    },
+    {
+      "id": "FR-SRV-003",
+      "summary": "Server exposes HTTP, projector, upload, and WebSocket routes.",
+      "modules": ["server.app", "server.handlers", "server.projector"],
+      "interfaces": ["/health", "/auth/status", "/projector", "/projector/events", "/login", "/exam/config", "/exam/files", "/exam/submission", "/client/artifact", "/ws"],
+      "tests": ["tests/unit/test_server_app.py", "tests/unit/test_server_handlers.py", "tests/unit/test_projector.py"]
+    },
+    {
+      "id": "FR-SRV-004",
+      "summary": "Server loads and persists users, policy, incidents, definitions, and rules.",
+      "modules": ["server.state"],
+      "interfaces": ["data/server/users.json", "data/server/exam_policy.json", "data/server/incidents.json", "data/server/process_definitions.json", "data/server/incident_rules.json"],
+      "tests": ["tests/unit/test_server_state.py", "tests/unit/test_process_database.py"]
+    },
+    {
+      "id": "FR-SRV-007",
+      "summary": "Server supports administrative CLI and GUI-dispatched commands.",
+      "modules": ["server.tasks", "server.ui.dashboard_tk", "server.ui.dashboard_qt"],
+      "interfaces": ["admin CLI", "dashboard.command"],
+      "tests": ["tests/unit/test_server_tasks.py", "tests/unit/test_process_database.py"]
+    },
+    {
+      "id": "FR-CLI-001",
+      "summary": "Client starts with validated runtime arguments.",
+      "modules": ["client.main"],
+      "interfaces": ["client CLI"],
+      "tests": ["tests/integration/test_client_main.py"]
+    },
+    {
+      "id": "FR-CLI-005",
+      "summary": "Client safely extracts exam materials to Desktop/Exam/DD-MM-YYYY.",
+      "modules": ["client.exam"],
+      "interfaces": ["/exam/files", "Desktop/Exam/DD-MM-YYYY"],
+      "tests": ["tests/unit/test_exam_files.py"]
+    },
+    {
+      "id": "FR-MON-002",
+      "summary": "Focused-window titles are sanitized before matching and persistence.",
+      "modules": ["common.text_safety", "client.custommodules.focused_window_monitor", "client.incidents"],
+      "interfaces": ["focused_window.jsonl"],
+      "tests": ["tests/unit/test_focused_window_monitor.py", "tests/unit/test_client_incidents.py"]
+    },
+    {
+      "id": "FR-INC-001",
+      "summary": "Incident rules normalize and match whitelist, warning, and blacklist definitions.",
+      "modules": ["common.incident_rules", "client.incidents", "server.state"],
+      "interfaces": ["data/server/incident_rules.json"],
+      "tests": ["tests/unit/test_incident_rules.py", "tests/unit/test_client_incidents.py", "tests/unit/test_process_database.py"]
+    },
+    {
+      "id": "FR-REC-001",
+      "summary": "Disconnected incidents are persisted with stable sequence metadata.",
+      "modules": ["client.incident_buffer", "client.ws_client", "common.protocol"],
+      "interfaces": ["data/client/{uuid}/buffer"],
+      "tests": ["tests/unit/test_incident_buffer.py", "tests/unit/test_protocol_integrity_fields.py"]
+    },
+    {
+      "id": "FR-SUB-003",
+      "summary": "Client uploads submissions and server validates multipart uploads.",
+      "modules": ["client.transfers", "client.submission", "server.handlers"],
+      "interfaces": ["/exam/submission"],
+      "tests": ["tests/unit/test_transfers.py", "tests/unit/test_upload_multipart_order.py", "tests/unit/test_server_handlers.py"]
+    },
+    {
+      "id": "FR-AUTH-003",
+      "summary": "Temporary CATS/AD bypass is controlled by server commands and status.",
+      "modules": ["server.tasks", "server.handlers", "client.preflight"],
+      "interfaces": ["/auth/status", "/disablecatsauth", "/disableadauth", "/enablecatsauth", "/enableadauth", "/authstatus"],
+      "tests": ["tests/unit/test_auth_bypass.py"]
+    },
+    {
+      "id": "FR-IPC-001",
+      "summary": "Local IPC uses loopback WebSocket with token authentication when selected.",
+      "modules": ["common.ipc_ws", "common.manager_support", "launcher_ui", "server.ui", "client.ui"],
+      "interfaces": ["EXAM_LOCAL_IPC_URL", "EXAM_LOCAL_IPC_TOKEN", "EXAM_LOCAL_IPC_ROLE", "EXAM_LOCAL_IPC_TRANSPORT"],
+      "tests": ["tests/unit/test_ipc_ws.py", "tests/integration/test_local_ipc.py"]
+    },
+    {
+      "id": "FR-UI-002",
+      "summary": "Dashboard refresh preserves scroll, focus, and selection where possible.",
+      "modules": ["server.ui.row_refresh", "server.ui.dashboard_tk", "server.ui.dashboard_qt"],
+      "interfaces": ["server.dashboard_state"],
+      "tests": ["tests/unit/test_row_refresh.py"]
+    },
+    {
+      "id": "FR-PROJ-001",
+      "summary": "Server serves read-only projector page and SSE feed.",
+      "modules": ["server.projector", "server.app"],
+      "interfaces": ["/projector", "/projector/events"],
+      "tests": ["tests/unit/test_projector.py"]
+    },
+    {
+      "id": "NFR-SEC-003",
+      "summary": "Sensitive WebSocket events can be signed and encrypted.",
+      "modules": ["common.security", "server.handlers", "client.ws_client"],
+      "interfaces": ["secured event envelope"],
+      "tests": ["tests/unit/test_security.py", "tests/unit/test_server_handlers.py"]
+    },
+    {
+      "id": "NFR-PRIV-001",
+      "summary": "Projector payloads do not expose private identifiers or evidence.",
+      "modules": ["server.projector"],
+      "interfaces": ["/projector/events"],
+      "tests": ["tests/unit/test_projector.py"]
+    }
+  ]
+}

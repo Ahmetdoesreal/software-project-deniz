@@ -1,0 +1,102 @@
+{
+  "snapshot_date": "2026-05-11",
+  "source": "May_04_Deniz/",
+  "modules": {
+    "common.protocol": {
+      "responsibility": "LAN JSON event envelope, checksum validation, reliability metadata preservation, timestamp helpers.",
+      "owned_contracts": ["event", "data", "checksum", "INTEGRITY_FIELDS"]
+    },
+    "common.events": {
+      "responsibility": "Canonical LAN WebSocket event names and constructors.",
+      "owned_contracts": ["welcome", "exam_policy", "policy_update", "session_state", "sync_time", "incident_report", "incident_received", "kill_process", "finish_exam"]
+    },
+    "common.security": {
+      "responsibility": "Session-specific signing, replay protection, and optional encryption for sensitive LAN events.",
+      "owned_contracts": ["secured envelope", "DEFAULT_SECURED_EVENTS", "DEFAULT_ENCRYPTED_EVENTS"]
+    },
+    "common.ipc_ws": {
+      "responsibility": "Loopback-only token-authenticated WebSocket IPC and stdio transport selection helpers.",
+      "owned_contracts": ["IPC env vars", "IPC envelope", "ThreadedIpcServer", "ThreadedIpcClient"]
+    },
+    "common.incident_rules": {
+      "responsibility": "Normalize, match, prioritize, summarize, and apply incident rule definitions.",
+      "owned_contracts": ["incident rule definition", "statuses", "match modes", "default New Tab whitelist"]
+    },
+    "server.main": {
+      "responsibility": "Server CLI parsing, validation, duplicate-server precheck, runtime logging, and app run.",
+      "owned_contracts": ["server CLI arguments"]
+    },
+    "server.app": {
+      "responsibility": "aiohttp application factory, route registration, background startup and cleanup.",
+      "owned_contracts": ["HTTP route table", "startup tasks", "cleanup tasks"]
+    },
+    "server.handlers": {
+      "responsibility": "HTTP handlers, WebSocket runtime, login, auth status, uploads, incident handling, secured payload wrapping.",
+      "owned_contracts": ["HTTP responses", "WebSocket dispatch", "upload behavior"]
+    },
+    "server.tasks": {
+      "responsibility": "Time broadcaster, dashboard state push, admin commands, GUI request dispatch, policy broadcasts, user actions.",
+      "owned_contracts": ["admin commands", "dashboard state payload"]
+    },
+    "server.state": {
+      "responsibility": "Persistent state, policy defaults, normalization, versions, settings import/export, incident persistence.",
+      "owned_contracts": ["data/server files", "settings bundle", "current_exam_policy"]
+    },
+    "server.projector": {
+      "responsibility": "Read-only projector HTML, SSE endpoint, projection-safe state builder.",
+      "owned_contracts": ["/projector", "/projector/events", "projection payload"]
+    },
+    "client.main": {
+      "responsibility": "Client CLI, discovery, login, exam preparation, persistent recorder and buffer ownership, reconnect loop.",
+      "owned_contracts": ["client CLI arguments", "main_loop"]
+    },
+    "client.preflight": {
+      "responsibility": "Auth config load, server auth status fetch, CATS and AD preflight resolution.",
+      "owned_contracts": ["/auth/status client behavior"]
+    },
+    "client.exam": {
+      "responsibility": "Exam config/file fetch, ZIP copy, safe desktop extraction, manifest handling.",
+      "owned_contracts": ["Desktop/Exam/DD-MM-YYYY", "exam file manifest"]
+    },
+    "client.ws_client": {
+      "responsibility": "WebSocket session attempt, server event handling, UI bridge, monitor coordination, incident/evidence send and retry.",
+      "owned_contracts": ["WebSocketSession", "timer UI commands", "incident flush"]
+    },
+    "client.incidents": {
+      "responsibility": "Client-side policy application and incident candidate generation.",
+      "owned_contracts": ["incident payload", "policy rules"]
+    },
+    "client.incident_buffer": {
+      "responsibility": "Durable incident and evidence retry queue across reconnects.",
+      "owned_contracts": ["packet.json", "index.jsonl", "evidence.jsonl"]
+    },
+    "client.transfers": {
+      "responsibility": "Submission and artifact bundle construction and multipart upload.",
+      "owned_contracts": ["bundle manifest", "upload metadata"]
+    },
+    "server.ui.row_refresh": {
+      "responsibility": "Stable row snapshots and refresh decisions for smooth dashboard lists.",
+      "owned_contracts": ["RowSnapshot", "changed_row_indexes"]
+    },
+    "server.ui.dashboard_tk": {
+      "responsibility": "Tk server dashboard, settings, incidents, process database, incident rules, command controls.",
+      "owned_contracts": ["Tk dashboard UI"]
+    },
+    "server.ui.dashboard_qt": {
+      "responsibility": "Qt server dashboard, settings, incidents, process database, incident rules, command controls.",
+      "owned_contracts": ["Qt dashboard UI"]
+    },
+    "client.ui.exam_tk": {
+      "responsibility": "Tk timer and submission UI.",
+      "owned_contracts": ["timer.command", "client.timer_state"]
+    },
+    "client.ui.exam_qt": {
+      "responsibility": "Qt timer and submission UI.",
+      "owned_contracts": ["timer.command", "client.timer_state"]
+    },
+    "launcher_ui": {
+      "responsibility": "Tk/Qt server and client manager launchers.",
+      "owned_contracts": ["manager.console_command", "child process launch commands"]
+    }
+  }
+}
