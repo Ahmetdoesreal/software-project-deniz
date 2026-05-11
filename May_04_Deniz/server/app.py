@@ -16,6 +16,7 @@ from .handlers import (
     exam_submission,
     websocket_handler,
 )
+from .projector import projector_events, projector_page
 from .tasks import time_broadcaster, console_reader, _launch_server_gui
 
 
@@ -136,6 +137,8 @@ def create_app(args) -> web.Application:
     
     app.router.add_get("/health", health)
     app.router.add_get("/auth/status", auth_status)
+    app.router.add_get("/projector", projector_page)
+    app.router.add_get("/projector/events", projector_events)
     app.router.add_post("/login", login_handler)
     app.router.add_get("/exam/config", exam_config)
     app.router.add_get("/exam/files", exam_files)
