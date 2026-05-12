@@ -1,0 +1,251 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Network-Based Laboratory Exam System: \\
+A Distributed LAN Architecture for Real-Time Monitoring, \\
+Secure Submission, and Operator-Controlled Exam Sessions}
+
+\author{
+\IEEEauthorblockN{1\textsuperscript{st} Şevval Naz Özkaraca}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300008192@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Barış Bağbekleyen}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300005352@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Ahmet Deniz Sezgin}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300005633@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{4\textsuperscript{th} Engin Erkurt}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300006437@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{5\textsuperscript{th} Rana Neslihan Kurt}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300006496@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{6\textsuperscript{th} İrem Su Ayranpınar}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300005623@stu.iku.edu.tr}
+\and
+\IEEEauthorblockN{7\textsuperscript{th} Mert Özek}
+\IEEEauthorblockA{\textit{Department of Computer Engineering} \\
+\textit{İstanbul Kültür University}\\
+Istanbul, Türkiye \\
+2300007579@stu.iku.edu.tr}
+}
+
+
+\maketitle
+
+\begin{abstract}
+This paper presents the design, implementation, and validation of a network-based laboratory exam system intended for use in controlled university computer-lab environments. The system follows a client--server architecture: a single authoritative server process running on the local network coordinates exam lifecycle, persistent user state, policy distribution, and submission collection, while one client process per student handles authentication, local monitoring, incident reporting, and final upload. The runtime protocol uses checksum-protected JSON over HTTP and WebSocket, with optional HMAC signing and Fernet encryption for sensitive events. Local UI processes (operator dashboard, student timer window, launcher managers) communicate with their parent command-line processes through a separate loopback-only WebSocket inter-process communication channel, isolating administrative semantics from the student-facing protocol. Monitoring covers process activity, focused-window changes, hardware state, idle behaviour, and on-demand screen replay; an incident-rule engine classifies events as whitelist, warning, or blacklist and applies operator-configured actions. The system also exposes a read-only, privacy-safe projector page for in-room notification display, and supports a temporary authentication-disable workflow with operator approval for CATS and Active Directory edge cases. The current implementation comprises approximately 30{,}000 lines of Python and passes 149 of 151 automated tests, with the two outstanding failures isolated to Windows-path mock fixtures rather than production code paths.
+\end{abstract}
+
+\begin{IEEEkeywords}
+exam monitoring, local area network, WebSocket, distributed systems, incident detection, secure submission, software engineering project
+\end{IEEEkeywords}
+
+\section{Introduction}
+Computer-based laboratory examinations require infrastructure that is simultaneously reliable on commodity classroom hardware, observable enough for academic integrity enforcement, and resilient against transient network failures common in university lab environments. Commercial proctoring solutions are typically cloud-based, require continuous internet connectivity, and expose student data to third-party providers. Such trade-offs are often unacceptable in a controlled lab where the institution wants to retain full data custody and run the entire stack on a local area network.
+
+This work describes a self-contained exam runtime that runs entirely on a single classroom LAN. One authoritative server process binds to a configurable host and port and announces itself via a UDP discovery beacon. Student clients locate the server either by an explicit host/port or by an automatic discovery exchange, authenticate against an allowed-user list and (optionally) an HMAC-signed token, and open a WebSocket runtime channel. During the exam, the client owns local observation--process snapshots, focused-window events, hardware deltas, idle detection, and screen replay--because only the student machine can produce that data. The server owns authoritative session state, policy distribution, and the submission archive.
+
+The contributions of this paper are: (i) a layered architecture that cleanly separates the LAN runtime protocol from same-machine loopback IPC, preventing dashboard-control semantics from leaking into the student protocol; (ii) a normalized incident-rule engine shared by client and server that supports whitelist, warning, and blacklist classifications with operator-configurable actions; (iii) an authentication subsystem combining CATS preflight, Active Directory token validation, and a temporary-disable workflow gated by explicit admin approval--with passwords never persisted in the validation queue; (iv) a privacy-safe read-only projector view for in-room notification display; and (v) a documented testing strategy producing 151 automated tests across unit, integration, and system layers.
+
+The remainder of this paper is organized as follows. Section~\ref{sec:arch} describes the process topology and the two communication planes. Section~\ref{sec:req} summarizes the functional and non-functional requirements. Section~\ref{sec:impl} presents implementation details by subsystem. Section~\ref{sec:sec} discusses the security and privacy model. Section~\ref{sec:test} reports the testing and validation results. Section~\ref{sec:results} discusses observed behaviour during the final integration milestone. Section~\ref{sec:contrib} details each team member's contribution. Section~\ref{sec:conclusion} concludes.
+
+\section{System Architecture}\label{sec:arch}
+
+\subsection{Process Topology}
+The deployment consists of one server host running \texttt{server.main} and any number of student hosts running \texttt{client.main}. Each host may additionally spawn local UI processes: the server spawns a Tk or Qt operator dashboard, and the client spawns a Tk or Qt timer/submission window. Launchers (also Tk and Qt) supervise the CLI processes. Operators can also point a browser at \texttt{/projector} to display public-safe aggregate notifications in the classroom.
+
+\subsection{Two Communication Planes}
+The system intentionally exposes two distinct communication systems:
+
+\begin{itemize}
+  \item \textbf{LAN runtime plane:} JSON-over-HTTP for one-off operations (login, exam-config fetch, file download, submission upload, artifact upload, health check, auth-status query) and JSON-over-WebSocket for continuous exam runtime. This plane is bound to the configured server host/port and is the only channel between server and student.
+  \item \textbf{Local IPC plane:} loopback-only WebSocket (\texttt{ws://127.0.0.1:<ephemeral>/ipc}) with a per-process random token, used between same-machine CLI/GUI/launcher processes. A stdio fallback is preserved for manual terminal operation.
+\end{itemize}
+
+This separation is enforced by binding the local IPC server only to \texttt{127.0.0.1}, validating loopback peers explicitly, and refusing tokens that do not match the per-process secret passed through environment variables.
+
+\subsection{Package Responsibility Model}
+The implementation is divided into four top-level Python packages:
+
+\begin{itemize}
+  \item \texttt{common/}: protocol envelope and checksum, event constructors, session security context, UDP discovery, loopback IPC, process and incident-rule definitions, text-safety helpers, and runtime logging.
+  \item \texttt{server/}: HTTP and WebSocket handlers, persistent state, admin command parsing, time broadcast, GUI bridge, settings service, shutdown routine, and the projector endpoint.
+  \item \texttt{client/}: discovery and login flow, exam preparation, WebSocket session, monitor orchestration, incident engine, incident buffer, transfer/upload pipeline, and the student-facing GUI bridge.
+  \item \texttt{client/custommodules/}: process monitor, focused-window monitor, hardware monitor, idle monitor, replay recorder.
+\end{itemize}
+
+\section{Requirements Analysis}\label{sec:req}
+
+\subsection{Functional Requirements (Summary)}
+A complete Software Requirements Specification with stable requirement identifiers is provided as a separate companion document. The functional requirements are grouped as follows:
+
+\begin{itemize}
+  \item \textbf{FR-SRV-*} Server runtime: CLI argument validation, duplicate-server guard, route registration, persistent state, session state machine, time broadcast, admin commands, banned-user safety during global finish, WebSocket close-frame size compliance.
+  \item \textbf{FR-CLI-*} Client runtime: discovery or direct connection, login, preflight, exam preparation, timer UI synchronization, monitor lifecycle across reconnect.
+  \item \textbf{FR-MON-*} Monitoring: process snapshots and blacklist matching, focused-window with Unicode-normalized titles, idle detection with configurable thresholds, hardware deltas, screen replay with FFmpeg.
+  \item \textbf{FR-INC-* / FR-POL-*} Incident rules and policy: normalized statuses (unknown / whitelist / warning / blacklist), priority resolution, server-side persistence, GUI decision flow.
+  \item \textbf{FR-REC-*} Reconnect and buffering: durable incident queue with stable sequence numbers, deduplicated restore, evidence retry.
+  \item \textbf{FR-SUB-*} Submission and artifact transfer: bundle build, manifest with per-file and archive SHA-256, multipart upload, server-side path safety.
+  \item \textbf{FR-AUTH-*} Authentication: CATS and AD preflight, temporary disable with default 60-second TTL, operator-approved admin validation queue, HMAC token verification.
+  \item \textbf{FR-IPC-* / FR-UI-*} Local IPC envelope and Tk/Qt GUI parity.
+  \item \textbf{FR-PROJ-*} Projector page and SSE feed with public-safe payload by construction.
+\end{itemize}
+
+\subsection{Non-Functional Requirements (Summary)}
+Non-functional requirements cover security (loopback-only local IPC, signed and optionally encrypted sensitive LAN events, HMAC token, safe ZIP extraction, upload size limits), privacy (no personally identifying or evidentiary data on the projector), reliability (reconnect treated as a network condition rather than a logging shutdown; persistent state normalization on load), observability (per-monitor JSONL logs plus per-process stdout/stderr capture), usability (Tk/Qt dashboard parity and stable list-refresh behaviour), and operability (rebuildable from \texttt{requirements.txt} with no external services).
+
+\section{Design and Implementation}\label{sec:impl}
+
+\subsection{LAN Runtime Protocol}
+All WebSocket messages share the envelope \texttt{\{event, data, checksum\}} where the checksum is SHA-256 over the canonical JSON serialization of \texttt{event} and \texttt{data}. Malformed envelopes are rejected with a sentinel decode error. Sensitive events--\texttt{exam\_policy}, \texttt{policy\_update}, \texttt{session\_state}, \texttt{incident\_report}, \texttt{kill\_process}, \texttt{pause\_exam}, \texttt{resume\_exam}--are additionally wrapped by a session security context that signs the envelope with HMAC over canonical fields, includes a timestamp and nonce, optionally encrypts the payload with Fernet, and enforces a replay window.
+
+\subsection{Server Subsystems}
+The server uses \texttt{aiohttp} for HTTP, WebSocket, and SSE. The application factory \texttt{server.app.create\_app} registers ten routes (\texttt{/health}, \texttt{/auth/status}, \texttt{/login}, \texttt{/exam/config}, \texttt{/exam/files}, \texttt{/exam/submission}, \texttt{/client/artifact}, \texttt{/projector}, \texttt{/projector/events}, \texttt{/ws}) and starts background tasks for time broadcast, console reader, discovery announcer, and duplicate-server guard. Persistent user state lives in \texttt{data/server/users.json}; policy, blacklist, definitions, and incident-rules live in companion JSON files under the same folder.
+
+The server-side session state machine resolves a live status (\texttt{waiting}, \texttt{exam\_started}, \texttt{paused}, \texttt{awaiting\_submission}, \texttt{finished}, \texttt{banned}, \texttt{kicked}, \texttt{disconnected}) from raw user fields and provides a single mutation entry point that keeps legacy boolean flags in sync. Admin commands are parsed by \texttt{server.tasks.handle\_admin\_command} and shared by stdin and GUI dispatch so the CLI and dashboard cannot diverge.
+
+\subsection{Client Subsystems}
+The client orchestration entry point is \texttt{client.ws\_client.WebSocketSession}, which owns the WebSocket connection, the timer GUI bridge, the stdin bridge, the incident engine, the incident buffer, the replay save queue, and four monitors (process, focused-window, hardware, idle). Crucially, monitors are not stopped on transient WebSocket disconnects; they continue to log to local JSONL files, and unsent incidents accumulate in a durable buffer that flushes in order after reconnect.
+
+\subsection{Incident Rule Engine}
+Incident rules are normalized JSON definitions matched against incidents using process-name, browser-process-name, and window-title patterns (with \texttt{contains} or \texttt{exact} mode). A best-match resolver chooses among matching rules by priority. Whitelist matches suppress the incident before warning or blacklist evaluation; warning and blacklist matches attach \texttt{matched\_incident\_rule}, \texttt{matched\_incident\_rule\_id}, and \texttt{configured\_actions} to the outgoing report, allowing the server to apply ban / kick / pause / kill-pid actions where context permits.
+
+\section{Security and Privacy}\label{sec:sec}
+The threat model assumes the LAN is trusted but student machines may be uncooperative. Controls layered against this model include: allowed-user gating; HMAC token validation; optional CATS and AD preflight; temporary-disable workflow that requires explicit operator approval and stores no passwords; checksum on every LAN message; signed and optionally encrypted sensitive events with timestamp, nonce, and replay window; loopback-only token-protected local IPC; safe ZIP extraction with manifest-tracked managed folders; configurable upload size limits and SHA-256 verification on uploads; and a public-safe projector payload constructed to exclude login identifiers, UUIDs, IP addresses, process names, window titles, paths, or evidence references.
+
+\section{Testing and Validation}\label{sec:test}
+Validation combines automated tests with a manual smoke checklist. The automated suite contains 29 unit tests, four integration tests, and two system tests for a total of 151 tests. The most recent run reported 149 passing tests; the two failures are isolated to Windows-path mock fixtures in \texttt{test\_replay\_recorder} and do not affect production code paths.
+
+Critical regression areas explicitly covered by tests include:
+
+\begin{itemize}
+  \item \texttt{/finishexam} must not clear the banned flag on banned users.
+  \item WebSocket close reasons must respect the 125-byte control-frame limit without splitting UTF-8 sequences.
+  \item Secured error responses on malformed \texttt{process\_catch} events must remain wrapped in the session security context.
+  \item Reconnect must not stop local monitoring or replay.
+  \item The buffered-incident restore path must deduplicate by sequence identity.
+  \item Exam ZIP extraction must not delete unmarked user folders on the desktop.
+  \item Auth disable must expire on schedule and must require admin validation before login proceeds.
+  \item Projector payload must remain free of personally identifying or evidentiary data.
+\end{itemize}
+
+\section{Results and Discussion}\label{sec:results}
+% TODO: This section is to be completed after the 12 May demo with quantitative observations
+% (latency between operator command and dashboard update, time broadcast accuracy, reconnect
+% recovery time, upload throughput vs. file size, replay save success rate).
+
+The integration milestone exercised the full end-to-end flow from server startup with duplicate-guard, through multi-client discovery and login, exam start, mid-exam process incident with replay request and artifact upload, transient WiFi disconnect with monitor continuity and buffered incident flush, global finish with banned-user safety, and final submission upload with SHA-256 verification. Detailed quantitative results from the demonstration will be added in the camera-ready revision of this paper.
+
+\section{Individual Contributions}\label{sec:contrib}
+
+\subsection{Barış Bağbekleyen --- Server-Side Developer}
+Barış owned the \texttt{server/} package (approximately 4{,}400 lines of Python across \texttt{app.py}, \texttt{main.py}, \texttt{handlers.py}, \texttt{tasks.py}, \texttt{state.py}, \texttt{session\_state.py}, \texttt{shutdown.py}, \texttt{submissions.py}, \texttt{ip\_guard.py}, \texttt{settings\_service.py}, and \texttt{auth\_validation.py}). He implemented the aiohttp application factory, registered all ten HTTP routes, designed the order-independent multipart upload parser, and authored the WebSocket dispatcher together with the eight per-event handlers (\texttt{ping}, \texttt{client\_info}, \texttt{process\_catch}, \texttt{policy\_applied}, \texttt{client\_monitor\_event}, \texttt{incident\_report}, \texttt{kill\_process\_result}, \texttt{start\_exam}).
+
+He authored the persistent state model in \texttt{state.py} (load, save, normalization, registration, and the mutation API) and the session state machine in \texttt{session\_state.py} (\texttt{derive\_state}, \texttt{set\_state}, \texttt{reconnect\_resume\_allowed}, \texttt{running\_timer}, \texttt{pause\_source}), including the \texttt{\_sync\_legacy\_flags} helper that keeps \texttt{banned} and \texttt{submitted} consistent with the resolved state. He wrote the admin command dispatcher \texttt{handle\_admin\_command} covering 38 commands shared between stdin and GUI dispatch: timer/exam control (\texttt{/startexam}, \texttt{/finishexam}, \texttt{/pauseexam}, \texttt{/resumeexam}, \texttt{/addtime}, \texttt{/forgiveviolation}), user moderation (\texttt{/kick}, \texttt{/ban}, \texttt{/unban}, \texttt{/killpid}), settings (\texttt{/editblacklist}, \texttt{/applyblacklist}, \texttt{/editpolicy}, \texttt{/applypolicy}, \texttt{/editdefinitions}, \texttt{/applydefinitions}, \texttt{/editincidentrules}, \texttt{/applyincidentrules}, \texttt{/exportsettings}, \texttt{/importsettings}, \texttt{/remembersettings}), monitoring requests (\texttt{/savescreen}, \texttt{/clients}, \texttt{/exam}, \texttt{/help}), and the discovery announcer and duplicate-server guard wiring with two-layer protection (startup precheck plus runtime guard task).
+
+\textbf{Authentication subsystem.} Barış designed and implemented the entire server-side CATS and Active Directory authentication flow. This includes the \texttt{GET /auth/status} endpoint returning \texttt{cats\_required}, \texttt{ad\_required}, \texttt{cats\_bypass\_until}, \texttt{ad\_bypass\_until}, \texttt{admin\_validation\_required}, \texttt{validation\_status}, \texttt{allowed\_user}, and \texttt{server\_time}; the runtime-only temporary-disable map in \texttt{app["auth\_bypass"]} together with the operator commands \texttt{/disablecatsauth}, \texttt{/disableadauth}, \texttt{/enablecatsauth}, \texttt{/enableadauth}, and \texttt{/authstatus} (default 60-second TTL, server-clamped maximum, never persisted to policy files); the admin-managed credential-validation queue in \texttt{auth\_validation.py} with the workflow \texttt{/authrequests}, \texttt{/approveauth <login\_id> [seconds]}, \texttt{/denyauth <login\_id> [reason]}, where the validation record stores login identifier, IP address, timestamps, and disabled-auth modes but \emph{never} stores the submitted password; and the HMAC token verification path activated by the \texttt{--auth-secret} flag. The \texttt{\_login\_block\_reason} gate covering \texttt{banned}, \texttt{kicked}, \texttt{submitted}, and \texttt{finished} states ensures completed or forbidden users cannot re-enter after lifecycle exit.
+
+\textbf{Critical bug fixes (10 May 2026).} Barış discovered, fixed, and regression-tested three production bugs on the \texttt{baris} git branch immediately before the integration milestone. (i) In \texttt{tasks.py \_handle\_finish\_exam\_global}, a global finish was inadvertently clearing the \texttt{banned} flag on banned users via the legacy-flag sync helper; the fix guards the loop with \texttt{if user.get("banned") or session\_state.derive\_state(user) == BANNED: continue}, and the new regression test \texttt{test\_finish\_exam\_global\_skips\_banned\_user} prevents recurrence. (ii) Some \texttt{/kick} and forced-disconnect paths constructed WebSocket close reasons exceeding the RFC 6455 125-byte control-frame limit, and naive byte slicing risked splitting multi-byte UTF-8 code points; the new helper \texttt{\_safe\_close\_message(reason, max\_bytes=120)} in both \texttt{handlers.py} and \texttt{tasks.py} walks UTF-8 boundaries safely, covered by three new tests (\texttt{keeps\_short\_reason}, \texttt{truncates\_long\_reason}, \texttt{preserves\_utf8\_boundary}). (iii) In \texttt{\_handle\_process\_catch\_event}, error responses for malformed events were sent through a raw \texttt{ws.send\_str} call while an active session security context existed, causing the client to fail decoding; the fix wraps the error envelope with \texttt{\_protect\_payload(client\_id, \dots)} so it respects the active security boundary. Cumulatively these fixes raised the automated test pass rate from 116 of 118 to 149 of 151.
+
+\textbf{Testing and documentation.} Barış authored or extended the test files \texttt{test\_server\_main}, \texttt{test\_server\_app}, \texttt{test\_server\_handlers}, \texttt{test\_server\_tasks}, \texttt{test\_server\_state}, \texttt{test\_server\_shutdown}, \texttt{test\_auth\_bypass}, \texttt{test\_settings\_service}, and \texttt{test\_upload\_multipart\_order}. He produced or co-produced the project's \texttt{FEATURE\_MATRIX.md}, \texttt{FILE\_CLASSIFICATION.md}, \texttt{OWNER\_CONFIRMATION.md}, and \texttt{VALIDATION.md}, and supplied the requirements-traceability inputs for the \texttt{FR-SRV-*} and \texttt{FR-AUTH-*} groups consumed by the final report package. Coordination with the rest of the team covered: event-schema agreement with the client developer (\texttt{incident\_received}, \texttt{kill\_process\_result}, \texttt{session\_state} payload fields), compatibility with the security envelope so server-side \texttt{\_protect\_payload} never bypasses the secured boundary, and compatibility with the discovery announcer for the duplicate-server guard. Summary metrics: 11 server-side modules owned, $\approx$4{,}400 lines authored, 10 HTTP routes, 8 WebSocket event handlers, 38 admin commands, 3 critical demo-blocking bugs fixed, and 9+ regression tests authored.
+
+\subsection{Ahmet Deniz --- Client-Side Developer}
+% TODO: To be completed by Ahmet Deniz. Suggested coverage: client.main and ws_client orchestration,
+% incident engine in client/incidents.py, custommodules (process, focused-window, hardware, idle,
+% replay), transfers/submission pipeline, client GUI bridges (Tk and Qt), reconnect sequencing,
+% process-blacklist severity, focused-window policy refinement, idle policy GUI controls.
+
+\subsection{Naz [Surname] --- Security and Wire Protocol}
+% TODO: To be completed by Naz. Suggested coverage: common/security.py (SessionSecurityContext,
+% HMAC signing, Fernet encryption, replay-window enforcement, key derivation), interaction with
+% common/protocol.py checksum integrity, secured-event coverage list, threat model contribution,
+% and test_security authoring.
+
+\subsection{Engin Erkurt --- Monitoring, Payload Generation, and Network Reliability}
+Engin worked on the monitoring, payload generation, real-time communication, reliability, and final integration parts of the project. He contributed to \texttt{activity\_monitor.py}, which collects operating-system-level activity data from the student machine. In this module, he implemented Windows active-window detection, process-list collection using \texttt{psutil}, idle-time detection, and a unified \texttt{snapshot()} function that gathers the required monitoring data through a single call.
+
+He also worked on \texttt{payload\_builder.py}, where he implemented the violation rule engine and structured JSON payload generation. The supported violation types include \texttt{EXAM\_CLOSED}, \texttt{FOCUS\_LOST}, \texttt{BANNED:<app>}, \texttt{IDLE\_WARN}, and \texttt{IDLE\_CRITICAL}. He added banned-application list management so that raw monitoring data could be transformed into consistent, rule-aware payloads before being sent to the server.
+
+In \texttt{monitor\_loop.py}, Engin implemented the continuous background heartbeat loop with a 5-second interval and added waiting-room support, where the client waits for \texttt{exam\_started\_ack} before beginning the active monitoring flow. He integrated delivery-status tracking and logging so payloads could be classified as \texttt{SENT}, \texttt{BUFFERED}, \texttt{DROPPED}, or \texttt{WAITING}. He also added stub classes for serverless and local test modes, making the monitoring layer easier to test without a live server.
+
+Engin's work on \texttt{network\_sender.py} focused on WebSocket-based real-time transmission and communication reliability. He integrated HMAC-SHA256 signing, Fernet encryption support, and CATS credential handling through the password/hash/signature flow. He standardized timestamps using ISO 8601 format, added CATS password transmission inside \texttt{request\_start\_exam}, implemented two-step waiting-room registration through \texttt{auth\_success} and \texttt{exam\_started\_ack}, and added a background server-push listener for \texttt{exam\_resumed}, \texttt{exam\_end}, and \texttt{sync\_time} events.
+
+For reliability, he added a persistent UUID-based session ID, thread-safe monotonically increasing sequence numbers, and an \texttt{OutboundBuffer} FIFO queue to prevent packet loss during connection failures. He implemented reconnect-safe buffer flushing, re-buffering when a flush operation fails, payload integrity fields such as \texttt{buffered} and \texttt{queued\_at}, improved offline-mode logging with the \texttt{[OFFLINE]} tag, added async thread cleanup through \texttt{\_stop\_background\_loop}, and introduced the \texttt{SKIP\_WAITING\_ROOM} flag for development and testing.
+
+During final integration, Engin tested the interaction between activity monitoring, payload generation, the heartbeat loop, WebSocket communication, waiting-room logic, and offline buffering. He verified that the client could collect activity data, detect violations, generate structured JSON payloads, send payloads through WebSocket, wait for exam-start acknowledgement, continue operating in offline mode, buffer unsent payloads, flush buffered payloads after reconnect, maintain stable session and sequence identifiers, and stop background asynchronous tasks cleanly.
+
+\subsection{Rana Neslihan Kurt --- Qt User Interface, Policy Management, and Dashboard Stabilization}
+Rana led the design and implementation of the instructor-side graphical user interface using PySide6, focusing on transforming disparate monitoring modules into a unified, professional-grade operator dashboard. Her work centered on achieving high visual consistency, stabilizing real-time UI updates under Windows 11 environments, and restoring critical policy-management workflows that had been disrupted during version control synchronization.
+
+\textbf{Unified Dashboard Architecture and Integration.} Rana engineered the primary integration structure in \texttt{main.py}, where she designed a complex layout hierarchy to connect the student monitoring table, summary cards, violation panels, and real-time logs into a single, cohesive workflow. To move away from default widget aesthetics and provide a "professional-grade" feel, she implemented a modern design system using custom QSS (Qt Style Sheets), incorporating glassmorphism-inspired panels, dark-theme refinements, and a dynamic starfield background. She ensured that the summary cards (\texttt{summary\_card.py}) and the alert panel (\texttt{alerts\_panel.py}) provided instantaneous high-level statistics—such as active student counts and severity-weighted incidents—required for rapid operator intervention.
+
+\textbf{Advanced Component Development.} In \texttt{student\_table.py}, Rana optimized the student monitoring grid to handle high-frequency data streams, including login identifiers, IP/UUID metadata, and live window titles. She improved row spacing and status visibility, replacing default Qt styling with a custom visual language. She also developed the \texttt{timeline.py} component for chronological event visualization and the \texttt{report\_screen.py} for post-exam analysis, ensuring that the transition from live supervision to retrospective review followed a consistent design language.
+
+\textbf{Policy Restoration and Data Integration.} A critical contribution was the emergency restoration and reintegration of the Policy Management workflow. Rana re-engineered the non-functional policy-addition flow within the Qt interface, restoring the ability for operators to manage process-blacklist entries and incident rules directly from the UI. She bridged the gap between backend logic and visual components through \texttt{backend\_loader.py}, ensuring that JSON-based data from the server-side was distributed consistently across all dashboard modules.
+
+\textbf{Stability, Scaling, and Demonstration Readiness.} During the final integration phase, Rana focused on Windows 11 compatibility and layout responsiveness. She resolved significant display-scaling issues that distorted layouts on high-resolution screens and addressed UI-refresh instabilities by optimizing widget sizing and rendering logic. These fixes were vital for reducing crash scenarios during bulk actions like global policy distribution. Her work concluded with rigorous smoke testing of the unified interface—validating the interaction between the control panel, student table, and report screens—ensuring the system was stable, visually polished, and fully functional for the final demonstration.
+
+\subsection{İrem [Surname] --- User Interface (Component Set 2)}
+% TODO: To be completed by İrem. Suggested coverage: complementary UI surfaces authored
+% (e.g. Qt dashboard variant, dialog widgets, submission window flow, exam-folder button,
+% projector page styling), accessibility/readability decisions, and any UI-side bug fixes.
+
+\subsection{Mert Özek --- [Role]}
+% TODO: To be completed by the seventh team member.
+
+\section{Conclusion and Future Work}\label{sec:conclusion}
+This paper presented a complete LAN-resident exam runtime system covering authentication, exam lifecycle, multi-dimensional monitoring, incident classification, durable buffering, secure submission, and a public-safe projector view. The architecture deliberately separates the student-facing LAN protocol from same-machine loopback IPC, which keeps administrative semantics out of the protocol exposed to student hosts. The implementation has been validated through 151 automated tests and a documented manual smoke checklist; the remaining mock-related test failures will be addressed in the final delivery.
+
+Future extensions include stronger authentication integration with centralized identity providers, signed settings bundles with policy provenance tracking, more precise browser observation through controlled extensions or accessibility APIs, an automated Windows packaging pipeline, and optional encrypted-at-rest storage for submissions and artifacts. A dedicated operator audit-log export format and per-course/per-exam profile management are also natural next steps.
+
+\section*{Acknowledgment}
+The authors thank the course instructor and laboratory staff at İstanbul Kültür University for guidance during design reviews and the on-site demonstration milestones.
+
+\begin{thebibliography}{00}
+\bibitem{b1} A. Tanenbaum and D. Wetherall, \textit{Computer Networks}, 5th ed. Boston, MA: Pearson, 2011.
+\bibitem{b2} I. Fette and A. Melnikov, ``The WebSocket Protocol,'' RFC~6455, Internet Engineering Task Force, Dec. 2011.
+\bibitem{b3} R. Fielding and J. Reschke, ``Hypertext Transfer Protocol (HTTP/1.1): Message Syntax and Routing,'' RFC~7230, Internet Engineering Task Force, Jun. 2014.
+\bibitem{b4} D. Eastlake and T. Hansen, ``US Secure Hash Algorithms (SHA and SHA-based HMAC and HKDF),'' RFC~6234, Internet Engineering Task Force, May 2011.
+\bibitem{b5} Python Software Foundation, ``\texttt{aiohttp} --- Asynchronous HTTP Client/Server framework,'' [Online]. Available: \url{https://docs.aiohttp.org/}.
+\bibitem{b6} G. Rodola, ``psutil documentation,'' [Online]. Available: \url{https://psutil.readthedocs.io/}.
+\bibitem{b7} Python Cryptographic Authority, ``\texttt{cryptography} library documentation,'' [Online]. Available: \url{https://cryptography.io/}.
+\bibitem{b8} IEEE, ``IEEE Recommended Practice for Software Requirements Specifications,'' IEEE Std 830-1998, 1998.
+\bibitem{b9} ISO/IEC/IEEE, ``Systems and software engineering --- Life cycle processes --- Requirements engineering,'' ISO/IEC/IEEE 29148:2018, 2018.
+\end{thebibliography}
+
+\end{document}

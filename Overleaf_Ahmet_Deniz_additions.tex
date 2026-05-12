@@ -1,0 +1,66 @@
+% ---------------------------------------------------------------------------
+% Plug-and-play addition for Overleaf_existing.txt
+% Author/contributor: Ahmet Deniz Sezgin
+%
+% Paste this block over the existing placeholder:
+% \subsection{Ahmet Deniz --- Client-Side Developer}
+% ... TODO ...
+%
+% This snippet intentionally does not include \documentclass, packages,
+% \begin{document}, bibliography, or \end{document}.
+% It uses only standard commands already supported by the group's IEEEtran file.
+% ---------------------------------------------------------------------------
+
+\subsection{Ahmet Deniz Sezgin --- Client Runtime, Incident Intelligence, UI Stability, and Deployment}
+Ahmet Deniz Sezgin worked on the client-side runtime, incident detection logic, monitoring integration, reconnection resilience, dashboard usability fixes, projection frontend, documentation, and deployment packaging of the exam system. His contribution focused on making the student-side application reliable during real exam conditions while also improving the operator-facing surfaces that depend on client-generated state. The work was not limited to a single screen or module; it connected the client runtime, shared protocol helpers, incident-rule definitions, Tk/Qt user interfaces, server-facing evidence flow, and final deployment bundles into a consistent implementation.
+
+\textbf{Client runtime and reconnect sequence.} Ahmet contributed to the redesign of the client runtime so that a WebSocket disconnection is treated as a network state rather than as a shutdown of local observation. In earlier iterations, several local components were tied too closely to the active WebSocket session, meaning that a temporary network break could stop process logging, focused-window logging, idle detection, hardware logging, GUI updates, and incident processing. The revised design separates the persistent per-exam runtime from the connection-attempt scope. The client continues to run local monitors, write JSONL logs, maintain the timer/submission GUI bridge, and keep the replay recorder alive while the network layer reconnects. This directly improves evidence continuity in laboratory conditions where WiFi or switch-level interruptions may occur during an exam.
+
+He also worked on the offline incident-buffering path. Incidents generated while disconnected are queued with stable sequence information, queued timestamps, and a buffered marker rather than being dropped. After reconnection, the client flushes buffered incidents in order and keeps unacknowledged records until the server confirms receipt. This behaviour reduces the risk that a violation or warning disappears simply because the client was temporarily disconnected. The same design principle was applied to pending evidence status so that replay, process, focus, and other artifact uploads can be retried after the connection is restored.
+
+\textbf{Monitoring and incident-rule engine.} A major part of Ahmet's work was the conversion of focused-window and titlebar matching from simple global string lists into a reusable incident-rule system. The incident-rule model supports rule statuses such as \texttt{unknown}, \texttt{whitelist}, \texttt{warning}, and \texttt{blacklist}; match fields such as event type, source, process names, browser process names, window-title patterns, match mode, and priority; and configured actions such as ban, kick, pause exam, or kill process when context allows. The resulting rule engine allows operators to treat incidents as policy definitions that can be saved, reviewed, and reused instead of handling every incident as a one-time event.
+
+Ahmet specifically addressed titlebar matching reliability for real browser behaviour. Browser titles from Microsoft Edge, Chrome, Yandex, and similar browsers can contain long suffixes, profile names, search-result text, localized characters, and invisible Unicode spacing characters. These titles previously created fragile matches and, in some cases, could silently disable the effective monitoring path without crashing the application. The updated logic normalizes display text, removes unsafe or invisible characters, and encourages reusable \texttt{contains} patterns rather than saving full observed window titles. For example, an operator can save the pattern \texttt{whatsapp} and have it match titles such as \texttt{WhatsApp - Microsoft Edge}, Yandex search results containing WhatsApp, or Chrome/Edge variants, instead of needing a separate exact rule for each full title string.
+
+Ahmet also extended executable matching so process rules can use wildcard-style patterns. This matters for applications such as WhatsApp where desktop executables and helper processes may use multiple related names. A single reusable process definition can therefore match a family of executable names instead of requiring the operator to manually enter each variant. This work preserved backward compatibility with existing exact and contains process definitions while making the policy database more practical for real-world software.
+
+\textbf{Incident Rules tab and decision workflow.} Ahmet helped design the Incident Rules workflow as a counterpart to the existing process-definition database. The dashboard now has a rule-oriented view where operators can review rule rows, see match summaries, inspect affected students or recent evidence, and store decisions for future incidents. The ``Save as Rule'' flow from Incident History was refined so that titlebar incidents prefill editable, reusable patterns rather than blindly storing the entire observed title. This connects incident review to long-term policy maintenance: a violation seen once can become an explicit future whitelist, warning, or blacklist rule.
+
+\textbf{Dashboard UI stability in Tk and Qt.} Ahmet worked on the usability problems caused by live dashboard refreshes. Before these fixes, tables could rebuild every second during timer updates, causing scrollbars to jump, horizontal scroll position to reset, selected rows to flicker, and the operator to lose context while reviewing clients, incidents, process definitions, or incident rules. The improved table-refresh design uses row identities and fingerprints to decide whether a full rebuild is actually necessary. When row order and identity remain stable, only cell values are updated in place. When a rebuild is unavoidable, scroll position, horizontal scroll, focus, and selection are preserved where possible.
+
+He also addressed row hover feedback in both UI backends. In several lists, hovering highlighted only one cell instead of the full row, making it difficult to visually track wide rows on dense dashboards. The Tk Treeview and Qt table/tree widgets were adjusted so hover feedback spans the full row without overriding selected-row state. These changes make the operator UI more predictable during high-frequency updates.
+
+\textbf{Authentication bypass and admin validation.} Ahmet worked on the temporary authentication-disable workflow for CATS and Active Directory edge cases. The goal was not to allow unrestricted bypass, but to place affected login attempts into an admin-managed validation state. The server exposes \texttt{/auth/status?login\_id=<id>} so clients can ask whether CATS and AD checks are currently required, whether a temporary disable window is active, whether the login ID is allowed, and whether admin validation is pending, approved, or denied. Commands such as \texttt{/disablecatsauth}, \texttt{/disableadauth}, \texttt{/disableauth}, \texttt{/enableauth}, \texttt{/authrequests}, \texttt{/approveauth}, and \texttt{/denyauth} allow the operator to temporarily handle login failures without permanently weakening policy. The workflow is runtime-only and does not store submitted passwords in the validation queue.
+
+\textbf{Exam files, folder visibility, and submission usability.} Ahmet contributed to the exam-material handling flow. Downloaded exam ZIP files are retained under the client data folder and are safely extracted to a dated folder under the student's Desktop Exam directory. The extraction logic rejects unsafe archive members such as path traversal entries, absolute paths, drive-letter paths, and unsafe names. It also avoids deleting unmarked user content by using a managed-folder marker and safe suffixes when needed. The client UI exposes an Exam Folder button after extraction, while the server dashboard can show folder information for the selected user, including expected client-side exam material location and server-side submission or artifact paths.
+
+\textbf{Read-only projector frontend.} Ahmet designed and implemented the read-only projector notification frontend intended for low-resolution, high-inch classroom projection. The projector page is served from \texttt{/projector}, receives live updates from \texttt{/projector/events}, and uses a privacy-safe payload containing only aggregate exam phase, connection counts, active warning/violation counts, submission counts, server time, and generic notifications. It intentionally excludes login IDs, UUIDs, IP addresses, process names, window titles, artifact paths, submission paths, and evidence details. The frontend was split into separate HTML, CSS, and JavaScript files so that the HTTP-facing UI is easier to review and maintain.
+
+\textbf{Deployment split and offline installer hardening.} Ahmet prepared deployment-oriented packaging for the project. The \texttt{May\_12} split separates the system into \texttt{setup}, \texttt{client}, and \texttt{server} folders so the client and server bundles can be deployed independently. Shared modules such as \texttt{common} and shared UI helpers are duplicated into each side, while server runtime code is not placed inside the client bundle and client runtime code is not placed inside the server bundle. He also improved the offline installer approach by avoiding global machine-wide \texttt{site-packages}. Dependencies are installed into a shared virtual environment or per-bundle virtual environment, offline wheels are resolved from a local wheelhouse, large binary payloads are separated from source, and a SHA-256 manifest verifies bundled files where available.
+
+\textbf{Documentation and requirements traceability.} Ahmet prepared final documentation assets for the implementation, including a professional SRS-style report package, Overleaf-compatible SRS files, and contributor-focused documentation for his assigned parts. The documentation covers server/client requirements, local IPC, LAN WebSocket separation, incident-rule behaviour, reconnect buffering, projector privacy, installer compatibility, validation commands, and deployment assumptions. This work improves project maintainability because later developers can understand the system requirements and rebuild the implementation without relying only on source-code inspection.
+
+Overall, Ahmet's contribution strengthened the system in five practical areas: preserving client-side evidence during reconnects, making titlebar and process matching reusable rather than one-off, stabilizing live operator dashboards, providing safer admin-controlled authentication recovery, and preparing the project for independent client/server deployment. These changes directly support the project's reliability, usability, and maintainability goals during real laboratory exam operation.
+
+% Optional compact contribution table. If the paper is already too long,
+% this table can be omitted and the subsection above can stand alone.
+\begin{table}[htbp]
+\caption{Summary of Ahmet Deniz Sezgin's Main Contributions}
+\centering
+\begin{tabular}{p{0.28\linewidth} p{0.62\linewidth}}
+\toprule
+\textbf{Area} & \textbf{Contribution} \\
+\midrule
+Client runtime & Reconnect-safe local logging, persistent runtime separation, buffered incidents, evidence retry. \\
+Incident logic & Incident-rule definitions, reusable titlebar patterns, Unicode-safe matching, wildcard executable matching. \\
+User interface & Smooth Tk/Qt dashboard refresh, full-row hover, stable scroll and selection handling. \\
+Authentication & Temporary CATS/AD disable with admin validation and server-side status endpoint. \\
+File handling & Safe exam ZIP extraction, Desktop Exam folder flow, client/server folder-info UI. \\
+Projector & Read-only projection page, SSE feed, privacy-safe aggregate notification payload. \\
+Deployment & Split client/server deployment folder, offline installer hardening, shared virtual environment strategy. \\
+Documentation & SRS package, Overleaf-ready documentation, contributor-focused requirement traceability. \\
+\bottomrule
+\end{tabular}
+\label{tab:ahmet-contrib}
+\end{table}
+
