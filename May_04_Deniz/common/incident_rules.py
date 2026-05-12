@@ -22,6 +22,7 @@ DEFAULT_NEW_TAB_PATTERNS = (
     "Yeni Sekme",
     "Yeni sekme",
 )
+PROCESS_NAME_PLACEHOLDERS = {"?", "-", "--", "unknown", "n/a", "na", "none", "null"}
 
 
 def _string_list(values) -> list[str]:
@@ -38,6 +39,25 @@ def _string_list(values) -> list[str]:
             continue
         seen.add(key)
         cleaned.append(text)
+    return cleaned
+
+
+def _is_placeholder_process_name(value: str) -> bool:
+    clean = str(value or "").strip().lower()
+    return clean in PROCESS_NAME_PLACEHOLDERS
+
+
+def _process_name_list(values) -> list[str]:
+    cleaned = []
+    seen = set()
+    for value in _string_list(values):
+        clean = _process_name(value)
+        if not clean or _is_placeholder_process_name(clean):
+            continue
+        if clean in seen:
+            continue
+        seen.add(clean)
+        cleaned.append(clean)
     return cleaned
 
 
@@ -70,8 +90,8 @@ def stable_incident_rule_key(rule: dict | None) -> str:
         str(rule.get("event_type", "") or "").strip(),
         str(rule.get("source", "") or "").strip(),
         normalize_match_mode(rule.get("match_mode")),
-        "|".join(normalize_for_match(value) for value in _string_list(rule.get("process_names", []))),
-        "|".join(normalize_for_match(value) for value in _string_list(rule.get("browser_process_names", []))),
+        "|".join(normalize_for_match(value) for value in _process_name_list(rule.get("process_names", []))),
+        "|".join(normalize_for_match(value) for value in _process_name_list(rule.get("browser_process_names", []))),
         "|".join(normalize_for_match(value) for value in _string_list(rule.get("window_title_patterns", []))),
     ]
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
@@ -82,13 +102,13 @@ def normalize_incident_rule(raw: dict | None, *, now: str | None = None) -> dict
     if not isinstance(raw, dict):
         raw = {}
     now = now or protocol.now_iso()
-    process_names = _string_list(raw.get("process_names", []))
-    if not process_names and raw.get("process_name"):
-        process_names = _string_list([raw.get("process_name")])
     window_patterns = _string_list(raw.get("window_title_patterns", []))
     if not window_patterns and raw.get("window_title"):
         window_patterns = _string_list([raw.get("window_title")])
-    browser_process_names = _string_list(raw.get("browser_process_names", []))
+    process_names = _process_name_list(raw.get("process_names", []))
+    if not process_names and raw.get("process_name") and not window_patterns:
+        process_names = _process_name_list([raw.get("process_name")])
+    browser_process_names = _process_name_list(raw.get("browser_process_names", []))
     actions = normalize_actions(raw.get("actions") or raw.get("saved_actions"))
     normalized = {
         "definition_id": str(raw.get("definition_id") or raw.get("id") or "").strip(),
@@ -288,7 +308,7 @@ def incident_rule_from_incident(incident: dict, *, status: str = "unknown", acti
         "rule_id": str(incident.get("rule_id") or "").strip(),
         "event_type": str(incident.get("event_type") or incident.get("rule_id") or "").strip(),
         "source": str(incident.get("source") or "").strip(),
-        "process_names": [process_name] if process_name else [],
+        "process_names": [] if window_title else ([process_name] if process_name else []),
         "window_title_patterns": [window_title] if window_title else [],
         "match_mode": "contains" if window_title else "exact",
         "priority": 0,

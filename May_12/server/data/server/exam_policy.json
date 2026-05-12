@@ -23,7 +23,7 @@
       "window_title_match_mode": "contains",
       "open_after_consecutive": 3,
       "resolve_after_consecutive": 2,
-      "auto_violation_pause": false
+      "auto_violation_pause": true
     },
     "rapid_application_switching": {
       "enabled": false,

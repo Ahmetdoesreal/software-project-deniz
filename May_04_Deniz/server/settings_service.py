@@ -412,7 +412,23 @@ def update_incident_rules(
 
 
 def upsert_incident_rule(state, definition: dict, *, actor="admin") -> SettingsResult:
+    if not isinstance(definition, dict):
+        return _error_result("Incident rule must be an object.", state)
+
+    incoming_identity = {
+        str(definition.get(key, "") or "").strip()
+        for key in ("definition_id", "id", "rule_key")
+        if str(definition.get(key, "") or "").strip()
+    }
     normalized = normalize_incident_rule(definition)
+    incoming_identity.update(
+        value
+        for value in (
+            str(normalized.get("definition_id", "") or "").strip(),
+            str(normalized.get("rule_key", "") or "").strip(),
+        )
+        if value
+    )
     if not any(
         normalized.get(key)
         for key in ("rule_id", "event_type", "source", "process_names", "browser_process_names", "window_title_patterns")
@@ -422,16 +438,21 @@ def upsert_incident_rule(state, definition: dict, *, actor="admin") -> SettingsR
     current = incident_rules(state)
     updated: list[dict] = []
     replaced = False
+    replacement_added = False
     for existing in current:
-        same_id = existing.get("definition_id") == normalized.get("definition_id")
-        same_key = existing.get("rule_key") == normalized.get("rule_key")
+        existing_id = str(existing.get("definition_id", "") or "").strip()
+        existing_key = str(existing.get("rule_key", "") or "").strip()
+        same_id = existing_id and existing_id in incoming_identity
+        same_key = existing_key and existing_key in incoming_identity
         if same_id or same_key:
-            merged = {
-                **existing,
-                **normalized,
-                "created_at": existing.get("created_at") or normalized.get("created_at"),
-            }
-            updated.append(normalize_incident_rule(merged))
+            if not replacement_added:
+                merged = {
+                    **existing,
+                    **normalized,
+                    "created_at": existing.get("created_at") or normalized.get("created_at"),
+                }
+                updated.append(normalize_incident_rule(merged))
+                replacement_added = True
             replaced = True
         else:
             updated.append(existing)

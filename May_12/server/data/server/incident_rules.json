@@ -35,5 +35,35 @@
     "decided_at": "",
     "decided_by": "",
     "decision_reason": ""
+  },
+  {
+    "definition_id": "a329fa9d0569dfbf98c4cc88",
+    "rule_key": "ccaaf3724c7958d1de99149f",
+    "name": "focused_window_policy",
+    "status": "warning",
+    "actions": {
+      "ban": false,
+      "kick": false,
+      "pause_exam": false,
+      "kill_pid": true
+    },
+    "rule_id": "focused_window_policy",
+    "event_type": "focused_window_policy",
+    "source": "focused_window",
+    "process_names": [],
+    "browser_process_names": [],
+    "window_title_patterns": [
+      "WhatsApp"
+    ],
+    "match_mode": "contains",
+    "priority": 5,
+    "source_incident_id": "23372b2d-eb01-468c-815d-657458fdf0e4",
+    "matching_history": [],
+    "previous_matching_entries": [],
+    "created_at": "2026-05-12T09:24:23.459962+00:00",
+    "updated_at": "2026-05-12T09:24:23.459962+00:00",
+    "decided_at": "2026-05-12T09:24:23.459962+00:00",
+    "decided_by": "admin_gui",
+    "decision_reason": ""
   }
 ]

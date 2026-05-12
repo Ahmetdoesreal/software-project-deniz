@@ -25,6 +25,7 @@ from server.settings_service import (
     build_incident_rules_database,
     build_process_database,
     update_incident_rules,
+    upsert_incident_rule,
 )
 from server.state import state
 
@@ -550,6 +551,45 @@ class ProcessDatabaseTests(unittest.TestCase):
         self.assertEqual(definition["browser_process_names"], [])
         self.assertEqual(definition["match_mode"], "contains")
         self.assertTrue(definition["actions"]["kill_pid"])
+
+    def test_incident_rule_edit_replaces_old_rule_when_match_fields_change(self):
+        with _isolated_state():
+            old_rule = normalize_incident_rule(
+                {
+                    "name": "Old WhatsApp title",
+                    "status": "warning",
+                    "rule_id": "focused_window_policy",
+                    "event_type": "focused_window_policy",
+                    "source": "focused_window",
+                    "process_names": ["msedge.exe"],
+                    "window_title_patterns": ["WhatsApp - Microsoft Edge"],
+                    "match_mode": "contains",
+                }
+            )
+            update_incident_rules(state, [old_rule])
+
+            result = upsert_incident_rule(
+                state,
+                {
+                    "rule_key": old_rule["rule_key"],
+                    "name": "WhatsApp title",
+                    "status": "blacklist",
+                    "rule_id": "focused_window_policy",
+                    "event_type": "focused_window_policy",
+                    "source": "focused_window",
+                    "process_names": [],
+                    "browser_process_names": [],
+                    "window_title_patterns": ["whatsapp"],
+                    "match_mode": "contains",
+                },
+            )
+
+            self.assertTrue(result.ok, result.message)
+            definitions = state.rule_config("incident_rules")["definitions"]
+            self.assertEqual(len(definitions), 1)
+            self.assertEqual(definitions[0]["window_title_patterns"], ["whatsapp"])
+            self.assertEqual(definitions[0]["process_names"], [])
+            self.assertNotEqual(definitions[0]["rule_key"], old_rule["rule_key"])
 
 
 if __name__ == "__main__":

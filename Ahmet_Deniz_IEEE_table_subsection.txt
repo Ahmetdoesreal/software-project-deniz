@@ -1,0 +1,61 @@
+\subsection{Ahmet Deniz Sezgin --- Client-Side Developer}
+Ahmet Deniz Sezgin contributed to the client-side runtime, monitoring and incident pipeline, reconnect reliability, operator-facing dashboard stability, authentication recovery workflow, projector frontend, deployment packaging, and final documentation. His work focused on keeping student-side evidence collection reliable during realistic laboratory exam conditions while also improving the server-facing and operator-facing workflows that depend on client state.
+
+\begin{table*}[htbp]
+\caption{Ahmet Deniz Sezgin's Client-Side Development Contributions}
+\centering
+\small
+\begin{tabular}{p{0.16\textwidth} p{0.24\textwidth} p{0.34\textwidth} p{0.18\textwidth}}
+\toprule
+\textbf{Area} & \textbf{Problem Addressed} & \textbf{Implemented Contribution} & \textbf{Engineering Impact} \\
+\midrule
+Client runtime and reconnect sequence
+& A transient WebSocket failure could interrupt local observation or make the client appear active while evidence collection had stopped.
+& Separated persistent per-exam runtime components from connection-attempt components. Local process monitoring, focused-window monitoring, idle detection, hardware logging, JSONL logging, timer GUI communication, replay recording, and incident processing continue while the WebSocket layer reconnects.
+& Improves evidence continuity and makes the student client more reliable during network instability. \\
+\midrule
+Offline incident buffering and evidence retry
+& Incidents generated while disconnected could be dropped, restored more than once, or lose pending evidence-upload state.
+& Added durable queued incident records with stable sequence metadata, queued timestamps, buffered markers, ordered reconnect flush, acknowledgement-based removal, deduplicated restore, and retryable evidence upload state.
+& Reduces incident loss and preserves violation/warning evidence across reconnects. \\
+\midrule
+Incident-rule and matching logic
+& Focused-window and titlebar decisions were fragile global strings and did not become reusable operator policy.
+& Helped convert decisions into incident-rule definitions with \texttt{unknown}, \texttt{whitelist}, \texttt{warning}, and \texttt{blacklist} statuses; priority; match fields; configured actions; normalized titlebar matching; reusable \texttt{contains} patterns; Unicode-safe text cleanup; and wildcard-compatible executable matching.
+& Makes browser-title and process policy reusable, maintainable, and more robust on real student machines. \\
+\midrule
+Incident Rules workflow
+& One-time incident decisions were not cleanly saved as future policy.
+& Refined the Incident Rules tab and the Save as Rule flow so incidents can prefill editable rule data, including process restrictions, title patterns, match mode, status, priority, and actions.
+& Connects live incident review to long-term policy maintenance. \\
+\midrule
+Tk/Qt dashboard stability
+& Live dashboard refreshes could reset vertical scroll, horizontal scroll, selection, and focused rows while operators reviewed dense tables.
+& Added row identity and row fingerprint based refresh behaviour, in-place cell updates when row order is stable, scroll and selection restoration when rebuilds are required, and full-row hover feedback for Tk and Qt lists.
+& Keeps client, incident, process-definition, and incident-rule tables usable during high-frequency exam updates. \\
+\midrule
+Authentication recovery workflow
+& Temporary CATS or Active Directory disable could be misinterpreted as unrestricted login bypass.
+& Contributed to the admin-managed validation workflow using \texttt{/auth/status}, temporary disable state, pending approval, approval, and denial paths without storing submitted passwords in the validation queue.
+& Provides bounded operator recovery during authentication outages without permanently weakening access control. \\
+\midrule
+Exam folder and file handling
+& Exam materials needed safe extraction and clear visibility for both student and operator workflows.
+& Added safe ZIP extraction to the Desktop Exam folder, unsafe-member rejection, managed-folder marker logic, safe fallback folders, client Exam Folder access, and server-side folder information visibility.
+& Improves exam-material usability while protecting existing user folders from accidental deletion or unsafe archive paths. \\
+\midrule
+Projector frontend
+& The operator dashboard was too dense and private for classroom projection.
+& Implemented a read-only projector page served from \texttt{/projector} with live updates from \texttt{/projector/events}, large projection-friendly layout, separated HTML/CSS/JS assets, and aggregate-only privacy-safe payloads.
+& Supports public in-room display without exposing login IDs, UUIDs, IP addresses, process names, window titles, artifact paths, submission paths, or evidence details. \\
+\midrule
+Deployment and documentation
+& Client and server responsibilities were mixed, and final setup needed clearer rebuild and installation guidance.
+& Prepared the \texttt{May\_12/setup}, \texttt{May\_12/client}, and \texttt{May\_12/server} split; supported offline dependency setup with project-specific virtual environments, local wheelhouse resolution, SHA-256 manifest verification, deployment notes, SRS material, validation records, and Overleaf-ready contribution text.
+& Makes the system easier to deploy independently on student and operator machines and easier to review or rebuild. \\
+\bottomrule
+\end{tabular}
+\label{tab:ahmet-deniz-client-contrib}
+\end{table*}
+
+In validation and documentation work, Ahmet also supported compile checks, test-suite validation, client/server split review, projector privacy checks, incident-rule and titlebar matching tests, offline dependency dry runs, and final SRS-style reporting. Overall, the contribution strengthened the system in client-side reliability, reusable incident intelligence, operator usability, bounded authentication recovery, privacy-safe projection, and deployment maintainability.

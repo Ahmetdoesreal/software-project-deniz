@@ -5,6 +5,7 @@ from common.incident_rules import (
     best_incident_rule,
     default_incident_rules,
     incident_matches_rule,
+    incident_rule_from_incident,
     normalize_incident_rule,
 )
 
@@ -103,6 +104,60 @@ class IncidentRulesTests(unittest.TestCase):
         }
 
         self.assertTrue(incident_matches_rule(incident, rule))
+
+    def test_title_rule_from_incident_is_title_only(self):
+        rule = incident_rule_from_incident(
+            {
+                "rule_id": "focused_window_policy",
+                "event_type": "focused_window_policy",
+                "source": "focused_window",
+                "process_name": "msedge.exe",
+                "window_title": "WhatsApp - Microsoft Edge",
+            },
+            status="blacklist",
+        )
+
+        self.assertEqual(rule["window_title_patterns"], ["WhatsApp - Microsoft Edge"])
+        self.assertEqual(rule["match_mode"], "contains")
+        self.assertEqual(rule["process_names"], [])
+        self.assertTrue(
+            incident_matches_rule(
+                {
+                    "rule_id": "focused_window_policy",
+                    "event_type": "focused_window_policy",
+                    "source": "focused_window",
+                    "process_name": "chrome.exe",
+                    "window_title": "WhatsApp - Google Chrome",
+                },
+                {**rule, "window_title_patterns": ["WhatsApp"]},
+            )
+        )
+
+    def test_placeholder_process_scope_is_removed_from_title_rule(self):
+        rule = normalize_incident_rule(
+            {
+                "rule_id": "focused_window_policy",
+                "event_type": "focused_window_policy",
+                "source": "focused_window",
+                "process_names": ["?"],
+                "window_title_patterns": ["WhatsApp"],
+                "match_mode": "contains",
+            }
+        )
+
+        self.assertEqual(rule["process_names"], [])
+        self.assertTrue(
+            incident_matches_rule(
+                {
+                    "rule_id": "focused_window_policy",
+                    "event_type": "focused_window_policy",
+                    "source": "focused_window",
+                    "process_name": "msedge.exe",
+                    "window_title": "WhatsApp - Microsoft Edge",
+                },
+                rule,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,181 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\title{May 12 Patch and Additions Report:\\
+Reliability, Incident Rules, UI Stabilization, Deployment, and Documentation}
+
+\author{
+\IEEEauthorblockN{Project Patch Report}
+\IEEEauthorblockA{\textit{Network-Based Laboratory Exam System}\\
+Current baseline: \texttt{May\_04\_Deniz} and \texttt{May\_12}}
+}
+
+\maketitle
+
+\begin{abstract}
+This report summarizes the major patches and additions prepared during the May 12 work cycle for the LAN-based laboratory exam system. The work strengthened server correctness, client reconnect reliability, offline incident buffering, incident-rule handling, titlebar and executable matching, Tk/Qt dashboard stability, authentication validation, public projector display, deployment packaging, offline installer safety, and documentation. The report follows the structure of the previous engineering reports by describing baseline scope, patch inventory, technical impact, validation, known limitations, and conclusion.
+\end{abstract}
+
+\begin{IEEEkeywords}
+exam monitoring, patch report, reconnect buffering, incident rules, titlebar matching, dashboard stability, deployment split
+\end{IEEEkeywords}
+
+\section{Background and Scope}
+
+The project is a local-area-network exam platform with one authoritative server and many student clients. The server owns user state, exam phase, policy, incident history, submissions, artifacts, and operator commands. The client owns local monitoring, evidence capture, focused-window observation, process scanning, timer and submission UI, incident generation, and final upload.
+
+The authoritative source baseline for this patch report is \texttt{May\_04\_Deniz}. The deployment output baseline is \texttt{May\_12}, which separates the project into \texttt{setup}, \texttt{client}, and \texttt{server} bundles. Older folders are treated as historical references only.
+
+\section{Patch Inventory}
+
+\begin{table*}[htbp]
+\caption{Major Patches and Additions}
+\centering
+\begin{tabular}{P{0.16\linewidth} P{0.26\linewidth} P{0.30\linewidth} P{0.18\linewidth}}
+\toprule
+\textbf{Area} & \textbf{Problem} & \textbf{Patch or Addition} & \textbf{Main Effect} \\
+\midrule
+Server finish state & Global finish could reset banned users. & Banned users are skipped during \texttt{/finishexam}. & Banned state remains authoritative. \\
+\midrule
+WebSocket close reason & Long close reasons could exceed close-frame limits. & Added UTF-8-safe close-message trimming. & Reliable disconnect reasons. \\
+\midrule
+Secured error path & Malformed process-catch errors could bypass encryption. & Wrapped malformed-event errors through payload protection. & Security consistency. \\
+\midrule
+Incident rules & Global string lists were not reusable enough. & Added whitelist, warning, blacklist incident-rule definitions. & Operator decisions become policy. \\
+\midrule
+Titlebar matching & Full observed browser titles were fragile. & Defaulted saved title rules to reusable \texttt{contains} patterns. & Robust browser-title matching. \\
+\midrule
+Unicode safety & Invisible title characters could break matching. & Normalized and sanitized title text. & Prevents silent matcher failure. \\
+\midrule
+Executable matching & App families needed many exact process names. & Added wildcard-compatible process matching. & One rule covers variants. \\
+\midrule
+Dashboard refresh & Live updates reset scroll and selection. & Added row fingerprints and in-place updates. & Smooth operator review. \\
+\midrule
+Full-row hover & Lists highlighted one cell only. & Added full-row hover for Tk and Qt. & Better visual scanning. \\
+\midrule
+Reconnect logging & Disconnects could stop local monitoring. & Treated disconnect as network state, not runtime shutdown. & Evidence continuity. \\
+\midrule
+Incident buffering & Offline incidents could be lost. & Added durable queue metadata and ordered flush. & Reliable incident delivery. \\
+\midrule
+Exam files & ZIP extraction and folder visibility needed hardening. & Added safe Desktop Exam extraction and folder-info UI. & Safer student material access. \\
+\midrule
+Auth disable & Disable could be confused with direct bypass. & Added admin-managed validation state. & Safer auth recovery. \\
+\midrule
+Projector & Dashboard was unsuitable for projection. & Added read-only projector page and SSE feed. & Public-safe classroom display. \\
+\midrule
+Deployment & Client/server files were mixed. & Created \texttt{May\_12/setup}, \texttt{client}, and \texttt{server}. & Independent deployment. \\
+\midrule
+Installer & Machine-wide pip installs are risky. & Used virtualenvs, wheelhouse, manifest verification. & Safer dependency setup. \\
+\midrule
+Documentation & Review/rebuild docs were incomplete. & Added SRS, final report, Overleaf, and contribution docs. & Better maintainability. \\
+\bottomrule
+\end{tabular}
+\label{tab:patch-inventory}
+\end{table*}
+
+\section{Server-Side Correctness Patches}
+
+The server-side patch set imported compatible fixes from the May 10 work without copying whole files over newer code. The global finish path now skips banned users and reports the skipped count. WebSocket close messages are trimmed safely within byte limits without splitting UTF-8 characters. Malformed process-catch errors are protected by the existing security envelope when a secured session is active.
+
+\section{Incident Rules and Matching}
+
+The incident system was extended from simple global title lists into reusable incident-rule definitions. Rules can classify events as \texttt{unknown}, \texttt{whitelist}, \texttt{warning}, or \texttt{blacklist}. They can match on event type, source, process names, browser process names, normalized window-title patterns, match mode, and priority. Whitelist rules suppress candidates before warning or blacklist rules. Warning and blacklist rules attach severity and configured action metadata.
+
+The titlebar save path now prefers reusable \texttt{contains} patterns, such as \texttt{whatsapp}, rather than storing entire observed browser titles. This is necessary because browser titles can include search text, profile suffixes, localized strings, browser names, and invisible Unicode spacing. Browser approval remains titlebar-based only; it does not extract URLs.
+
+Executable matching was also extended with wildcard-compatible matching so one process definition can cover application families and desktop-helper executables while preserving exact and contains compatibility.
+
+\section{UI Stabilization}
+
+Tk and Qt dashboard lists previously refreshed too aggressively. Frequent timer updates could rebuild tables, reset vertical and horizontal scrollbars, clear selection, and disrupt operator focus. The updated design uses row keys and fingerprints to decide whether a rebuild is necessary. Stable rows are updated in place. If a rebuild is unavoidable, scroll, focus, and selection are restored where possible.
+
+Full-row hover feedback was added so wide rows are easier to scan. Selected-row state remains stronger than hover state.
+
+\section{Reconnect, Buffering, and Evidence}
+
+The client reconnect design now treats disconnects as network state rather than local shutdown. Process, focused-window, idle, hardware, exam-state, incident, GUI, and replay components remain active while the WebSocket reconnects. Incidents generated while disconnected are written to a durable queue with sequence metadata, queued timestamps, and a buffered marker. After reconnect, incidents flush in order and remain on disk until acknowledged. Evidence upload status is retried after reconnect.
+
+\section{Auth Validation and Exam Files}
+
+Temporary CATS or AD disable now enters an admin-managed validation state instead of directly admitting a client. The client checks \texttt{/auth/status?login\_id=<id>} before deciding preflight behaviour. Operators can inspect, approve, or deny pending attempts.
+
+Exam material handling was hardened by safely extracting ZIP content to a dated Desktop Exam folder. Unsafe archive members are rejected, managed folders are marked, and unmarked user folders are not deleted. Client and server UI surfaces expose folder information where useful.
+
+\section{Projector Frontend}
+
+The read-only projector page provides large, high-contrast, projection-safe notifications for classroom display. It is served from \texttt{/projector} and receives live aggregate updates through \texttt{/projector/events}. The frontend was split into HTML, CSS, and JavaScript assets.
+
+The projector payload excludes login IDs, UUIDs, IP addresses, process names, window titles, artifact paths, submission paths, and evidence details.
+
+\section{Deployment and Installer}
+
+The \texttt{May\_12} deployment split separates setup assets, client runtime, and server runtime. Shared modules such as \texttt{common} are duplicated into the client and server bundles so each side can be deployed independently.
+
+The installer/setup design avoids global Python \texttt{site-packages}. Packages install into virtual environments, dependencies are resolved from a local wheelhouse, and bundled payloads can be checked with a SHA-256 manifest. The current wheelhouse is Python 3.13/Windows x64 oriented and must be rebuilt for Python 3.14.
+
+\section{Documentation and Repository Hygiene}
+
+Documentation additions include SRS-style Markdown, Overleaf-compatible SRS files, final report documents, contribution snippets, standalone contribution reports, deployment notes, and this patch report. Repository hygiene was improved through a broader \texttt{.gitignore} that ignores runtime logs, student evidence, submissions, artifacts, recordings, caches, virtual environments, and heavy installer binaries while keeping safe policy defaults versionable.
+
+\section{Validation Summary}
+
+\begin{table}[htbp]
+\caption{Validation Summary}
+\centering
+\begin{tabular}{P{0.48\linewidth} P{0.38\linewidth}}
+\toprule
+\textbf{Check} & \textbf{Result} \\
+\midrule
+\texttt{python -m compileall -q .} & Passed. \\
+\texttt{python -m unittest discover -s tests} & 168 tests passed. \\
+\texttt{python -m pip check} & No broken requirements found. \\
+Offline pip dry-run & Passed. \\
+Manifest verification & Passed. \\
+\texttt{May\_12/client} compile check & Passed. \\
+\texttt{May\_12/server} compile check & Passed. \\
+Client/server cross-import scan & Passed. \\
+CLI help import checks & Passed. \\
+Overleaf snippet ASCII checks & Passed. \\
+\bottomrule
+\end{tabular}
+\label{tab:validation}
+\end{table}
+
+\section{Known Limitations}
+
+\begin{itemize}
+    \item The copied wheelhouse targets Python 3.13 on Windows x64; Python 3.14 requires a rebuilt wheelhouse.
+    \item Some UI behaviours still require manual smoke testing on actual Windows 11 lab machines.
+    \item Browser approval is titlebar-based only and does not extract URLs.
+    \item Offline installer scripts were not run as a full elevated install in this workspace.
+    \item \texttt{pdflatex} was not available locally, so LaTeX files were not compiled locally.
+    \item The Git CLI was not available in the shell, so \texttt{git check-ignore} could not be run directly.
+\end{itemize}
+
+\section{Conclusion}
+
+The May 12 work cycle improved the exam platform's reliability, policy maintainability, operator usability, privacy posture, deployment readiness, and documentation quality. The most important runtime result is that transient network loss no longer implies local evidence loss. The most important policy result is that titlebar and process decisions are reusable definitions rather than one-off strings. The most important operational result is the \texttt{May\_12} split into setup, client, and server deployment bundles.
+
+\begin{thebibliography}{00}
+\bibitem{b1} I. Fette and A. Melnikov, ``The WebSocket Protocol,'' RFC 6455, Internet Engineering Task Force, Dec. 2011.
+\bibitem{b2} IEEE, ``IEEE Recommended Practice for Software Requirements Specifications,'' IEEE Std 830-1998, 1998.
+\bibitem{b3} ISO/IEC/IEEE, ``Systems and software engineering -- Life cycle processes -- Requirements engineering,'' ISO/IEC/IEEE 29148:2018, 2018.
+\end{thebibliography}
+
+\end{document}
+
