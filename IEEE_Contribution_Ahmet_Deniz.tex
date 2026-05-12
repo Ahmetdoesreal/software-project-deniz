@@ -1,0 +1,191 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\title{Individual Engineering Contribution Report:\\
+Client Runtime Reliability, Incident Intelligence, UI Stabilization, and Deployment Packaging}
+
+\author{
+\IEEEauthorblockN{Ahmet Deniz Sezgin}
+\IEEEauthorblockA{\textit{Department of Computer Engineering}\\
+\textit{Istanbul Kultur University}\\
+Istanbul, Turkiye\\
+2300005633@stu.iku.edu.tr}
+}
+
+\maketitle
+
+\begin{abstract}
+This document summarizes the individual engineering contribution of Ahmet Deniz Sezgin to the network-based laboratory exam system. The contribution focused on improving the reliability and deployability of the client/server exam platform through reconnect-safe client runtime design, durable incident buffering, reusable incident-rule definitions, titlebar and executable matching improvements, dashboard user-interface stabilization, temporary authentication-validation workflows, privacy-safe projector output, split deployment packaging, offline installer hardening, and final documentation support. The implemented work strengthened the system against transient network failures, fragile browser-title matching, disruptive dashboard refresh behaviour, unsafe deployment assumptions, and unclear rebuild documentation. The resulting implementation better supports real laboratory exam operation by preserving evidence during reconnects, keeping policy definitions reusable, improving operator usability, and separating client and server deployment responsibilities.
+\end{abstract}
+
+\begin{IEEEkeywords}
+exam monitoring, client runtime, incident rules, reconnect buffering, titlebar matching, dashboard stability, deployment packaging
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+The project is a local-area-network based laboratory exam system composed of one authoritative server process and multiple student client processes. The server controls exam state, policy, incidents, submissions, and operator actions. The client performs local monitoring, authentication preflight, timer interaction, incident generation, evidence capture, and final submission. My contribution concentrated on the parts of the system where student-side reliability, operator usability, and deployment correctness meet.
+
+The main engineering objective was to make the system behave correctly under realistic exam-room conditions. These conditions include temporary network disconnections, browser title variations, Unicode edge cases, high-frequency dashboard updates, policy changes during runtime, authentication failures, and deployment on Windows machines with different Python environments. The work therefore covered both runtime behaviour and the supporting documentation/deployment structure needed to operate the system safely.
+
+\section{Contribution Scope}
+
+My work can be grouped into eight major areas:
+
+\begin{itemize}
+    \item reconnect-safe client runtime and local logging continuity,
+    \item offline incident buffering and evidence retry,
+    \item incident-rule and titlebar-definition system,
+    \item wildcard-style executable matching,
+    \item Tk/Qt dashboard refresh and hover stability,
+    \item temporary authentication disable with admin validation,
+    \item read-only projector frontend and privacy-safe state,
+    \item deployment split, offline installer hardening, and SRS documentation.
+\end{itemize}
+
+Table~\ref{tab:summary} provides a compact summary of the contribution areas.
+
+\begin{table}[htbp]
+\caption{Summary of Individual Contribution Areas}
+\centering
+\begin{tabular}{P{0.30\linewidth} P{0.58\linewidth}}
+\toprule
+\textbf{Area} & \textbf{Contribution Summary} \\
+\midrule
+Client runtime & Kept local monitors, logs, GUI bridge, replay, and incident engine alive across transient WebSocket disconnects. \\
+Incident buffering & Added durable queued incidents with sequence metadata and reconnect flush behaviour. \\
+Incident rules & Converted focused-window/titlebar decisions into reusable whitelist, warning, and blacklist rule definitions. \\
+Process matching & Added wildcard-compatible executable matching for application families and desktop-app variants. \\
+Dashboard UI & Preserved scroll, horizontal scroll, focus, and selection during live updates; added full-row hover behaviour. \\
+Authentication & Implemented temporary CATS/AD disable as an admin-managed validation state rather than unrestricted bypass. \\
+Projector & Created read-only, low-resolution-friendly, privacy-safe notification frontend with separate HTML/CSS/JS assets. \\
+Deployment & Prepared independent client/server deployment folders and hardened offline dependency setup. \\
+\bottomrule
+\end{tabular}
+\label{tab:summary}
+\end{table}
+
+\section{Client Runtime Reliability}
+
+\subsection{Reconnect as Network State}
+
+One of the most important reliability problems was that a WebSocket disconnection could stop or restart parts of the local client runtime. This was risky because monitoring evidence must continue even if the server connection is temporarily unavailable. I contributed to reworking the reconnect sequence so that disconnects are treated as network-state changes rather than full local-runtime shutdowns.
+
+The revised design separates long-lived exam-session components from connection-attempt-scoped components. Local process monitoring, focused-window monitoring, idle detection, hardware logging, exam-state logging, timer GUI communication, replay recording, incident processing, and local JSONL logging continue to run while the WebSocket layer reconnects. Only the active socket send/listen path is connection-scoped. This improves evidence continuity and avoids the misleading situation where the UI appears alive while the actual monitoring system has silently stopped.
+
+\subsection{Offline Incident Buffering}
+
+The previous buffering path only partially protected incident delivery. Incidents that reached the reporting function could be persisted, but local incident candidates created during a disconnected period could still be lost. I helped redesign this behaviour so generated incidents are queued persistently with stable sequence numbers, queued timestamps, and a buffered marker.
+
+After reconnect, queued incidents are flushed in order and remain on disk until acknowledged by the server. The restore path also avoids duplicating entries after repeated reconnect attempts. This design improves reliability because an incident is no longer dependent on the exact moment of network availability. Evidence upload status is also treated as retryable state so pending artifacts can be retried after the connection returns.
+
+\section{Incident Intelligence and Matching}
+
+\subsection{Incident-Rule Definitions}
+
+The focused-window and titlebar logic originally depended on simple global allowed/blocked lists. This approach was limited because it did not represent a decision as a reusable policy object. I contributed to the incident-rule system, where an incident rule can specify status, event type, source, process names, browser process names, window-title patterns, match mode, priority, and configured actions.
+
+The rule statuses are \texttt{unknown}, \texttt{whitelist}, \texttt{warning}, and \texttt{blacklist}. Whitelist rules suppress matching incident candidates before warning or blacklist rules are evaluated. Warning and blacklist rules can override severity and attach configured actions such as ban, kick, pause exam, or kill process where context allows. This makes the system more maintainable because an operator decision can be saved and reused.
+
+\subsection{Titlebar Matching Fixes}
+
+Browser titlebars are difficult to match reliably. Microsoft Edge, Chrome, Yandex, and similar browsers can append browser names, profile names, search result text, punctuation, localized text, and invisible Unicode spacing characters. A direct full-title save strategy is fragile because a rule saved from one observed title may not match the next similar title.
+
+I worked on changing future titlebar rule saving so that saved rules default to reusable \texttt{contains} patterns rather than the entire observed title. For example, the pattern \texttt{whatsapp} should match \texttt{WhatsApp - Microsoft Edge}, search-result titles containing WhatsApp, and other browser-title variants. The implementation also normalizes Unicode and invisible characters so a titlebar edge case does not silently break the monitoring system.
+
+\subsection{Wildcard Executable Matching}
+
+Process matching needed to support application families where one blocked application can appear through multiple related executables. I contributed wildcard-style executable matching so that one policy entry can match variants such as desktop-app helper processes. This is especially useful for applications that use multiple executable names or launch helper processes.
+
+Backward compatibility was preserved: existing exact and contains definitions continue to work, while wildcard-compatible definitions make the process database more practical for real machines.
+
+\section{Operator UI Stability}
+
+\subsection{Stable Refresh Behaviour}
+
+Live dashboards receive frequent updates, especially timer ticks and client-state changes. Earlier table refresh behaviour could rebuild lists every second, causing scrollbars to reset, horizontal scrolling to jump, selected rows to flicker, and operator focus to be lost. This created a serious usability issue when reviewing long client lists, incident history, process definitions, or incident rules.
+
+I contributed to the table/list refresh strategy that uses row identities and row fingerprints. If row identity and order do not change, the UI updates values in place rather than deleting and reinserting rows. When a full rebuild is unavoidable, vertical scroll, horizontal scroll, selection, and focused row are preserved as much as possible. This makes the dashboard usable during live exam updates.
+
+\subsection{Full-Row Hover}
+
+The Tk and Qt list widgets also had inconsistent hover feedback where only a single cell highlighted. I worked on full-row hover behaviour so the entire visible row is highlighted without overriding selected-row styling. This improves readability on wide tables and dense dashboards, especially when the operator is scanning incidents or client rows.
+
+\section{Authentication Validation Workflow}
+
+The system supports CATS and Active Directory authentication/preflight flows. A key requirement was to allow temporary handling of authentication outages or edge cases without permanently weakening security. I contributed to the design where temporary auth disable does not automatically allow access. Instead, affected login attempts enter an admin-managed validation state.
+
+The server exposes \texttt{/auth/status?login\_id=<id>} so a client can ask whether CATS or AD is required, whether a temporary disable window is active, whether the login ID is allowed, and whether validation is pending, approved, or denied. Operator commands such as \texttt{/disablecatsauth}, \texttt{/disableadauth}, \texttt{/disableauth}, \texttt{/authrequests}, \texttt{/approveauth}, and \texttt{/denyauth} manage this workflow. The design is temporary, runtime-only, and does not store submitted passwords in the validation queue.
+
+\section{Exam Files and Folder Visibility}
+
+I contributed to the exam-material handling flow. Downloaded exam ZIP files are kept under the local client data folder and safely extracted to a dated folder under the student's Desktop Exam directory. The extraction logic rejects unsafe archive members such as path traversal entries, absolute paths, drive-letter paths, and unsafe names. It also avoids deleting unmarked user folders by using managed-folder markers and safe suffixed fallback folders.
+
+The client timer UI shows an Exam Folder button after extraction, allowing the student-facing side to locate the materials. The server dashboard can also show folder information for selected users, including expected client-side exam folder information and server-side submission or artifact paths.
+
+\section{Read-Only Projector Frontend}
+
+The system needed a public display suitable for low-resolution, high-inch projection. I implemented a read-only projector frontend served from \texttt{/projector}, with live updates through \texttt{/projector/events}. The UI uses large typography, high contrast, and simple notification cards rather than dense dashboard tables.
+
+The projector payload is privacy-safe by construction. It contains aggregate state such as exam phase, connected/offline counts, active incident/warning counts, submission counts, server time, and generic notifications. It does not expose login IDs, UUIDs, IP addresses, process names, window titles, artifact paths, submission paths, or evidence details. The frontend was separated into HTML, CSS, and JavaScript files to make it easier to review and maintain.
+
+\section{Deployment and Installer Hardening}
+
+\subsection{Client/Server Split}
+
+For deployment, I prepared a separate \texttt{May\_12} folder with three subfolders: \texttt{setup}, \texttt{client}, and \texttt{server}. The client and server bundles are independently deployable. Shared modules such as \texttt{common} and UI helpers are duplicated where necessary, but server runtime code is not placed inside the client bundle and client runtime code is not placed inside the server bundle.
+
+This separation makes deployment clearer: the student machine receives the client bundle, the operator machine receives the server bundle, and shared dependency setup is kept in the setup folder.
+
+\subsection{Offline Dependency Setup}
+
+I also worked on offline installer hardening. Python packages are not installed into machine-wide \texttt{site-packages}; instead, the setup uses a project-specific virtual environment. This reduces conflicts with other applications that may use the same Python installation. The bundle also includes a local wheelhouse, FFmpeg assets, installer assets, and a SHA-256 manifest for integrity verification where available. The deployment documentation explains that Python ABI compatibility matters: a Python 3.13 wheelhouse must be rebuilt before targeting Python 3.14.
+
+\section{Documentation Contribution}
+
+In addition to runtime work, I produced documentation artifacts that make the project easier to review and rebuild. These include a professional SRS-style documentation package, Overleaf-compatible contribution material, deployment notes, validation records, and contributor-focused requirement traceability. The documentation explains the distinction between LAN WebSocket communication and loopback IPC, the incident-rule model, reconnect buffering, projector privacy, deployment assumptions, and installer compatibility.
+
+\section{Validation}
+
+The contribution was validated through static checks, unit/integration tests, local import checks, dependency dry runs, and manual smoke-test planning. Relevant validation activities included:
+
+\begin{itemize}
+    \item running \texttt{python -m compileall -q .},
+    \item running \texttt{python -m unittest discover -s tests},
+    \item checking dependency consistency with \texttt{python -m pip check},
+    \item verifying offline pip resolution from the local wheelhouse,
+    \item checking client/server split folders for cross-side imports,
+    \item validating projector payload privacy through tests,
+    \item validating titlebar and process matching through targeted unit tests,
+    \item validating setup manifest integrity.
+\end{itemize}
+
+The latest local full-suite validation after the related patches reported 168 automated tests passing. The split deployment folder was also checked for client/server separation, compile success, CLI import success, dependency dry-run success, and manifest verification.
+
+\section{Conclusion}
+
+The contribution improved the exam system in reliability, policy expressiveness, user-interface stability, authentication recovery, deployment safety, and documentation quality. The most important engineering result is that the client can continue local monitoring and evidence collection through transient disconnects while the server remains the authority for exam state and policy decisions. The incident-rule and matching improvements make policy maintenance more reusable, the UI changes make live supervision more practical, and the deployment split makes the final project easier to install and operate on separate student and operator machines.
+
+\begin{thebibliography}{00}
+\bibitem{b1} I. Fette and A. Melnikov, ``The WebSocket Protocol,'' RFC 6455, Internet Engineering Task Force, Dec. 2011.
+\bibitem{b2} IEEE, ``IEEE Recommended Practice for Software Requirements Specifications,'' IEEE Std 830-1998, 1998.
+\bibitem{b3} ISO/IEC/IEEE, ``Systems and software engineering -- Life cycle processes -- Requirements engineering,'' ISO/IEC/IEEE 29148:2018, 2018.
+\end{thebibliography}
+
+\end{document}
+

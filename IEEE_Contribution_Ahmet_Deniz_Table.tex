@@ -1,0 +1,201 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\title{Individual Contribution Matrix:\\
+Client Runtime Reliability, Incident Intelligence, UI Stabilization, and Deployment Packaging}
+
+\author{
+\IEEEauthorblockN{Ahmet Deniz Sezgin}
+\IEEEauthorblockA{\textit{Department of Computer Engineering}\\
+\textit{Istanbul Kultur University}\\
+Istanbul, Turkiye\\
+2300005633@stu.iku.edu.tr}
+}
+
+\maketitle
+
+\begin{abstract}
+This document presents the individual contribution in a table-centered IEEE-style format. The contribution focused on reconnect-safe client runtime behaviour, offline incident buffering, reusable incident-rule definitions, titlebar and executable matching improvements, dashboard UI stability, authentication-validation workflow, projector frontend design, deployment splitting, offline installer hardening, and documentation support. The table format maps each work area to the technical problem, implemented solution, affected modules or interfaces, validation method, and engineering impact.
+\end{abstract}
+
+\begin{IEEEkeywords}
+contribution matrix, exam monitoring, client runtime, incident rules, reconnect buffering, UI stability, deployment
+\end{IEEEkeywords}
+
+\section{Contribution Overview}
+
+Table~\ref{tab:overview} gives the high-level contribution summary. The later tables break the work down by implementation area, validation, and project impact.
+
+\begin{table}[htbp]
+\caption{High-Level Contribution Overview}
+\centering
+\begin{tabular}{P{0.32\linewidth} P{0.56\linewidth}}
+\toprule
+\textbf{Contribution Category} & \textbf{Summary} \\
+\midrule
+Client runtime reliability & Reworked disconnect handling so local monitors, logs, GUI bridge, replay recorder, and incident engine continue operating during transient WebSocket failures. \\
+Incident buffering & Improved offline incident persistence and reconnect flushing so incidents generated while disconnected are not lost. \\
+Incident rules & Converted titlebar and focused-window decisions into reusable whitelist, warning, and blacklist rule definitions. \\
+Matching improvements & Added reusable titlebar contains patterns and wildcard-compatible executable matching. \\
+Dashboard usability & Stabilized Tk/Qt list refresh, scroll preservation, horizontal scroll preservation, selection preservation, and full-row hover. \\
+Authentication recovery & Implemented temporary CATS/AD disable as an admin-managed validation state instead of unrestricted bypass. \\
+Projector frontend & Built a read-only, privacy-safe, projection-friendly notification frontend with separated HTML/CSS/JS assets. \\
+Deployment and documentation & Prepared split client/server/setup deployment folders, hardened offline dependency setup, and produced SRS/report documentation. \\
+\bottomrule
+\end{tabular}
+\label{tab:overview}
+\end{table}
+
+\section{Detailed Contribution Matrix}
+
+\begin{table*}[htbp]
+\caption{Detailed Engineering Contribution Matrix}
+\centering
+\begin{tabular}{P{0.14\linewidth} P{0.20\linewidth} P{0.26\linewidth} P{0.18\linewidth} P{0.14\linewidth}}
+\toprule
+\textbf{Area} & \textbf{Problem Addressed} & \textbf{Implemented Contribution} & \textbf{Affected Components} & \textbf{Impact} \\
+\midrule
+Reconnect sequence & WebSocket disconnects could stop local logging and monitoring, making the system appear active while evidence collection had stopped. & Treated disconnect as network state only; separated persistent runtime components from connection-attempt components. & Client runtime, WebSocket session, monitors, GUI bridge, replay recorder. & Higher reliability and evidence continuity. \\
+\midrule
+Offline incident buffer & Incidents generated during disconnected periods could be dropped or restored more than once. & Added persistent queued incident records with sequence metadata, queued timestamp, buffered flag, ordered flush, and deduplicated restore. & Incident buffer, incident engine, reconnect flow. & Prevents incident loss during network instability. \\
+\midrule
+Evidence retry & Pending evidence uploads could lose retry state after reconnect. & Treated evidence status as persistent retryable state and retried uploads after reconnection. & Artifact upload flow, incident acknowledgement path. & More complete server-side incident evidence. \\
+\midrule
+Incident-rule model & Legacy focused-window rules were global string lists and could not represent reusable operator decisions. & Added rule-based model with statuses \texttt{unknown}, \texttt{whitelist}, \texttt{warning}, and \texttt{blacklist}; included match fields, priority, and actions. & Common incident rules, client incident engine, server rule persistence, dashboard rule UI. & Reusable and maintainable incident policy. \\
+\midrule
+Titlebar matching & Browser titles varied by browser, profile, language, search text, and invisible Unicode characters. Full-title saves were fragile. & Added normalized title matching and default reusable \texttt{contains} patterns, such as saving \texttt{whatsapp} instead of a full observed browser title. & Focused-window monitor, title safety helpers, incident-rule saving flow. & Robust browser-title policy matching. \\
+\midrule
+Executable matching & Desktop applications can appear through multiple related executable names. & Added wildcard-compatible process matching while preserving existing exact and contains behaviour. & Process definitions, client process monitor, server process decision logic. & One rule can cover application families. \\
+\midrule
+Incident Rules UI & Incident history decisions were not cleanly reusable as future policy. & Added an Incident Rules workflow and Save as Rule behaviour with editable status, patterns, match mode, process restrictions, and actions. & Tk dashboard, Qt dashboard, incident history, incident rule database. & Turns one-time incidents into future policy rules. \\
+\midrule
+Dashboard refresh & Live updates rebuilt tables too often, resetting vertical/horizontal scroll and selection. & Added stable row fingerprints, in-place cell updates, and rebuild-state restoration. & Client list, incident history, process database, incident rules list. & Operators can review data without UI jumps. \\
+\midrule
+Full-row hover & Lists highlighted only one cell, reducing readability on wide tables. & Added full-row hover behaviour for Tk Treeview and Qt table/tree widgets while preserving selected rows. & Tk dashboard, Qt dashboard. & Improved scanability and UI polish. \\
+\midrule
+Auth validation & Temporary auth disable could be misunderstood as unrestricted login bypass. & Implemented server-reported auth status and admin validation workflow with pending, approved, and denied states. & \texttt{/auth/status}, auth commands, client preflight, server auth validation. & Safer handling of CATS/AD outages. \\
+\midrule
+Exam folder flow & Exam files needed safe extraction and clear user/operator visibility. & Added safe Desktop Exam extraction, managed-folder marker logic, client Exam Folder button, and server folder information view. & Client exam preparation, timer UI, server dashboard. & Easier and safer exam-material access. \\
+\midrule
+Projector frontend & Dashboard screens were too dense and private for classroom projection. & Implemented read-only projector page, SSE feed, large high-contrast layout, generic notifications, and separated frontend assets. & \texttt{/projector}, \texttt{/projector/events}, static HTML/CSS/JS. & Public-safe large-screen exam visibility. \\
+\midrule
+Deployment split & Client and server deployment responsibilities were mixed in the source tree. & Created separate \texttt{May\_12/setup}, \texttt{May\_12/client}, and \texttt{May\_12/server} bundles with duplicated shared dependencies where needed. & Deployment folder, run scripts, setup scripts. & Cleaner independent provisioning. \\
+\midrule
+Installer hardening & Machine-wide pip installs can conflict with other Python software. & Used virtual environments, offline wheelhouse resolution, SHA-256 manifest verification, and Python ABI compatibility notes. & Offline installer, setup folder, requirements files. & Safer dependency installation. \\
+\midrule
+Documentation & The project needed review-ready requirements and rebuild documentation. & Produced SRS-style documentation, Overleaf-compatible contribution content, deployment notes, and validation records. & Docs folder, Overleaf snippets, SRS package. & Better maintainability and reviewability. \\
+\bottomrule
+\end{tabular}
+\label{tab:detailed}
+\end{table*}
+
+\section{Validation Matrix}
+
+\begin{table}[htbp]
+\caption{Validation Performed for Contribution Areas}
+\centering
+\begin{tabular}{P{0.33\linewidth} P{0.55\linewidth}}
+\toprule
+\textbf{Validation Type} & \textbf{Purpose} \\
+\midrule
+\texttt{python -m compileall -q .} & Verified that Python source files in the implementation compile successfully. \\
+\midrule
+\texttt{python -m unittest discover -s tests} & Ran the automated unit, integration, and system test suite; latest local result after related patches was 168 passing tests. \\
+\midrule
+\texttt{python -m pip check} & Checked installed package consistency. \\
+\midrule
+Offline pip dry run & Verified dependency resolution from the local wheelhouse without using online indexes. \\
+\midrule
+Client/server split scan & Checked that the server bundle does not import client packages and the client bundle does not import server packages. \\
+\midrule
+Manifest verification & Verified SHA-256 manifest integrity for bundled offline installer files. \\
+\midrule
+Manual smoke checklist & Covered server/client launchers, auth disable/approval, reconnect, incidents, projector, exam folder, and submission flows. \\
+\bottomrule
+\end{tabular}
+\label{tab:validation}
+\end{table}
+
+\section{Requirement Traceability}
+
+\begin{table*}[htbp]
+\caption{Contribution Traceability to Requirement Groups}
+\centering
+\begin{tabular}{P{0.18\linewidth} P{0.32\linewidth} P{0.38\linewidth}}
+\toprule
+\textbf{Requirement Group} & \textbf{Related Contribution} & \textbf{Acceptance Evidence} \\
+\midrule
+FR-CLI & Client runtime, reconnect behaviour, exam folder UI. & Client CLI import checks, reconnect design validation, exam material extraction tests and smoke checklist. \\
+\midrule
+FR-MON & Process, focused-window, idle, and titlebar monitoring behaviour. & Title normalization tests, process wildcard matching tests, incident-generation validation. \\
+\midrule
+FR-INC & Incident-rule definitions, Save as Rule flow, actions. & Incident-rule normalization and matching tests, dashboard workflow review. \\
+\midrule
+FR-REC & Offline incident buffering and evidence retry. & Buffered incident persistence, ordered flush, and deduplicated restore checks. \\
+\midrule
+FR-AUTH & Temporary CATS/AD disable and admin validation. & Auth status endpoint tests and command-flow validation. \\
+\midrule
+FR-UI & Tk/Qt dashboard stability and full-row hover. & Row refresh helper tests and manual UI smoke testing. \\
+\midrule
+FR-PROJ & Read-only projector page and SSE feed. & Projector payload safety tests and manual low-resolution display review. \\
+\midrule
+FR-INS & Offline installer and split deployment. & Setup script parse, pip dry run, manifest verification, client/server boundary scan. \\
+\bottomrule
+\end{tabular}
+\label{tab:traceability}
+\end{table*}
+
+\section{Engineering Impact}
+
+\begin{table}[htbp]
+\caption{Practical Engineering Impact}
+\centering
+\begin{tabular}{P{0.34\linewidth} P{0.54\linewidth}}
+\toprule
+\textbf{Impact Dimension} & \textbf{Result} \\
+\midrule
+Reliability & Local client evidence collection continues during transient server disconnects. \\
+\midrule
+Policy maintainability & Titlebar and process decisions can become reusable definitions rather than one-time strings. \\
+\midrule
+Operator usability & Dashboard lists remain usable during live updates and provide clearer full-row visual feedback. \\
+\midrule
+Security and control & Temporary auth disable remains bounded and operator-approved instead of becoming unrestricted access. \\
+\midrule
+Privacy & Projector output shows only public-safe aggregate state. \\
+\midrule
+Deployment safety & Client and server bundles can be deployed independently with safer dependency isolation. \\
+\midrule
+Maintainability & SRS and deployment documentation make the project easier to review, rebuild, and extend. \\
+\bottomrule
+\end{tabular}
+\label{tab:impact}
+\end{table}
+
+\section{Conclusion}
+
+The contribution improved the exam system through reliability-focused client runtime work, reusable incident intelligence, operator UI stabilization, safe authentication recovery, privacy-safe projection, and cleaner deployment packaging. The table-based mapping shows that the work addressed both runtime correctness and operational maintainability. The most important result is that the system is more suitable for real laboratory deployment, where network interruptions, varied browser titles, dense dashboards, and machine-specific setup differences are expected.
+
+\begin{thebibliography}{00}
+\bibitem{b1} I. Fette and A. Melnikov, ``The WebSocket Protocol,'' RFC 6455, Internet Engineering Task Force, Dec. 2011.
+\bibitem{b2} IEEE, ``IEEE Recommended Practice for Software Requirements Specifications,'' IEEE Std 830-1998, 1998.
+\bibitem{b3} ISO/IEC/IEEE, ``Systems and software engineering -- Life cycle processes -- Requirements engineering,'' ISO/IEC/IEEE 29148:2018, 2018.
+\end{thebibliography}
+
+\end{document}
+
