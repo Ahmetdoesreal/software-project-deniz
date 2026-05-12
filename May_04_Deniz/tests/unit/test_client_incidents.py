@@ -83,6 +83,20 @@ class ClientIncidentEngineTests(unittest.TestCase):
 
         self.assertEqual(incidents, [])
 
+    def test_process_blacklist_accepts_wildcard_entries(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][0]["entries"] = ["whatsapp*"]
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_processes({(1234, "WhatsApp.Root.exe", "DESKTOP\\student")})
+        blacklist = [incident for incident in incidents if incident["rule_id"] == "process_blacklist"]
+
+        self.assertEqual(len(blacklist), 1)
+        self.assertEqual(blacklist[0]["process_name"], "WhatsApp.Root.exe")
+
     def test_idle_policy_opens_and_resolves_incidents(self):
         engine = ClientIncidentEngine()
         ok, reason = engine.apply_policy(
@@ -285,6 +299,51 @@ class ClientIncidentEngineTests(unittest.TestCase):
         incidents = engine.observe_processes({(1, "exam.exe"), (2, "python.exe"), (3, "browser.exe")})
 
         self.assertEqual([incident for incident in incidents if incident["rule_id"] == "unexpected_process"], [])
+
+    def test_unexpected_process_ignores_known_wildcard_processes(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][3]["known_process_names"] = ["exam.exe", "whatsapp*"]
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_processes({(1, "exam.exe"), (2, "WhatsApp.Root.exe")})
+
+        self.assertEqual([incident for incident in incidents if incident["rule_id"] == "unexpected_process"], [])
+
+    def test_process_definition_accepts_wildcard_name_scope(self):
+        engine = ClientIncidentEngine()
+        policy = {
+            "policy_version": "policy-v1",
+            "rules": [
+                {
+                    "rule_id": "process_definitions",
+                    "source": "process_monitor",
+                    "type": "process_definitions",
+                    "enabled": True,
+                    "definitions": [
+                        {
+                            "process_name": "whatsapp*",
+                            "match_scope": "name",
+                            "status": "blacklist",
+                            "actions": {"kill_pid": True},
+                        }
+                    ],
+                }
+            ],
+        }
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_processes(
+            {(200, "WhatsApp.Root.exe", None, "C:\\Program Files\\WindowsApps\\WhatsApp.Root.exe")}
+        )
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["rule_id"], "process_definitions")
+        self.assertEqual(incidents[0]["event_type"], "process_definition_match")
+        self.assertTrue(incidents[0]["configured_actions"]["kill_pid"])
 
     def test_process_database_unknown_detection_baselines_then_detects_new_processes(self):
         engine = ClientIncidentEngine()
@@ -646,6 +705,28 @@ class ClientIncidentEngineTests(unittest.TestCase):
         self.assertEqual(incidents[0]["status"], "opened")
         self.assertEqual(incidents[0]["window_title"], "Yandex Microsoft Edge")
         self.assertIn("Yandex Microsoft Edge", incidents[0]["summary"])
+
+    def test_focused_window_blocked_process_accepts_wildcards(self):
+        engine = ClientIncidentEngine()
+        policy = dict(PROCESS_BLACKLIST_POLICY)
+        policy["rules"] = [dict(rule) for rule in PROCESS_BLACKLIST_POLICY["rules"]]
+        policy["rules"][1].update(
+            {
+                "allowed_process_names": [],
+                "blocked_process_names": ["whatsapp*"],
+                "open_after_consecutive": 1,
+            }
+        )
+        ok, reason = engine.apply_policy(policy)
+        self.assertTrue(ok, reason)
+
+        incidents = engine.observe_focused_window(
+            {"process_name": "WhatsApp.Root.exe", "window_title": "WhatsApp"}
+        )
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["status"], "opened")
+        self.assertEqual(incidents[0]["process_name"], "WhatsApp.Root.exe")
 
 
 if __name__ == "__main__":

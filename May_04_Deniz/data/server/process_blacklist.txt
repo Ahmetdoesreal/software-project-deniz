@@ -1,0 +1,5 @@
+# One process name per line.
+# Matching is case-insensitive and checks the process name/basename.
+# Example:
+# discord.exe
+# steam.exe

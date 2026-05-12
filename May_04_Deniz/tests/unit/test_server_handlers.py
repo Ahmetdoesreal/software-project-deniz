@@ -133,6 +133,27 @@ class ServerHandlerIncidentTests(unittest.IsolatedAsyncioTestCase):
         finally:
             state.clients = original_clients
 
+    async def test_process_catch_accepts_wildcard_blacklist_entries(self):
+        original_users = state.users_db
+        original_process_blacklist = state.process_blacklist
+        try:
+            state.users_db = {"alice": {"uuid": "client-1", "password": "secret"}}
+            state.ensure_user_defaults(state.users_db["alice"])
+            state.process_blacklist = ["whatsapp*"]
+
+            await _handle_process_catch_event(
+                _FakeWS(),
+                "client-1",
+                {"matches": [{"pid": 42, "name": "WhatsApp.Root.exe"}], "blacklist_version": "v1"},
+            )
+
+            user = state.users_db["alice"]
+            self.assertEqual(user["blacklist_catch_count"], 1)
+            self.assertEqual(user["last_blacklist_match"], ["WhatsApp.Root.exe"])
+        finally:
+            state.users_db = original_users
+            state.process_blacklist = original_process_blacklist
+
 
 if __name__ == "__main__":
     unittest.main()

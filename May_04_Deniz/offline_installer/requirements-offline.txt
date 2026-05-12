@@ -1,0 +1,13 @@
+# Core runtime
+aiohttp
+psutil
+
+# Protected websocket signing/encryption
+cryptography
+
+# CATS school authentication (client-side preflight)
+requests==2.33.1
+beautifulsoup4
+
+# Qt UI
+PySide6

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exam Notifications</title>
+  <link rel="stylesheet" href="/projector/assets/projector.css">
+</head>
+<body>
+  <main class="screen" aria-live="polite">
+    <section class="top">
+      <div class="hero">
+        <div class="eyebrow">Exam Notifications</div>
+        <div id="phase" class="phase">Waiting</div>
+        <div id="subline" class="subline">Connecting to server feed...</div>
+      </div>
+      <div class="clock">
+        <div class="label">Server Time</div>
+        <div id="serverTime" class="value">--:--</div>
+      </div>
+    </section>
+    <section>
+      <div class="metrics">
+        <div class="metric connected"><div class="label">Connected</div><div id="connected" class="value">0</div></div>
+        <div class="metric violation"><div class="label">Violations</div><div id="violations" class="value">0</div></div>
+        <div class="metric warning"><div class="label">Warnings</div><div id="warnings" class="value">0</div></div>
+        <div class="metric submission"><div class="label">Submission</div><div id="submission" class="value">0</div></div>
+      </div>
+    </section>
+    <section id="notices" class="notices"></section>
+    <footer class="bottom">
+      <span id="connection" class="offline">Connecting</span>
+      <span id="updated">Last update: never</span>
+    </footer>
+  </main>
+  <script src="/projector/assets/projector.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+[
+  {
+    "definition_id": "d2a14c99eb2971f387198236",
+    "rule_key": "d2a14c99eb2971f387198236",
+    "name": "Browser New Tab whitelist",
+    "status": "whitelist",
+    "actions": {
+      "ban": false,
+      "kick": false,
+      "pause_exam": false,
+      "kill_pid": false
+    },
+    "rule_id": "focused_window_policy",
+    "event_type": "focused_window_policy",
+    "source": "focused_window",
+    "process_names": [],
+    "browser_process_names": [
+      "chrome.exe",
+      "msedge.exe",
+      "msedgewebview2.exe",
+      "yandex.exe",
+      "browser.exe"
+    ],
+    "window_title_patterns": [
+      "New Tab",
+      "Yeni Sekme"
+    ],
+    "match_mode": "contains",
+    "priority": 100,
+    "source_incident_id": "",
+    "matching_history": [],
+    "previous_matching_entries": [],
+    "created_at": "2026-05-12T02:16:09.887747+00:00",
+    "updated_at": "2026-05-12T02:16:09.887747+00:00",
+    "decided_at": "",
+    "decided_by": "",
+    "decision_reason": ""
+  }
+]

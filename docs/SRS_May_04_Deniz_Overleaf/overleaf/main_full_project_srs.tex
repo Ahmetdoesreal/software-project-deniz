@@ -1,0 +1,329 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    pdftitle={May\_04\_Deniz Software Requirements Specification},
+    pdfauthor={May\_04\_Deniz Project Team}
+}
+
+\setlength{\parskip}{0.6em}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{topsep=0.2em,itemsep=0.2em}
+\setlist[enumerate]{topsep=0.2em,itemsep=0.2em}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{May\_04\_Deniz SRS}
+\rhead{Whole Project}
+\cfoot{\thepage\ of \pageref{LastPage}}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
+
+\begin{document}
+
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Huge\bfseries Software Requirements Specification\par}
+    \vspace{0.6cm}
+    {\Large May\_04\_Deniz Exam Monitoring and Management Platform\par}
+    \vspace{1.5cm}
+    {\large Whole-Project SRS\par}
+    \vfill
+    \begin{tabular}{ll}
+        Project baseline: & \texttt{May\_04\_Deniz/} \\
+        Document date: & 2026-05-12 \\
+        Document version: & 1.0 \\
+        Intended use: & Course review, implementation handoff, Overleaf submission \\
+    \end{tabular}
+    \vfill
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+\subsection{Purpose}
+
+This Software Requirements Specification defines the expected behavior of the
+\texttt{May\_04\_Deniz} exam monitoring and management platform. It records
+functional requirements, non-functional requirements, interfaces, persistence
+contracts, operational constraints, and acceptance criteria for the current
+implementation.
+
+The document is written as a requirements source for reviewers, implementers,
+maintainers, and future contributors. It intentionally separates what the system
+shall do from how a particular function is internally implemented.
+
+\subsection{Scope}
+
+The system is a local-area exam platform with one authoritative server, multiple
+student clients, Tk and Qt graphical interfaces, local inter-process
+communication, LAN HTTP/WebSocket communication, monitoring, incident handling,
+authentication validation, submission transfer, projector display, and offline
+Windows installation.
+
+\subsection{Definitions}
+
+\begin{longtable}{L{0.22\textwidth} L{0.68\textwidth}}
+\textbf{Term} & \textbf{Meaning} \\
+\hline
+AD & Active Directory authentication or token generation path. \\
+CATS & School authentication/preflight service used before client login. \\
+Dashboard & Server-side operator GUI implemented in Tk and Qt. \\
+Incident & Policy-relevant event such as a blocked process, blocked title, idle state, or evidence state. \\
+LAN WebSocket & Student/server runtime protocol exposed by the server at \texttt{/ws}. \\
+Loopback IPC & Local-only WebSocket IPC bound to \texttt{127.0.0.1} with token authentication. \\
+Projector & Read-only public display page for aggregate exam notifications. \\
+SRS & Software Requirements Specification. \\
+\end{longtable}
+
+\subsection{References}
+
+\begin{itemize}
+    \item \texttt{docs/FINAL\_REPORT\_May\_04\_Deniz/02\_srs.md}
+    \item \texttt{docs/FINAL\_REPORT\_May\_04\_Deniz/05\_interface\_control\_document.md}
+    \item \texttt{May\_04\_Deniz/server}
+    \item \texttt{May\_04\_Deniz/client}
+    \item \texttt{May\_04\_Deniz/common}
+    \item \texttt{May\_04\_Deniz/tests}
+\end{itemize}
+
+\section{Overall Description}
+
+\subsection{Product Perspective}
+
+The platform is a local exam runtime, not a cloud service. The server is the
+authority for users, policy, incidents, exam state, submissions, artifacts, and
+operator commands. Clients are responsible for student-side monitoring,
+material extraction, local logging, replay capture, buffering, and final
+submission packaging.
+
+The architecture separates three communication domains.
+
+\begin{longtable}{L{0.20\textwidth} L{0.35\textwidth} L{0.35\textwidth}}
+\textbf{Domain} & \textbf{Purpose} & \textbf{Boundary} \\
+\hline
+LAN HTTP & Login, config, exam files, submissions, artifacts, projector page. & Protected routes validate session UUID; projector is public-safe. \\
+LAN WebSocket & Live runtime events between server and clients. & Session UUID plus optional secured event envelope. \\
+Loopback IPC & Same-machine GUI/manager communication. & Bound to loopback and token-protected, with stdio fallback. \\
+\end{longtable}
+
+\subsection{User Classes}
+
+\begin{longtable}{L{0.22\textwidth} L{0.32\textwidth} L{0.36\textwidth}}
+\textbf{User Class} & \textbf{Description} & \textbf{Primary Needs} \\
+\hline
+Operator & Exam supervisor using CLI or GUI. & Start and finish exams, review incidents, control users, update policy. \\
+Student & Person taking the exam through the client runtime. & Authenticate, receive materials, view timer, submit work. \\
+Administrator & Person preparing machines and configuration. & Configure users, auth, installer, dependencies, and network. \\
+Maintainer & Developer or support engineer. & Test, debug, extend, and rebuild the system. \\
+Audience & People viewing the projector page. & See large public-safe exam notifications. \\
+\end{longtable}
+
+\subsection{Operating Environment}
+
+The primary target environment is Windows 11 x64. The software uses Python,
+\texttt{aiohttp}, \texttt{psutil}, \texttt{cryptography}, \texttt{requests},
+\texttt{beautifulsoup4}, and optionally \texttt{PySide6}. FFmpeg is used for
+replay recording and media artifact generation.
+
+\subsection{Constraints}
+
+\begin{itemize}
+    \item The server remains the source of truth for exam state.
+    \item LAN WebSocket event schemas remain compatible between client and server.
+    \item Loopback IPC is not the same protocol as LAN student/server communication.
+    \item Projector output is read-only and public-safe.
+    \item Temporary authentication disable is bounded and admin-managed.
+    \item Manual terminal workflows remain supported through stdio fallback.
+    \item The offline installer avoids global machine \texttt{site-packages}.
+\end{itemize}
+
+\section{Functional Requirements}
+
+\subsection{Server Runtime}
+
+\begin{longtable}{L{0.15\textwidth} L{0.47\textwidth} L{0.28\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+FR-SRV-001 & The server shall start with configurable server id, host, port, broadcast interval, discovery interval, exam duration, upload limits, UI backend, IPC transport, GUI flag, reset flag, and auth secret. & Invalid startup values are rejected before runtime. \\
+FR-SRV-002 & The server shall reject duplicate active servers using the same server id. & Duplicate discovery exits before binding. \\
+FR-SRV-003 & The server shall expose HTTP routes for health, auth status, login, config, files, submission, artifact upload, projector, SSE, and WebSocket. & Routes are registered by the server app factory. \\
+FR-SRV-004 & The server shall persist users, incidents, policy, process blacklist, process definitions, and incident rules. & Missing state files are initialized or normalized. \\
+FR-SRV-005 & The server shall maintain authoritative per-user session state. & Dashboard and WebSocket state derive from the same model. \\
+FR-SRV-006 & The server shall broadcast timer and session updates. & Connected clients receive periodic state. \\
+FR-SRV-007 & The server shall execute admin commands from CLI and dashboard dispatch. & Exam, user, policy, auth, settings, and process commands are supported. \\
+FR-SRV-008 & Global finish shall skip banned users. & Banned users remain banned and skipped count is reported. \\
+FR-SRV-009 & WebSocket close reasons shall fit close-frame byte limits. & Long UTF-8 reasons are safely trimmed. \\
+\end{longtable}
+
+\subsection{Client Runtime}
+
+\begin{longtable}{L{0.15\textwidth} L{0.47\textwidth} L{0.28\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+FR-CLI-001 & The client shall start with configurable login, password, server id, direct host, port, discovery timeout, reconnect delay, recorder flag, login-check mode, UI backend, IPC transport, AD domain, and auth secret. & Invalid arguments fail before connection. \\
+FR-CLI-002 & The client shall resolve its server by direct host/port or discovery. & Direct host bypasses discovery; discovery honors server id and timeout. \\
+FR-CLI-003 & The client shall check health and log in before opening WebSocket. & Login returns a session UUID. \\
+FR-CLI-004 & The client shall fetch exam configuration and materials after login. & Requests use the assigned session UUID. \\
+FR-CLI-005 & The client shall safely extract exam materials to the student Desktop Exam folder. & Unsafe ZIP paths are rejected and unmarked user folders are preserved. \\
+FR-CLI-006 & The client shall synchronize timer/submission UI with server state. & UI receives start, pause, resume, remaining time, finish, upload, and folder state. \\
+FR-CLI-007 & The client shall keep local logging alive during transient WebSocket disconnects. & Local monitors and replay do not stop solely because the socket disconnects. \\
+FR-CLI-008 & The client shall reconnect automatically until final submission, intentional shutdown, or process exit. & Main loop retries after configured delay. \\
+FR-CLI-009 & The client shall support launcher check-login mode. & Check-login validates and exits without full runtime. \\
+\end{longtable}
+
+\subsection{Monitoring, Rules, and Incidents}
+
+\begin{longtable}{L{0.15\textwidth} L{0.47\textwidth} L{0.28\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+FR-MON-001 & The client shall collect process snapshots and detect process policy violations. & Process logs are written and matches open incidents. \\
+FR-MON-002 & Executable matching shall support exact, contains, and wildcard-style entries where definitions allow it. & One entry can match related app executable variants. \\
+FR-MON-003 & Focused-window titles shall be normalized before matching. & Unicode control and invisible characters are sanitized. \\
+FR-MON-004 & Focused-window matching shall support legacy lists and incident rules. & Existing policy files remain valid. \\
+FR-MON-005 & Saved titlebar rules shall prefer reusable contains patterns. & A pattern such as \texttt{whatsapp} matches browser title variants. \\
+FR-MON-006 & Idle state shall be monitored when enabled. & Warning and critical thresholds are configurable. \\
+FR-INC-001 & Incident rules shall normalize statuses unknown, whitelist, warning, and blacklist. & Common rule logic normalizes rule data. \\
+FR-INC-002 & Whitelist rules shall suppress candidates before warning or blacklist rules. & Approved titles do not open incidents. \\
+FR-INC-003 & Warning and blacklist rules shall attach matched rule and action metadata. & Incident payloads include rule id and configured actions. \\
+FR-INC-004 & Incident rules shall persist in \texttt{data/server/incident\_rules.json}. & Load, save, import, export, and version are supported. \\
+FR-INC-005 & Dashboard shall expose an Incident Rules tab. & Tk and Qt dashboards show rule management. \\
+FR-INC-006 & Incident History shall provide Save as Rule flow. & Selected incidents can prefill editable rule decisions. \\
+\end{longtable}
+
+\subsection{Reconnect, Submission, Auth, UI, Projector, and Installer}
+
+\begin{longtable}{L{0.15\textwidth} L{0.47\textwidth} L{0.28\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+FR-REC-001 & Disconnect shall be treated as network state, not local shutdown. & Monitors, GUI, recorder, and incident engine remain active. \\
+FR-REC-002 & Disconnected incidents shall be persisted with stable sequence metadata. & Entries include sequence, queued time, and buffered flag. \\
+FR-REC-003 & Buffered incidents and pending evidence shall flush after reconnect. & Unacknowledged items remain on disk until acknowledged. \\
+FR-SUB-001 & The client shall build and upload final submission bundles. & Server validates UUID, size, file type, and checksum where supplied. \\
+FR-AUTH-001 & The client shall ask the server for auth status before deciding preflight behavior. & Failure falls back to strict local auth. \\
+FR-AUTH-002 & Disabled CATS or AD auth shall create admin validation state, not automatic admission. & Admin approves or denies through server commands. \\
+FR-IPC-001 & Local IPC shall support loopback WebSocket with token authentication. & Non-loopback peers and invalid tokens are rejected. \\
+FR-IPC-002 & Local IPC shall preserve stdio fallback. & Auto mode uses WebSocket only when IPC environment exists. \\
+FR-UI-001 & Tk and Qt dashboards shall provide equivalent workflows. & Clients, incidents, process database, rules, settings, folders, and commands are available. \\
+FR-UI-002 & Dashboard refresh shall preserve scroll, selection, focus, and horizontal scroll where possible. & Routine timer updates do not rebuild tables. \\
+FR-PROJ-001 & The server shall serve a read-only projector page and SSE feed. & Public-safe aggregate state is streamed without controls. \\
+FR-PROJ-002 & Projector assets shall be separated into HTML, CSS, and JavaScript. & Server serves separate static files. \\
+FR-INS-001 & The offline installer shall install packages into a shared virtual environment rather than global site-packages. & Packages install under \texttt{C:/ProgramData/May\_04\_Deniz/python\_env}. \\
+FR-INS-002 & The installer shall copy runnable app code to a controlled shared folder and verify bundle hashes when a manifest exists. & Launchers run from installed app path and \texttt{manifest.sha256} is checked. \\
+\end{longtable}
+
+\section{Non-Functional Requirements}
+
+\begin{longtable}{L{0.18\textwidth} L{0.50\textwidth} L{0.22\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+NFR-SEC-001 & Loopback IPC shall reject non-loopback peers. & Non-loopback addresses are rejected. \\
+NFR-SEC-002 & Loopback IPC shall require a random token. & Missing or invalid token is rejected. \\
+NFR-SEC-003 & Sensitive WebSocket events shall support signing and encryption. & Secured envelope contains timestamp, nonce, signature, and optional ciphertext. \\
+NFR-SEC-004 & Projector payloads shall not expose sensitive data. & No login id, UUID, IP, process name, window title, path, or evidence field appears. \\
+NFR-REL-001 & Reconnect shall not interrupt local monitoring. & Client logs keep growing during transient disconnect. \\
+NFR-UX-001 & Dashboard live updates shall preserve interaction state. & Scrollbars and selections do not reset during routine updates. \\
+NFR-UX-002 & Projector UI shall be readable on low-resolution projection. & Large type, high contrast, and minimal dense detail are used. \\
+NFR-COMP-001 & Offline wheels shall match target Python ABI and platform. & Python 3.14 requires a rebuilt cp314 wheelhouse. \\
+\end{longtable}
+
+\section{External Interfaces}
+
+\subsection{HTTP Routes}
+
+\begin{longtable}{L{0.15\textwidth} L{0.30\textwidth} L{0.45\textwidth}}
+\textbf{Method} & \textbf{Route} & \textbf{Purpose} \\
+\hline
+GET & \texttt{/health} & Server identity and availability check. \\
+GET & \texttt{/auth/status?login\_id=<id>} & Auth requirement and validation status lookup. \\
+POST & \texttt{/login} & Login and session UUID assignment. \\
+GET & \texttt{/exam/config?id=<uuid>} & Exam configuration retrieval. \\
+GET & \texttt{/exam/files?id=<uuid>} & Exam materials download. \\
+POST & \texttt{/exam/submission?id=<uuid>} & Final submission upload. \\
+POST & \texttt{/client/artifact?id=<uuid>} & Runtime artifact or evidence upload. \\
+GET & \texttt{/ws?id=<uuid>} & LAN WebSocket runtime connection. \\
+GET & \texttt{/projector} & Read-only projector page. \\
+GET & \texttt{/projector/events} & Projection-safe SSE feed. \\
+\end{longtable}
+
+\subsection{Loopback IPC Channels}
+
+\begin{longtable}{L{0.30\textwidth} L{0.25\textwidth} L{0.35\textwidth}}
+\textbf{Channel} & \textbf{Direction} & \textbf{Purpose} \\
+\hline
+\texttt{manager.console\_command} & Manager to CLI & Sends console commands. \\
+\texttt{server.dashboard\_state} & Server CLI to dashboard & Pushes state and command output. \\
+\texttt{dashboard.command} & Dashboard to server CLI & Sends structured dashboard actions. \\
+\texttt{client.timer\_state} & Client CLI to timer UI & Pushes timer, upload, and folder state. \\
+\texttt{timer.command} & Timer UI to client CLI & Sends student UI actions. \\
+\texttt{process.lifecycle} & Parent/child processes & Sends lifecycle notifications. \\
+\end{longtable}
+
+\section{Data Requirements}
+
+\begin{longtable}{L{0.38\textwidth} L{0.18\textwidth} L{0.34\textwidth}}
+\textbf{Path} & \textbf{Owner} & \textbf{Requirement} \\
+\hline
+\texttt{data/server/server\_users.json} & Server & Persist users and session state. \\
+\texttt{data/server/incidents.jsonl} & Server & Append incident history. \\
+\texttt{data/server/exam\_policy.json} & Server & Persist normalized exam policy. \\
+\texttt{data/server/process\_definitions.json} & Server & Persist process definitions. \\
+\texttt{data/server/incident\_rules.json} & Server & Persist incident rules. \\
+\texttt{data/server/artifacts/*} & Server & Store evidence artifacts. \\
+\texttt{data/server/submissions/*} & Server & Store final submissions. \\
+\texttt{data/client/\{uuid\}/buffer/*} & Client & Persist buffered incidents and evidence retry state. \\
+\texttt{data/client/\{uuid\}/recordings/*} & Client & Store replay cache and saved replays. \\
+\texttt{Desktop/Exam/DD-MM-YYYY} & Client & Store extracted exam materials. \\
+\end{longtable}
+
+\section{Validation}
+
+The expected automated validation commands are:
+
+\begin{verbatim}
+cd May_04_Deniz
+python -m compileall -q .
+python -m unittest discover -s tests
+python -m pip check
+\end{verbatim}
+
+The latest local validation run while preparing this package passed compileall,
+passed 168 tests, and reported no broken pip requirements.
+
+\section{Traceability Summary}
+
+\begin{longtable}{L{0.24\textwidth} L{0.28\textwidth} L{0.38\textwidth}}
+\textbf{Area} & \textbf{Requirement IDs} & \textbf{Primary Modules} \\
+\hline
+Server runtime & FR-SRV-* & \texttt{server.main}, \texttt{server.app}, \texttt{server.handlers}, \texttt{server.tasks} \\
+Client runtime & FR-CLI-* & \texttt{client.main}, \texttt{client.ws\_client}, \texttt{client.preflight} \\
+Monitoring & FR-MON-* & \texttt{client.custommodules}, \texttt{client.incidents}, \texttt{common.process\_definitions} \\
+Incident rules & FR-INC-* & \texttt{common.incident\_rules}, \texttt{server.state}, \texttt{server.ui} \\
+Reconnect & FR-REC-* & \texttt{client.runtime}, \texttt{client.incident\_buffer}, \texttt{client.ws\_client} \\
+Authentication & FR-AUTH-* & \texttt{server.auth\_validation}, \texttt{server.tasks}, \texttt{client.preflight} \\
+IPC and UI & FR-IPC-*, FR-UI-* & \texttt{common.ipc\_ws}, \texttt{launcher\_ui}, \texttt{server.ui}, \texttt{client.ui} \\
+Projector & FR-PROJ-* & \texttt{server.projector}, \texttt{server.static.projector} \\
+Installer & FR-INS-* & \texttt{offline\_installer} \\
+\end{longtable}
+
+\end{document}

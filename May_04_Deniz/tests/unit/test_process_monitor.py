@@ -32,6 +32,17 @@ class ProcessMonitorTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["process_path"], "C:\\Users\\student\\discord.exe")
 
+    def test_blacklist_match_accepts_wildcard_process_names(self):
+        monitor = ProcessMonitor(".")
+        monitor.set_blacklist(["whatsapp*"], usernames=["student"])
+
+        matches = monitor._detect_blacklist_matches(
+            {(1234, "WhatsApp.Root.exe", "DESKTOP\\student", "C:\\Apps\\WhatsApp.Root.exe")}
+        )
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["name"], "WhatsApp.Root.exe")
+
     def test_blacklist_match_ignores_unmonitored_process_owner(self):
         monitor = ProcessMonitor(".")
         monitor.set_blacklist(["discord.exe"], usernames=["student"])

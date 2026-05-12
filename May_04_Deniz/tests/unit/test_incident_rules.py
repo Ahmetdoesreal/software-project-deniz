@@ -92,6 +92,18 @@ class IncidentRulesTests(unittest.TestCase):
 
         self.assertTrue(incident_matches_rule(incident, rule))
 
+    def test_process_name_fields_accept_wildcards(self):
+        rule = {
+            "source": "process_monitor",
+            "process_names": ["whatsapp*"],
+        }
+        incident = {
+            "source": "process_monitor",
+            "process_name": "WhatsApp.Root.exe",
+        }
+
+        self.assertTrue(incident_matches_rule(incident, rule))
+
 
 if __name__ == "__main__":
     unittest.main()

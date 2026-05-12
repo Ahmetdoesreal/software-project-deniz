@@ -9,7 +9,9 @@ from server import session_state
 from server.projector import (
     build_projection_state,
     payload_contains_sensitive_fields,
+    projector_css,
     projector_events,
+    projector_js,
     projector_page,
 )
 
@@ -94,7 +96,29 @@ class ProjectorHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.content_type, "text/html")
             body = await response.read()
             self.assertIn(b"Exam Notifications", body)
-            self.assertIn(b"EventSource('/projector/events')", body)
+            self.assertIn(b"/projector/assets/projector.css", body)
+            self.assertIn(b"/projector/assets/projector.js", body)
+        finally:
+            await client.close()
+
+    async def test_projector_assets_return_separate_css_and_js(self):
+        app = web.Application()
+        app.router.add_get("/projector/assets/projector.css", projector_css)
+        app.router.add_get("/projector/assets/projector.js", projector_js)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            css_response = await client.get("/projector/assets/projector.css")
+            self.assertEqual(css_response.status, 200)
+            self.assertEqual(css_response.content_type, "text/css")
+            css_body = await css_response.read()
+            self.assertIn(b".notice", css_body)
+
+            js_response = await client.get("/projector/assets/projector.js")
+            self.assertEqual(js_response.status, 200)
+            self.assertEqual(js_response.content_type, "application/javascript")
+            js_body = await js_response.read()
+            self.assertIn(b"EventSource('/projector/events')", js_body)
         finally:
             await client.close()
 

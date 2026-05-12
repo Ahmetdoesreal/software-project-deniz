@@ -1,0 +1,8 @@
+# Server runtime
+aiohttp
+psutil
+cryptography
+
+# Qt dashboard; Tk works without this package
+PySide6
+

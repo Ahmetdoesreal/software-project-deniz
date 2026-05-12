@@ -1,0 +1,12 @@
+# Client runtime
+aiohttp
+psutil
+cryptography
+
+# CATS school authentication
+requests==2.33.1
+beautifulsoup4
+
+# Qt UI; Tk works without this package
+PySide6
+

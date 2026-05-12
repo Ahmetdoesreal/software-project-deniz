@@ -4,7 +4,7 @@ import time
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from client.preflight import auth_status_requires_admin_validation
+from client.preflight import auth_status_display_message, auth_status_requires_admin_validation
 from server import session_state
 from server.handlers import auth_status, login_handler
 from server.state import state
@@ -68,6 +68,17 @@ class AuthBypassCommandTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertFalse(auth_status_requires_admin_validation(None))
+        self.assertIn(
+            "CATS and Windows auth",
+            auth_status_display_message(
+                {
+                    "admin_validation_required": True,
+                    "validation_status": "pending",
+                    "cats_bypass_until": "2026-05-12T10:00:00Z",
+                    "ad_bypass_until": "2026-05-12T10:00:00Z",
+                }
+            ),
+        )
 
     async def test_disabled_auth_requires_admin_validation_before_login(self):
         original_allowed = state.allowed_users
@@ -118,6 +129,53 @@ class AuthBypassCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(approved_response.status, 200)
             approved = await approved_response.json()
             self.assertEqual(approved["uuid"], "uuid-alice")
+        finally:
+            await client.close()
+            state.allowed_users = original_allowed
+            state.users_db = original_users
+            state.clients = original_clients
+
+    async def test_disabled_ad_auth_status_does_not_require_allowed_user(self):
+        original_allowed = state.allowed_users
+        original_users = state.users_db
+        original_clients = state.clients
+        app = web.Application()
+        app["auth_bypass"] = {"cats_until": time.time() + 90, "ad_until": time.time() + 90}
+        app["auth_secret"] = "secret"
+        app["auth_validation"] = {"requests": {}, "approvals": {}}
+        app["exam_duration"] = 45
+        app.router.add_get("/auth/status", auth_status)
+        app.router.add_post("/login", login_handler)
+        client = TestClient(TestServer(app))
+        try:
+            state.allowed_users = set()
+            state.users_db = {}
+            state.clients = {}
+            await client.start_server()
+
+            status_response = await client.get("/auth/status", params={"login_id": "charlie"})
+            self.assertEqual(status_response.status, 200)
+            status = await status_response.json()
+            self.assertFalse(status["allowed_user"])
+            self.assertFalse(status["cats_required"])
+            self.assertFalse(status["ad_required"])
+            self.assertTrue(status["admin_validation_required"])
+            self.assertTrue(status["cats_bypass_until"])
+            self.assertTrue(status["ad_bypass_until"])
+
+            response = await client.post("/login", json={"login_id": "charlie", "password": "plain-password"})
+            self.assertEqual(response.status, 202)
+            pending = await response.json()
+            self.assertEqual(pending["status"], "pending_validation")
+            self.assertEqual(pending["auth_modes"], ["cats", "ad"])
+
+            await handle_admin_command("/approveauth charlie 90", app)
+
+            approved_response = await client.post("/login", json={"login_id": "charlie", "password": "plain-password"})
+            self.assertEqual(approved_response.status, 200)
+            approved = await approved_response.json()
+            self.assertTrue(approved["uuid"])
+            self.assertIn("charlie", state.users_db)
         finally:
             await client.close()
             state.allowed_users = original_allowed

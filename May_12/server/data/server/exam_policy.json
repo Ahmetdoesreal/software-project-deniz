@@ -1,0 +1,80 @@
+{
+  "session": {
+    "auto_resume_on_reconnect": true,
+    "remember_settings": true
+  },
+  "rules": {
+    "process_blacklist": {
+      "enabled": true,
+      "severity": "violation",
+      "process_usernames": [],
+      "auto_violation_pause": true,
+      "allow_remote_kill": true
+    },
+    "focused_window": {
+      "enabled": true,
+      "severity": "warning",
+      "allowed_process_names": [],
+      "allowed_window_titles": [],
+      "blocked_process_names": [],
+      "blocked_window_titles": [
+        "whatsapp"
+      ],
+      "window_title_match_mode": "contains",
+      "open_after_consecutive": 3,
+      "resolve_after_consecutive": 2,
+      "auto_violation_pause": false
+    },
+    "rapid_application_switching": {
+      "enabled": false,
+      "severity": "warning",
+      "max_switches": 10,
+      "window_seconds": 60,
+      "window_observations": 10,
+      "auto_violation_pause": false
+    },
+    "idle_policy": {
+      "enabled": false,
+      "severity": "warning",
+      "warn_threshold_seconds": 80,
+      "critical_threshold_seconds": 150,
+      "auto_violation_pause": false
+    },
+    "unexpected_process": {
+      "enabled": false,
+      "severity": "warning",
+      "known_process_names": [],
+      "known_directory_paths": [],
+      "allowed_process_names": [],
+      "baseline_existing_processes": false,
+      "auto_violation_pause": false
+    },
+    "process_definitions": {
+      "enabled": true,
+      "severity": "violation",
+      "detect_unknown_processes": true,
+      "unknown_severity": "warning",
+      "baseline_existing_processes": true,
+      "auto_violation_pause": false,
+      "allow_remote_kill": true
+    },
+    "incident_rules": {
+      "enabled": true,
+      "severity": "warning",
+      "auto_violation_pause": false,
+      "allow_remote_kill": true
+    },
+    "process_path_clarification": {
+      "enabled": true,
+      "severity": "warning",
+      "auto_violation_pause": false,
+      "allow_remote_kill": true
+    }
+  },
+  "operator_defaults": {
+    "confirm_kill_pid": true,
+    "confirm_kick": true,
+    "confirm_ban": true,
+    "confirm_pause": true
+  }
+}

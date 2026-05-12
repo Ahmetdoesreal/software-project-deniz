@@ -1,0 +1,237 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    pdftitle={May\_04\_Deniz Contributor SRS Copy},
+    pdfauthor={May\_04\_Deniz Contributor}
+}
+
+\setlength{\parskip}{0.6em}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{topsep=0.2em,itemsep=0.2em}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{May\_04\_Deniz SRS}
+\rhead{Contributor Copy}
+\cfoot{\thepage\ of \pageref{LastPage}}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
+
+\begin{document}
+
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Huge\bfseries Contributor Software Requirements Specification\par}
+    \vspace{0.6cm}
+    {\Large May\_04\_Deniz Exam Monitoring and Management Platform\par}
+    \vspace{1.5cm}
+    {\large Individual Contribution Copy\par}
+    \vfill
+    \begin{tabular}{ll}
+        Contributor name: & Replace with your name \\
+        Student number: & Replace with your student number \\
+        Course: & Replace with course name \\
+        Project baseline: & \texttt{May\_04\_Deniz/} \\
+        Document date: & 2026-05-12 \\
+        Document version: & 1.0 \\
+    \end{tabular}
+    \vfill
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Purpose}
+
+This document is a contributor-focused copy of the project Software
+Requirements Specification. It extracts the requirements most relevant to the
+recent implementation areas and is intended to be edited for an individual
+project report. The full-project SRS remains the authoritative project-wide
+requirements document.
+
+\section{Contributor Scope}
+
+\begin{longtable}{L{0.26\textwidth} L{0.64\textwidth}}
+\textbf{Area} & \textbf{Description} \\
+\hline
+Incident rules and titlebar matching & Definition-based rules for focused-window/titlebar incidents, whitelist/warning/blacklist behavior, Save as Rule logic, reusable contains patterns, and browser-title handling. \\
+Process executable matching & Wildcard-style executable matching for process definitions and blacklist behavior, including desktop app variants. \\
+Dashboard UX stability & Full-row hover and non-disruptive refresh for client, incident, process database, and incident rule lists. \\
+Auth validation & Temporary CATS/AD disable with admin-managed validation and approval/denial flow. \\
+Reconnect and buffering & Keeping local logging active during disconnects and preserving incident/evidence buffers. \\
+Exam files and folders & Safe extraction of exam materials to the student Desktop Exam folder and UI folder information. \\
+Projector frontend & Read-only projection-safe notification page with separated HTML, CSS, and JavaScript. \\
+Offline installer hardening & Shared all-users install layout, shared venv, integrity manifest, package compatibility checks, and safer permissions. \\
+\end{longtable}
+
+\section{Functional Requirements}
+
+\subsection{Incident Rules and Titlebar Matching}
+
+\begin{longtable}{L{0.18\textwidth} L{0.47\textwidth} L{0.25\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-FR-INC-001 & The system shall represent titlebar and incident behavior as reusable incident rules. & Rules include status, match mode, event type, title patterns, process restrictions, priority, and actions. \\
+MY-FR-INC-002 & Whitelist rules shall suppress matching candidates before warning or blacklist rules. & Approved browser titles can suppress focused-window incidents. \\
+MY-FR-INC-003 & Saved titlebar rules shall prefer reusable contains patterns. & A WhatsApp title can save a pattern such as \texttt{whatsapp}. \\
+MY-FR-INC-004 & Title normalization shall handle Unicode and invisible/control characters. & Browser titles with unusual spacing do not stop matching or incident processing. \\
+MY-FR-INC-005 & Incident History shall provide Save as Rule behavior. & Selected incidents prefill editable rule decisions. \\
+MY-FR-INC-006 & Incident-rule actions shall be saved and applied where context allows. & Ban, kick, pause, and kill-pid actions are context-checked. \\
+\end{longtable}
+
+\subsection{Process and Executable Matching}
+
+\begin{longtable}{L{0.18\textwidth} L{0.47\textwidth} L{0.25\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-FR-PROC-001 & Process matching shall support wildcard-style executable patterns. & One entry can match related executable variants. \\
+MY-FR-PROC-002 & Process definition behavior shall remain backward compatible with exact and contains matching. & Existing definitions and blacklist entries continue to work. \\
+MY-FR-PROC-003 & Process rules shall integrate with incidents and actions. & Matched processes open incidents and may trigger configured actions. \\
+\end{longtable}
+
+\subsection{Dashboard UX Stability}
+
+\begin{longtable}{L{0.18\textwidth} L{0.47\textwidth} L{0.25\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-FR-UI-001 & Tk and Qt lists shall highlight the full row on hover. & Hover covers all visible cells, not only the current cell. \\
+MY-FR-UI-002 & Live dashboard updates shall avoid full rebuilds when row identity and order have not changed. & Timer and state updates modify row values in place. \\
+MY-FR-UI-003 & Scroll, horizontal scroll, focus, and selection shall be preserved during unavoidable rebuilds. & User scrolling does not reset during normal updates. \\
+MY-FR-UI-004 & Sorting and filtering shall remain available. & Explicit user sorting and filtering continue to work. \\
+\end{longtable}
+
+\subsection{Auth Validation and Temporary Disable}
+
+\begin{longtable}{L{0.18\textwidth} L{0.47\textwidth} L{0.25\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-FR-AUTH-001 & The server shall expose current auth requirements before login. & \texttt{/auth/status} reports CATS/AD flags, expiry, allowed-user status, validation status, and reason. \\
+MY-FR-AUTH-002 & Temporarily disabled auth shall not automatically admit a user. & Matching attempts enter admin validation state. \\
+MY-FR-AUTH-003 & Admins shall approve or deny pending auth validation requests. & Commands list, approve, and deny pending requests. \\
+MY-FR-AUTH-004 & Client-side preflight shall reflect server auth status. & Pending validation is shown or waited for instead of misreporting normal auth. \\
+\end{longtable}
+
+\subsection{Reconnect, Buffering, Exam Files, Projector, and Installer}
+
+\begin{longtable}{L{0.18\textwidth} L{0.47\textwidth} L{0.25\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-FR-REC-001 & A WebSocket disconnect shall not stop local monitoring or logs. & Process, focus, idle, hardware, exam-state, GUI, replay, and incident components remain active. \\
+MY-FR-REC-002 & Incidents generated while disconnected shall be queued persistently. & Buffered incidents include sequence, queued time, and buffered flag. \\
+MY-FR-FILE-001 & Downloaded exam materials shall be safely extracted to Desktop Exam folder. & ZIP traversal and unsafe paths are rejected. \\
+MY-FR-FILE-002 & Client and server UIs shall expose useful folder information. & Exam Folder and selected-user folder info are available. \\
+MY-FR-PROJ-001 & The server shall provide a read-only projector page. & The page has no mutating controls and no private data. \\
+MY-FR-PROJ-002 & Projector frontend files shall be separated. & HTML, CSS, and JavaScript are served separately. \\
+MY-FR-INS-001 & The installer shall use a shared virtual environment instead of global machine site-packages. & Packages install into \texttt{C:/ProgramData/May\_04\_Deniz/python\_env}. \\
+MY-FR-INS-002 & Installer permissions shall separate code from runtime data. & Normal users get read/execute for code and modify access only to data. \\
+MY-FR-INS-003 & The bundle shall verify file integrity when a manifest is present. & \texttt{manifest.sha256} is checked before install. \\
+\end{longtable}
+
+\section{Non-Functional Requirements}
+
+\begin{longtable}{L{0.20\textwidth} L{0.50\textwidth} L{0.20\textwidth}}
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance Criteria} \\
+\hline
+MY-NFR-SEC-001 & Projector payloads shall avoid private and evidentiary information. & No login id, UUID, IP, process name, title, path, or evidence appears. \\
+MY-NFR-SEC-002 & Temporary auth disable shall be bounded and admin controlled. & Disable windows expire and are not persisted to policy files. \\
+MY-NFR-REL-001 & Reconnect behavior shall preserve local evidence. & Buffered incidents and pending evidence survive disconnects. \\
+MY-NFR-UX-001 & Dashboard lists shall remain usable during live updates. & Scrollbars and selections do not reset during routine updates. \\
+MY-NFR-COMP-001 & Offline installer dependencies shall avoid machine-wide pip conflicts. & Dependencies are installed into the project venv only. \\
+\end{longtable}
+
+\section{Interfaces in Contributor Scope}
+
+\subsection{HTTP Routes}
+
+\begin{longtable}{L{0.35\textwidth} L{0.55\textwidth}}
+\textbf{Route} & \textbf{Use} \\
+\hline
+\texttt{/auth/status?login\_id=<id>} & Client checks auth requirements and validation state before login. \\
+\texttt{/projector} & Browser opens read-only projection page. \\
+\texttt{/projector/events} & Browser receives SSE state updates. \\
+\texttt{/exam/files?id=<uuid>} & Client downloads exam material ZIP for safe extraction. \\
+\texttt{/client/artifact?id=<uuid>} & Client uploads incident or replay evidence. \\
+\end{longtable}
+
+\subsection{CLI Commands}
+
+\begin{longtable}{L{0.34\textwidth} L{0.56\textwidth}}
+\textbf{Command} & \textbf{Use} \\
+\hline
+\texttt{/disablecatsauth [seconds]} & Temporarily disable CATS preflight and require admin validation. \\
+\texttt{/disableadauth [seconds]} & Temporarily disable AD auth and require admin validation. \\
+\texttt{/disableauth [seconds]} & Temporarily disable both auth paths. \\
+\texttt{/authstatus} & Show auth bypass and validation status. \\
+\texttt{/authrequests} & List validation requests. \\
+\texttt{/approveauth <id> [seconds]} & Temporarily approve pending validation. \\
+\texttt{/denyauth <id> [reason]} & Deny pending validation. \\
+\texttt{/editincidentrules} & Open incident rule database. \\
+\texttt{/applyincidentrules} & Reload and broadcast incident rules. \\
+\end{longtable}
+
+\section{Validation Plan}
+
+\subsection{Automated Validation}
+
+\begin{verbatim}
+cd May_04_Deniz
+python -m compileall -q .
+python -m unittest discover -s tests
+python -m pip check
+\end{verbatim}
+
+Relevant test groups include incident rules, focused-window title normalization,
+client incident buffering, auth validation, projector safety, process wildcard
+matching, dashboard refresh helpers, server command handling, and offline bundle
+integrity checks.
+
+\subsection{Manual Validation}
+
+\begin{itemize}
+    \item Add \texttt{whatsapp} as a contains title pattern and verify browser title variants match.
+    \item Add a wildcard executable entry for WhatsApp desktop variants and verify matching.
+    \item Scroll client and incident lists while timer updates arrive and verify scroll does not reset.
+    \item Hover rows in Tk and Qt tables and verify full-row highlight.
+    \item Run auth disable, attempt login, approve through admin validation, and verify admission.
+    \item Disconnect during an exam and verify client-side logs continue growing.
+    \item Generate an incident while disconnected and verify it flushes after reconnect.
+    \item Download exam materials and verify safe Desktop Exam extraction.
+    \item Open the projector page at low resolution and verify readability and privacy.
+    \item Test offline installer behavior in a controlled VM or lab machine.
+\end{itemize}
+
+\section{Traceability to Full SRS}
+
+\begin{longtable}{L{0.36\textwidth} L{0.54\textwidth}}
+\textbf{Contributor Area} & \textbf{Full SRS IDs} \\
+\hline
+Incident rules and titlebar & FR-MON-003 to FR-MON-005; FR-INC-001 to FR-INC-007 \\
+Process executable matching & FR-MON-001 to FR-MON-002 \\
+Dashboard UX stability & FR-UI-001 to FR-UI-003; NFR-UX-001 \\
+Auth validation & FR-AUTH-001 to FR-AUTH-005 \\
+Reconnect and buffering & FR-REC-001 to FR-REC-005 \\
+Exam folder info & FR-CLI-005; FR-UI-004 \\
+Projector frontend & FR-PROJ-001 to FR-PROJ-005 \\
+Offline installer & FR-INS-001 to FR-INS-007; NFR-COMP-001 \\
+\end{longtable}
+
+\end{document}

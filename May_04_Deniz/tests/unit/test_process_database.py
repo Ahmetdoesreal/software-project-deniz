@@ -265,6 +265,36 @@ class ProcessDatabaseTests(unittest.TestCase):
             self.assertTrue(all("process_decision" in incident for incident in state.incidents))
             self.assertEqual(state.rule_config("process_definitions")["definitions"][0]["status"], "blacklist")
 
+    def test_apply_process_decision_wildcard_matches_existing_incidents(self):
+        with _isolated_state():
+            state.users_db = {"student1": {"uuid": "uuid-student1"}}
+            state.ensure_user_defaults(state.users_db["student1"])
+            incident = _incident("inc-whatsapp", "student1")
+            incident["process_name"] = "WhatsApp.Root.exe"
+            incident["process_path"] = "C:\\Apps\\WhatsApp.Root.exe"
+            incident["process_dir"] = "C:\\Apps"
+            state.incidents = [incident]
+            state.active_incidents = {"inc-whatsapp": incident}
+
+            result = apply_process_decision(
+                state,
+                {
+                    "definition": {
+                        "process_name": "whatsapp*",
+                        "match_scope": "name",
+                    },
+                    "status": "blacklist",
+                    "actions": {"kill_pid": True},
+                    "save_policy": True,
+                },
+            )
+
+            self.assertTrue(result["ok"], result.get("message"))
+            self.assertEqual(result["matching_incident_ids"], ["inc-whatsapp"])
+            saved = state.rule_config("process_definitions")["definitions"][0]
+            self.assertEqual(saved["process_name"], "whatsapp*")
+            self.assertEqual(saved["match_scope"], "name")
+
     def test_action_availability_reasons_for_submitted_disconnected_and_no_pid(self):
         with _isolated_state():
             state.users_db = {
@@ -317,6 +347,19 @@ class ProcessDatabaseTests(unittest.TestCase):
         self.assertTrue(payload["save_policy"])
         self.assertIn("https://www.google.com/search?", url)
         self.assertIn("discord.exe", url)
+
+        wildcard_payload = build_process_decision_payload(
+            row,
+            status="blacklist",
+            match_scope="name",
+            actions={},
+            save_policy=True,
+            process_name="whatsapp*",
+        )
+
+        self.assertEqual(wildcard_payload["definition"]["process_name"], "whatsapp*")
+        self.assertEqual(wildcard_payload["definition"]["normalized_process_name"], "whatsapp*")
+        self.assertEqual(wildcard_payload["definition"]["match_scope"], "name")
 
     def test_incident_rule_normalization_and_policy_export_import(self):
         with _isolated_state() as test_dir:
