@@ -28,7 +28,7 @@ def _missing_pyside6_message() -> str:
 
 
 try:
-    from PySide6.QtCore import Qt, QTimer, Signal
+    from PySide6.QtCore import QObject, Qt, QTimer, Signal
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import (
         QApplication,
@@ -63,7 +63,7 @@ from client.preflight import (
 )
 
 
-class _LoginCheckSignals(QWidget):
+class _LoginCheckSignals(QObject):
     """Holds Qt signals used to marshal background results back to the UI thread."""
 
     succeeded = Signal(str)
@@ -79,6 +79,8 @@ class ClientManager(QMainWindow):
             session_name="client_cli_session",
             log_dir=self.project_dir / "data" / "logs" / "client" / "sessions",
         )
+        self._pending_client_command: list[str] | None = None
+        self._pending_summary_text = ""
         self.validation_in_progress = False
         self._auth_status_notice = ""
         self._login_prompt_status = (
@@ -322,26 +324,46 @@ class ClientManager(QMainWindow):
         if not self._validate_form():
             return
 
+        login_context = {
+            "login_id": self.login_entry.text().strip(),
+            "password": self.password_entry.text().strip(),
+            "server_id": self.id_entry.text().strip() or "default",
+            "advanced": self.advanced_check.isChecked(),
+            "host": self.host_entry.text().strip(),
+            "port": int(self.port_entry.value()),
+            "ad_domain": self._auth_config.get("ad_domain", ""),
+            "auth_secret": self._auth_config.get("auth_secret", ""),
+            "client_command": self._build_client_command(),
+            "summary_text": self._session_summary_text(),
+        }
+        login_context["validation_command"] = [
+            *login_context["client_command"],
+            "--check-login",
+            "--timeout",
+            "3",
+        ]
+        self._pending_client_command = list(login_context["client_command"])
+        self._pending_summary_text = str(login_context["summary_text"])
         self._login_prompt_status = (
             "Client stopped. Start a session to open the timer window and CLI."
         )
         self.validation_in_progress = True
         self.start_button.setEnabled(False)
         self.start_button.setText("Validating...")
-        thread = threading.Thread(target=self._run_login_check, daemon=True)
+        thread = threading.Thread(target=self._run_login_check, args=(login_context,), daemon=True)
         thread.start()
 
-    def _run_login_check(self) -> None:
-        login_id    = self.login_entry.text().strip()
-        password    = self.password_entry.text().strip()
-        ad_domain   = self._auth_config.get("ad_domain", "")
-        auth_secret = self._auth_config.get("auth_secret", "")
+    def _run_login_check(self, context: dict) -> None:
+        login_id = str(context["login_id"])
+        password = str(context["password"])
+        ad_domain = str(context["ad_domain"])
+        auth_secret = str(context["auth_secret"])
 
         auth_status = resolve_auth_status_sync(
             login_id,
-            server_id=self.id_entry.text().strip() or "default",
-            host=self.host_entry.text().strip() if self.advanced_check.isChecked() else None,
-            port=int(self.port_entry.value()),
+            server_id=str(context["server_id"]),
+            host=str(context["host"]) if context["advanced"] else None,
+            port=int(context["port"]),
             timeout=3.0,
         )
         auth_notice = auth_status_display_message(auth_status)
@@ -363,7 +385,7 @@ class ClientManager(QMainWindow):
         env["PYTHONUNBUFFERED"] = "1"
         try:
             result = subprocess.run(
-                self._validation_command(),
+                context["validation_command"],
                 cwd=str(self.project_dir),
                 capture_output=True,
                 text=True,
@@ -388,6 +410,8 @@ class ClientManager(QMainWindow):
     def _launch_client_process(self, auth_notice: str = "") -> None:
         self.validation_in_progress = False
         self._auth_status_notice = str(auth_notice or "").strip()
+        client_command = self._pending_client_command or self._build_client_command()
+        summary_text = self._pending_summary_text or self._session_summary_text()
         env = {
             "PYTHONPATH": str(self.project_dir)
             + os.pathsep
@@ -395,7 +419,7 @@ class ClientManager(QMainWindow):
         }
         try:
             self.process_session.start(
-                self._build_client_command(),
+                client_command,
                 cwd=str(self.project_dir),
                 env=env,
             )
@@ -404,7 +428,7 @@ class ClientManager(QMainWindow):
             return
 
         self.start_button.setText("Connect && Login")
-        self.summary_label.setText(self._session_summary_text())
+        self.summary_label.setText(summary_text)
         self.status_label.setText(self._auth_status_notice or "Client running under manager control.")
         self._set_setup_visible(False)
         self.open_cli()
@@ -412,6 +436,8 @@ class ClientManager(QMainWindow):
     def _return_to_login_prompt(self, message: Optional[str] = None) -> None:
         self.validation_in_progress = False
         self._auth_status_notice = ""
+        self._pending_client_command = None
+        self._pending_summary_text = ""
         self.start_button.setEnabled(True)
         self.start_button.setText("Connect && Login")
         self._set_setup_visible(True)

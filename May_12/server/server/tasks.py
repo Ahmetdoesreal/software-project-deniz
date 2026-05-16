@@ -16,6 +16,7 @@ from .state import EXAM_POLICY_FILE, INCIDENT_RULES_FILE, PROCESS_BLACKLIST_FILE
 from . import session_state
 from . import ip_guard
 from . import auth_validation
+from .gui_ipc import mark_gui_process_closed, send_gui_payload
 from .settings_service import (
     apply_process_decision,
     apply_incident_rule_decision,
@@ -105,19 +106,7 @@ async def _queue_manager_ipc(queue: asyncio.Queue, transport: str):
 
 
 def _write_to_gui(payload: dict):
-    gui_ipc = getattr(state, "gui_ipc_server", None)
-    if gui_ipc and gui_ipc.send("server.dashboard_state", payload):
-        return
-
-    gui_process = _gui_process()
-    if not gui_process:
-        return
-
-    try:
-        gui_process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
-        gui_process.stdin.flush()
-    except Exception as e:
-        print(f"[GUI IPC] Warning: Failed to write to GUI: {e}")
+    send_gui_payload(payload, log_failures=True)
 
 
 def _push_gui_state(app: web.Application):
@@ -2043,11 +2032,7 @@ def _gui_reader_thread(loop, app, gui_process):
         except Exception:
             pass
         if state.gui_process is gui_process:
-            state.gui_process = None
-            gui_ipc = getattr(state, "gui_ipc_server", None)
-            if gui_ipc:
-                gui_ipc.stop()
-                state.gui_ipc_server = None
+            mark_gui_process_closed(gui_process)
             print("[GUI] Server monitor UI closed. Type /gui to reopen it.")
 
 

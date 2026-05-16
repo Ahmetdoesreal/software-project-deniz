@@ -7,7 +7,8 @@ import json
 import webbrowser
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -769,13 +770,101 @@ class PolicySettingsDialog(QDialog):
         w = self.vars.get(key)
         if not w: return
         if isinstance(w, QCheckBox):
-            w.setChecked(bool(value))
+            checked = bool(value)
+            if w.isChecked() != checked:
+                w.setChecked(checked)
         elif isinstance(w, QComboBox):
-            w.setCurrentText("" if value is None else str(value))
+            text = "" if value is None else str(value)
+            if w.currentText() != text:
+                w.setCurrentText(text)
         elif isinstance(w, QLineEdit):
-            w.setText("" if value is None else str(value))
+            self._set_line_edit_text(w, "" if value is None else str(value))
         elif isinstance(w, QPlainTextEdit):
-            w.setPlainText("" if value is None else str(value))
+            self._set_plain_text(w, "" if value is None else str(value))
+
+    def _set_line_edit_text(self, widget: QLineEdit, text: str) -> None:
+        if widget.text() == text:
+            return
+
+        cursor_position = widget.cursorPosition()
+        selection_start = widget.selectionStart()
+        selection_length = len(widget.selectedText())
+        signals_blocked = widget.blockSignals(True)
+        try:
+            widget.setText(text)
+            if selection_start >= 0 and selection_length:
+                start = min(selection_start, len(text))
+                length = min(selection_length, len(text) - start)
+                widget.setSelection(start, length)
+            else:
+                widget.setCursorPosition(min(cursor_position, len(text)))
+        finally:
+            widget.blockSignals(signals_blocked)
+
+    def _set_plain_text(self, widget: QPlainTextEdit, text: str) -> None:
+        if widget.toPlainText() == text:
+            return
+
+        cursor = widget.textCursor()
+        cursor_position = cursor.position()
+        cursor_anchor = cursor.anchor()
+        vertical_value = widget.verticalScrollBar().value()
+        horizontal_value = widget.horizontalScrollBar().value()
+
+        signals_blocked = widget.blockSignals(True)
+        try:
+            widget.setPlainText(text)
+            self._restore_plain_text_state(widget, cursor_position, cursor_anchor, vertical_value, horizontal_value)
+            restorer = self._plain_text_state_restorer(
+                widget,
+                cursor_position,
+                cursor_anchor,
+                vertical_value,
+                horizontal_value,
+            )
+            QTimer.singleShot(0, restorer)
+        finally:
+            widget.blockSignals(signals_blocked)
+
+    def _plain_text_state_restorer(
+        self,
+        widget: QPlainTextEdit,
+        cursor_position: int,
+        cursor_anchor: int,
+        vertical_value: int,
+        horizontal_value: int,
+    ):
+        return lambda: self._restore_plain_text_state(
+            widget,
+            cursor_position,
+            cursor_anchor,
+            vertical_value,
+            horizontal_value,
+        )
+
+    def _restore_plain_text_state(
+        self,
+        widget: QPlainTextEdit,
+        cursor_position: int,
+        cursor_anchor: int,
+        vertical_value: int,
+        horizontal_value: int,
+    ) -> None:
+        try:
+            text_length = len(widget.toPlainText())
+            cursor = widget.textCursor()
+            anchor = min(cursor_anchor, text_length)
+            position = min(cursor_position, text_length)
+            cursor.setPosition(anchor)
+            mode = QTextCursor.MoveMode.KeepAnchor if anchor != position else QTextCursor.MoveMode.MoveAnchor
+            cursor.setPosition(position, mode)
+            widget.setTextCursor(cursor)
+            vertical = widget.verticalScrollBar()
+            horizontal = widget.horizontalScrollBar()
+            vertical.setValue(min(vertical_value, vertical.maximum()))
+            horizontal.setValue(min(horizontal_value, horizontal.maximum()))
+        except RuntimeError:
+            return
 
     def get_bool(self, key: str) -> bool:
         w = self.vars.get(key)

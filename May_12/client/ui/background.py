@@ -9,6 +9,7 @@ animated background with glass-effect rgba stylesheets.
 from __future__ import annotations
 
 import math
+import os
 import random
 import sys
 import traceback
@@ -21,9 +22,14 @@ _STAR_COUNT = 240
 _COMET_SPAWN_CHANCE = 0.05
 _MAX_COMETS = 6
 _COMET_LIFE = 30
+_TARGET_FPS = 30
+_FRAME_INTERVAL_MS = round(1000 / _TARGET_FPS)
+_DEBUG_STARFIELD = os.environ.get("EXAM_QT_STARFIELD_DEBUG", "").lower() in {"1", "true", "yes"}
 
 
 def _dbg(msg: str) -> None:
+    if not _DEBUG_STARFIELD:
+        return
     print(f"[STARFIELD] {msg}", file=sys.stderr, flush=True)
 
 
@@ -54,7 +60,7 @@ class StarfieldBackground(QWidget):
             self._paint_count = 0
 
             self._timer = QTimer(self)
-            self._timer.setInterval(25)
+            self._timer.setInterval(_FRAME_INTERVAL_MS)
             self._timer.timeout.connect(self._tick)
             self._timer.start()
             _dbg("__init__ done, timer started")
@@ -123,41 +129,43 @@ class StarfieldBackground(QWidget):
                 _dbg(f"paintEvent #{self._paint_count} size={w}x{h}")
 
             p = QPainter(self)
-            if not p.isActive():
-                _dbg(f"paintEvent #{self._paint_count}: painter not active, skipping")
-                return
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            try:
+                if not p.isActive():
+                    _dbg(f"paintEvent #{self._paint_count}: painter not active, skipping")
+                    return
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            grad = QLinearGradient(0, 0, w, h)
-            grad.setColorAt(0, QColor("#020617"))
-            grad.setColorAt(1, QColor("#0f172a"))
-            p.fillRect(0, 0, w, h, grad)
+                grad = QLinearGradient(0, 0, w, h)
+                grad.setColorAt(0, QColor("#020617"))
+                grad.setColorAt(1, QColor("#0f172a"))
+                p.fillRect(0, 0, w, h, grad)
 
-            p.setPen(Qt.PenStyle.NoPen)
-            for s in self._stars:
-                glow = (math.sin(s["phase"]) + 1) / 2
-                alpha = int(100 + glow * 140)
-                p.setBrush(QColor(255, 255, 255, alpha))
-                p.drawEllipse(
-                    int(s["x"]), int(s["y"]),
-                    int(s["size"]), int(s["size"]),
-                )
-
-            for c in self._comets:
-                life_frac = c["life"] / _COMET_LIFE
-                for i in range(26):
-                    alpha = int(255 * (1 - i / 26) * life_frac)
-                    if alpha <= 0:
-                        continue
-                    pen = QPen(QColor(180, 220, 255, alpha))
-                    pen.setWidth(5 if i < 5 else 3)
-                    p.setPen(pen)
-                    p.drawPoint(
-                        int(c["x"] - i * 7),
-                        int(c["y"] - i * 3),
+                p.setPen(Qt.PenStyle.NoPen)
+                for s in self._stars:
+                    glow = (math.sin(s["phase"]) + 1) / 2
+                    alpha = int(100 + glow * 140)
+                    p.setBrush(QColor(255, 255, 255, alpha))
+                    p.drawEllipse(
+                        int(s["x"]), int(s["y"]),
+                        int(s["size"]), int(s["size"]),
                     )
 
-            p.end()
+                for c in self._comets:
+                    life_frac = c["life"] / _COMET_LIFE
+                    for i in range(26):
+                        alpha = int(255 * (1 - i / 26) * life_frac)
+                        if alpha <= 0:
+                            continue
+                        pen = QPen(QColor(180, 220, 255, alpha))
+                        pen.setWidth(5 if i < 5 else 3)
+                        p.setPen(pen)
+                        p.drawPoint(
+                            int(c["x"] - i * 7),
+                            int(c["y"] - i * 3),
+                        )
+            finally:
+                if p.isActive():
+                    p.end()
         except Exception:
             _dbg(f"paintEvent EXCEPTION at paint={self._paint_count}:\n{traceback.format_exc()}")
 

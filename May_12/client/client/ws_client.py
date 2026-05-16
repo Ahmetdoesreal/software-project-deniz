@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import socket
@@ -42,9 +43,23 @@ FOCUSED_WINDOW_CHECK_INTERVAL_SECONDS = 1.0
 FOCUSED_WINDOW_FULL_INFO_INTERVAL_CHECKS = 60
 FOCUSED_WINDOW_SERVER_SEND_INTERVAL_SECONDS = 5.0
 
+_GUI_PIPE_CLOSED_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.EPIPE,
+}
+if hasattr(errno, "ECONNRESET"):
+    _GUI_PIPE_CLOSED_ERRNOS.add(errno.ECONNRESET)
+
 
 def _run_in_background(loop: asyncio.AbstractEventLoop, callback, *args):
     loop.call_soon_threadsafe(callback, *args)
+
+
+def _is_closed_pipe_error(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return True
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in _GUI_PIPE_CLOSED_ERRNOS
 
 
 def _project_dir() -> str:
@@ -287,9 +302,47 @@ class ClientGUIBridge:
 
     def close(self):
         process = self.process
-        self.process = None
         if process and process.poll() is None:
-            process.kill()
+            self._request_process_exit(process)
+        if process is not None:
+            self._mark_process_closed(process)
+        else:
+            self._stop_ipc_server()
+
+    def _request_process_exit(self, process) -> None:
+        sent = False
+        if self._ipc_server:
+            sent = self._ipc_server.send("client.timer_state", {"line": "END:-1"})
+        if not sent:
+            stream = getattr(process, "stdin", None)
+            if stream is not None:
+                try:
+                    stream.write("END:-1\n")
+                    stream.flush()
+                except Exception:
+                    pass
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            try:
+                process.terminate()
+                process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        self._stop_ipc_server()
+
+    def _mark_process_closed(self, process) -> None:
+        if self.process is process:
+            self.process = None
+        stream = getattr(process, "stdin", None)
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
         self._stop_ipc_server()
 
     def _parse_gui_command(self, line: str) -> UserCommand | None:
@@ -321,7 +374,10 @@ class ClientGUIBridge:
         return None
 
     def _write(self, message: str):
-        if not self.process or self.process.poll() is not None:
+        process = self.process
+        if not process or process.poll() is not None:
+            if process is not None:
+                self._mark_process_closed(process)
             return
         if self._ipc_server and self._ipc_server.send(
             "client.timer_state",
@@ -329,11 +385,17 @@ class ClientGUIBridge:
         ):
             return
 
+        stdin = getattr(process, "stdin", None)
+        if stdin is None:
+            self._mark_process_closed(process)
+            return
+
         try:
-            self.process.stdin.write(message)
-            self.process.stdin.flush()
-        except Exception:
-            pass
+            stdin.write(message)
+            stdin.flush()
+        except Exception as exc:
+            if _is_closed_pipe_error(exc):
+                self._mark_process_closed(process)
 
 
 @dataclass

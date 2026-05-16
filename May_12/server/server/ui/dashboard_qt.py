@@ -527,6 +527,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.incident_rules_items: dict[str, str] = {}
         self.server_info: dict = {}
         self.settings_snapshot: dict = {}
+        self.policy_dialog: PolicySettingsDialog | None = None
         self._open_dialogs: dict[tuple[str, str], QDialog] = {}
         self.filter_checks: dict[str, dict[str, QCheckBox]] = {}
         self.sort_state: dict[str, tuple[str, bool]] = {
@@ -545,8 +546,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._hover_rows: dict[object, int] = {}
         self._hover_tree_items: dict[object, QTreeWidgetItem | None] = {}
         self._hover_viewports: dict[object, object] = {}
+        self._scroll_viewports: dict[object, object] = {}
+        self._event_filter_viewports: set[object] = set()
         self._hover_brush = QBrush(QColor(255, 255, 255, 32))
         self._horizontal_scroll_active: set[object] = set()
+        self._vertical_scroll_active: set[object] = set()
         self._scroll_tracking_widgets: set[object] = set()
 
         self.setWindowTitle("Server Monitor Dashboard")
@@ -583,6 +587,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog.apply_definitions_requested.connect(self.apply_process_definitions)
         dialog.edit_incident_rules_requested.connect(self.edit_incident_rules)
         dialog.apply_incident_rules_requested.connect(self.apply_incident_rules)
+        dialog.finished.connect(lambda _result, d=dialog: self._clear_policy_dialog(d))
         
         if hasattr(self, 'settings_snapshot') and self.settings_snapshot:
             dialog.update_snapshot(self.settings_snapshot)
@@ -592,6 +597,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
     def _on_settings_saved(self, payload: dict):
         _emit_command(payload)
         self._append_log("[ADMIN] Saving GUI settings")
+
+    def _clear_policy_dialog(self, dialog: QDialog) -> None:
+        if getattr(self, "policy_dialog", None) is dialog:
+            self.policy_dialog = None
 
     # ------------------------------------------------------------------ layout
     def _build_layout(self) -> None:
@@ -771,9 +780,13 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     def _restore_scrollbars(self, widget, vertical_value: int, horizontal_value: int) -> None:
         def restore(*, delayed: bool = False) -> None:
-            vertical = widget.verticalScrollBar()
-            horizontal = widget.horizontalScrollBar()
-            vertical.setValue(min(vertical_value, vertical.maximum()))
+            try:
+                vertical = widget.verticalScrollBar()
+                horizontal = widget.horizontalScrollBar()
+            except RuntimeError:
+                return
+            if not delayed or widget not in self._vertical_scroll_active:
+                vertical.setValue(min(vertical_value, vertical.maximum()))
             if not delayed or widget not in self._horizontal_scroll_active:
                 horizontal.setValue(min(horizontal_value, horizontal.maximum()))
 
@@ -784,16 +797,55 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         if widget in self._scroll_tracking_widgets:
             return
         self._scroll_tracking_widgets.add(widget)
-        bar = widget.horizontalScrollBar()
-        bar.sliderPressed.connect(lambda w=widget: self._horizontal_scroll_active.add(w))
-        bar.sliderReleased.connect(lambda w=widget: QTimer.singleShot(150, lambda: self._horizontal_scroll_active.discard(w)))
-        bar.actionTriggered.connect(lambda _action, w=widget: self._mark_horizontal_scroll_active(w))
+        self._install_scroll_axis_tracking(widget, widget.horizontalScrollBar(), self._horizontal_scroll_active)
+        self._install_scroll_axis_tracking(widget, widget.verticalScrollBar(), self._vertical_scroll_active)
+        self._install_viewport_event_filter(widget)
+        try:
+            self._scroll_viewports[widget.viewport()] = widget
+        except AttributeError:
+            self._scroll_viewports[widget] = widget
 
-    def _mark_horizontal_scroll_active(self, widget) -> None:
-        self._horizontal_scroll_active.add(widget)
-        QTimer.singleShot(350, lambda w=widget: self._horizontal_scroll_active.discard(w))
+    def _install_scroll_axis_tracking(self, widget, bar, active_widgets: set[object]) -> None:
+        bar.sliderPressed.connect(lambda w=widget, active=active_widgets: active.add(w))
+        bar.sliderReleased.connect(
+            lambda w=widget, active=active_widgets: QTimer.singleShot(150, lambda: active.discard(w))
+        )
+        bar.actionTriggered.connect(
+            lambda _action, w=widget, active=active_widgets: self._mark_scroll_active(w, active)
+        )
+
+    def _install_viewport_event_filter(self, widget) -> None:
+        try:
+            viewport = widget.viewport()
+        except AttributeError:
+            viewport = widget
+        if viewport in self._event_filter_viewports:
+            return
+        viewport.installEventFilter(self)
+        self._event_filter_viewports.add(viewport)
+
+    def _mark_scroll_active(self, widget, active_widgets: set[object]) -> None:
+        active_widgets.add(widget)
+        QTimer.singleShot(350, lambda w=widget, active=active_widgets: active.discard(w))
+
+    def _mark_wheel_scroll_active(self, widget, event) -> None:
+        try:
+            delta = event.pixelDelta()
+            if delta.isNull():
+                delta = event.angleDelta()
+        except AttributeError:
+            self._mark_scroll_active(widget, self._vertical_scroll_active)
+            return
+        if abs(delta.x()) > abs(delta.y()):
+            self._mark_scroll_active(widget, self._horizontal_scroll_active)
+        else:
+            self._mark_scroll_active(widget, self._vertical_scroll_active)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        if watched in self._scroll_viewports and event.type() == QEvent.Wheel:
+            widget = self._scroll_viewports.get(watched)
+            if widget is not None:
+                self._mark_wheel_scroll_active(widget, event)
         if watched in self._hover_viewports and event.type() == QEvent.MouseMove:
             widget = self._hover_viewports.get(watched)
             if isinstance(widget, QTableWidget):
@@ -812,7 +864,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._install_scroll_tracking(table)
         table.setMouseTracking(True)
         table.viewport().setMouseTracking(True)
-        table.viewport().installEventFilter(self)
+        self._install_viewport_event_filter(table)
         self._hover_viewports[table.viewport()] = table
         self._hover_rows[table] = -1
         table.itemEntered.connect(lambda item, widget=table: self._set_table_hover_row(widget, item.row()))
@@ -822,7 +874,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._install_scroll_tracking(tree)
         tree.setMouseTracking(True)
         tree.viewport().setMouseTracking(True)
-        tree.viewport().installEventFilter(self)
+        self._install_viewport_event_filter(tree)
         self._hover_viewports[tree.viewport()] = tree
         self._hover_tree_items[tree] = None
         tree.itemEntered.connect(lambda item, _column, widget=tree: self._set_tree_hover_item(widget, item))
@@ -1862,7 +1914,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         settings_snapshot = payload.get("settings", {})
         if isinstance(settings_snapshot, dict) and settings_snapshot:
             self.settings_snapshot = settings_snapshot
-            if hasattr(self, 'policy_dialog') and self.policy_dialog and self.policy_dialog.isVisible():
+            if self.policy_dialog and self.policy_dialog.isVisible():
                 self.policy_dialog.update_snapshot(settings_snapshot)
 
         clients = payload.get("clients", [])
@@ -2270,7 +2322,7 @@ def run() -> int:
                 elif message_type == "client_message":
                     gui.log_message(str(msg.get("uuid") or ""), str(msg.get("text") or ""))
                 elif message_type == "settings_result":
-                    if hasattr(gui, 'policy_dialog') and gui.policy_dialog:
+                    if gui.policy_dialog:
                         gui.policy_dialog.process_result(bool(msg.get("ok", False)), str(msg.get("message") or ""))
         except queue.Empty:
             pass

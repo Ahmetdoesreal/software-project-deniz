@@ -16,6 +16,7 @@ from .submissions import build_artifact_path, build_submission_path, safe_relati
 from . import session_state
 from . import ip_guard
 from . import auth_validation
+from .gui_ipc import send_gui_payload
 
 
 def _json_error(message: str, status: int, code: str = "ERROR") -> web.Response:
@@ -62,18 +63,7 @@ def _validate_login_payload(data: dict) -> tuple[str | None, str | None]:
 
 
 def _relay_client_message_to_gui(client_id: str, message: dict):
-    gui_process = state.get_gui_process()
-    if not gui_process:
-        return
-
-    try:
-        payload = json.dumps(
-            {"type": "client_message", "uuid": client_id, "text": message}
-        )
-        gui_process.stdin.write(payload + "\n")
-        gui_process.stdin.flush()
-    except Exception:
-        pass
+    send_gui_payload({"type": "client_message", "uuid": client_id, "text": message})
 
 
 def _relay_text_to_gui(client_id: str, text: str):

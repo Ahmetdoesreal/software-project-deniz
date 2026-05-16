@@ -18,6 +18,7 @@ from .handlers import (
 )
 from .projector import projector_css, projector_events, projector_js, projector_page
 from .tasks import time_broadcaster, console_reader, _launch_server_gui
+from .gui_ipc import request_gui_shutdown
 
 
 def _duplicate_guard_timeout(announce_interval: float) -> float:
@@ -97,12 +98,7 @@ async def cleanup_background_tasks(app: web.Application):
 
     await app["announcer"].stop()
     
-    if state.gui_process and state.gui_process.poll() is None:
-        state.gui_process.kill()
-    gui_ipc = getattr(state, "gui_ipc_server", None)
-    if gui_ipc:
-        gui_ipc.stop()
-        state.gui_ipc_server = None
+    request_gui_shutdown(state.gui_process)
 
 
 def create_app(args) -> web.Application:
