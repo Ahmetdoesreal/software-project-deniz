@@ -1,1 +1,90 @@
-[]
+[
+  {
+    "definition_id": "93dfff147c3315b38d69a0ef",
+    "process_key": "49827d142305f3949178b269",
+    "process_name": "cmd.exe",
+    "normalized_process_name": "cmd.exe",
+    "process_path": "C:\\Windows\\System32\\cmd.exe",
+    "normalized_process_path": "c:\\windows\\system32\\cmd.exe",
+    "process_dir": "C:\\Windows\\System32",
+    "normalized_process_dir": "c:\\windows\\system32",
+    "match_scope": "directory",
+    "status": "whitelist",
+    "actions": {
+      "ban": false,
+      "kick": false,
+      "pause_exam": false,
+      "kill_pid": false
+    },
+    "source_incident_id": "79f5927e-ac98-4b11-a7bb-e64711c39971",
+    "source": "",
+    "matching_history": [
+      {
+        "incident_id": "79f5927e-ac98-4b11-a7bb-e64711c39971",
+        "client_id": "ecd1144d-49f2-405e-9466-5c7742c0d108",
+        "login_id": "testuser",
+        "status": "opened",
+        "severity": "warning",
+        "rule_id": "unexpected_process",
+        "event_at": "2026-05-17T18:20:52.005488+00:00",
+        "pid": 10608,
+        "process_name": "cmd.exe",
+        "process_path": "C:\\Windows\\System32\\cmd.exe",
+        "process_dir": "C:\\Windows\\System32",
+        "active": true,
+        "summary": "Unexpected process detected: cmd.exe (pid 10608)"
+      },
+      {
+        "incident_id": "79f5927e-ac98-4b11-a7bb-e64711c39971",
+        "client_id": "ecd1144d-49f2-405e-9466-5c7742c0d108",
+        "login_id": "testuser",
+        "status": "evidence_uploaded",
+        "severity": "warning",
+        "rule_id": "unexpected_process",
+        "event_at": "2026-05-17T18:22:36.359923+00:00",
+        "pid": 10608,
+        "process_name": "cmd.exe",
+        "process_path": "C:\\Windows\\System32\\cmd.exe",
+        "process_dir": "C:\\Windows\\System32",
+        "active": true,
+        "summary": "Unexpected process detected: cmd.exe (pid 10608)"
+      },
+      {
+        "incident_id": "efa7a3a3-247a-4a44-8061-8293136ca4df",
+        "client_id": "043e2a30-a7df-4422-982d-c6b8b8626d5a",
+        "login_id": "ffmpeglutfencalis",
+        "status": "opened",
+        "severity": "warning",
+        "rule_id": "unexpected_process",
+        "event_at": "2026-05-17T18:59:20.104898+00:00",
+        "pid": 7372,
+        "process_name": "cmd.exe",
+        "process_path": "C:\\Windows\\System32\\cmd.exe",
+        "process_dir": "C:\\Windows\\System32",
+        "active": true,
+        "summary": "Unexpected process detected: cmd.exe (pid 7372)"
+      },
+      {
+        "incident_id": "efa7a3a3-247a-4a44-8061-8293136ca4df",
+        "client_id": "043e2a30-a7df-4422-982d-c6b8b8626d5a",
+        "login_id": "ffmpeglutfencalis",
+        "status": "evidence_uploaded",
+        "severity": "warning",
+        "rule_id": "unexpected_process",
+        "event_at": "2026-05-17T18:59:25.244521+00:00",
+        "pid": 7372,
+        "process_name": "cmd.exe",
+        "process_path": "C:\\Windows\\System32\\cmd.exe",
+        "process_dir": "C:\\Windows\\System32",
+        "active": true,
+        "summary": "Unexpected process detected: cmd.exe (pid 7372)"
+      }
+    ],
+    "previous_matching_entries": [],
+    "created_at": "2026-05-17T19:00:12.905664+00:00",
+    "updated_at": "2026-05-17T19:00:12.905664+00:00",
+    "decided_at": "2026-05-17T19:00:12.905664+00:00",
+    "decided_by": "admin_gui",
+    "decision_reason": ""
+  }
+]

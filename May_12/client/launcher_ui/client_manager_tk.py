@@ -19,6 +19,7 @@ from common.manager_support import (
     apply_dpi_awareness,
     install_close_guard,
 )
+from ui.tk_theme import apply_tk_theme, tk_mono_font
 from client.preflight import (
     auth_status_display_message,
     auth_status_requires_admin_validation,
@@ -55,12 +56,13 @@ class ClientManager(tk.Tk):
         self.title("Exam Client Manager")
         self.geometry("760x720")
         self.resizable(False, False)
+        apply_tk_theme(self)
         install_close_guard(self, self.on_close_request, bind_all=True)
 
         style = ttk.Style(self)
         style.configure("TButton", padding=(10, 6))
         style.configure("TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
-        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        self.mono_font = tk_mono_font(self)
         style.configure("Mono.TLabel", font=self.mono_font)
         self.columnconfigure(1, weight=1)
 

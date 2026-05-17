@@ -233,7 +233,7 @@ def main():
     parser.add_argument("--reconnect", default=3, type=float, help="Seconds to wait before reconnecting (default: 3)")
     parser.add_argument("--no-record", dest="record", action="store_false", help="Disable screen replay recorder")
     parser.add_argument("--check-login", action="store_true", help="Only validate server connection and login credentials, then exit.")
-    parser.add_argument("--ui", choices=["tk", "qt"], default="tk", help="UI backend for GUI windows: tk (default) or qt")
+    parser.add_argument("--ui", choices=["auto", "tk", "qt"], default="auto", help="UI backend for GUI windows: auto (Qt first), qt, or tk")
     parser.add_argument("--ipc-transport", choices=["auto", "stdio", "ws"], default="auto", help="Local manager/UI IPC transport: auto, stdio, or ws")
     parser.add_argument("--ad-domain", default=None, help="AD domain for local credential validation (enables AD auth mode)")
     parser.add_argument("--auth-secret", default=None, help="Shared auth secret matching the server --auth-secret")

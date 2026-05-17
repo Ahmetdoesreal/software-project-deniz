@@ -21,6 +21,7 @@ from common.manager_support import (
     install_close_guard,
 )
 from common.server_ports import detect_port_conflict
+from ui.tk_theme import apply_tk_theme, tk_mono_font
 
 
 def load_auth_config(project_dir: Path | None = None) -> dict:
@@ -72,12 +73,13 @@ class ServerManager(tk.Tk):
         self.title("Exam Server Manager")
         self.geometry("1280x960")
         self.resizable(True, True)
+        apply_tk_theme(self)
         install_close_guard(self, self.on_close_request, bind_all=True)
 
         style = ttk.Style(self)
         style.configure("TButton", padding=(10, 6))
         style.configure("TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
-        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        self.mono_font = tk_mono_font(self)
         style.configure("Mono.TLabel", font=self.mono_font)
 
         self.columnconfigure(1, weight=1)

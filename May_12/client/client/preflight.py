@@ -150,7 +150,7 @@ def _check_cats(login_id: str, password: str) -> tuple[bool, str]:
     except ImportError:
         return False, (
             "CATS module not available. "
-            "Install requests and beautifulsoup4: pip install requests beautifulsoup4"
+            "Install requests and beautifulsoup4: python -m pip install --user requests beautifulsoup4"
         )
     except Exception as exc:
         return False, f"CATS error: {exc}"

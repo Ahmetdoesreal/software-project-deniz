@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import faulthandler
 import json
+import os
 import queue
 import sys
 from collections import Counter
@@ -24,7 +25,7 @@ if str(PROJECT_DIR) not in sys.path:
 def _missing_pyside6_message() -> str:
     return (
         "PySide6 is required for the Qt UI. Install it with:\n"
-        "    pip install PySide6\n"
+        "    python -m pip install --user PySide6\n"
         "Or run the legacy interface with: --ui tk"
     )
 
@@ -33,7 +34,7 @@ from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_stan
 
 
 try:
-    from PySide6.QtCore import QEvent, Qt, QObject, QTimer, Signal
+    from PySide6.QtCore import QAbstractTableModel, QEvent, QItemSelectionModel, QModelIndex, Qt, QObject, QTimer, Signal
     from PySide6.QtGui import QBrush, QColor, QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -55,6 +56,7 @@ try:
         QSplitter,
         QStatusBar,
         QTabWidget,
+        QTableView,
         QTableWidget,
         QTableWidgetItem,
         QTreeWidget,
@@ -101,7 +103,7 @@ from server.ui.row_refresh import (
     row_snapshot,
     same_row_order,
 )
-from ui.widgets import apply_glass_theme, make_button, monospace_font, style_button
+from ui.widgets import apply_glass_theme, apply_theme, make_button, monospace_font, style_button
 from ui.theme import M, STATE_COLORS
 from ui.styles import state_badge_style
 from ui.background import StarfieldBackground
@@ -358,6 +360,26 @@ def _configure_table_columns(widget, columns, widths: dict[str, tuple[int, int]]
     header.setSectionsMovable(False)
     header.setStretchLastSection(False)
     header.setMinimumSectionSize(70)
+    header.setFixedHeight(34)
+    header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    try:
+        header.setHighlightSections(False)
+        header.setCascadingSectionResizes(False)
+    except AttributeError:
+        pass
+    if hasattr(widget, "setVerticalScrollMode"):
+        widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        widget.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    if hasattr(widget, "setShowGrid"):
+        widget.setShowGrid(False)
+    if hasattr(widget, "setWordWrap"):
+        widget.setWordWrap(False)
+    if hasattr(widget, "setCornerButtonEnabled"):
+        widget.setCornerButtonEnabled(False)
+    if hasattr(widget, "verticalHeader"):
+        vertical_header = widget.verticalHeader()
+        vertical_header.setDefaultSectionSize(26)
+        vertical_header.setSectionResizeMode(QHeaderView.Fixed)
     minimums: dict[int, int] = {}
     for index, (column, _label) in enumerate(columns):
         width, minimum = widths.get(column, (140, 80))
@@ -381,6 +403,160 @@ def _configure_table_columns(widget, columns, widths: dict[str, tuple[int, int]]
             header.blockSignals(False)
 
     header.sectionResized.connect(_clamp_section)
+
+
+class DashboardTableModel(QAbstractTableModel):
+    """Small table model for dashboard rows keyed by stable IDs."""
+
+    def __init__(self, columns: tuple[tuple[str, str], ...], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.columns = columns
+        self.headers = [label for _column, label in columns]
+        self._keys: list[str] = []
+        self._values: list[tuple[str, ...]] = []
+        self._foregrounds: dict[tuple[int, int], str] = {}
+        self._hover_row = -1
+        self._hover_brush = QBrush(QColor(255, 255, 255, 28))
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt API
+        return 0 if parent.isValid() else len(self._values)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt API
+        return 0 if parent.isValid() else len(self.columns)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802 - Qt API
+        if not index.isValid():
+            return None
+        row = index.row()
+        column = index.column()
+        if (
+            row < 0
+            or row >= len(self._values)
+            or column < 0
+            or column >= len(self.columns)
+            or column >= len(self._values[row])
+        ):
+            return None
+        value = self._values[row][column]
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            return value
+        if role == Qt.ItemDataRole.ToolTipRole and len(value) > 48:
+            return value
+        if role == Qt.ItemDataRole.ForegroundRole:
+            color = self._foregrounds.get((row, column))
+            if color:
+                return QBrush(QColor(color))
+        if role == Qt.ItemDataRole.BackgroundRole and row == self._hover_row:
+            return self._hover_brush
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        return None
+
+    def headerData(  # noqa: N802 - Qt API
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ):
+        if role != Qt.ItemDataRole.DisplayRole or orientation != Qt.Orientation.Horizontal:
+            return None
+        if 0 <= section < len(self.headers):
+            return self.headers[section]
+        return None
+
+    def flags(self, index: QModelIndex):  # noqa: N802 - Qt API
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def set_headers(self, headers: list[str]) -> None:
+        if self.headers == headers:
+            return
+        self.headers = headers
+        if self.headers:
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self.headers) - 1)
+
+    def set_rows(
+        self,
+        rows: list[tuple[str, tuple[object, ...]]],
+        *,
+        foregrounds: dict[tuple[int, int], str] | None = None,
+    ) -> None:
+        keys = [str(key) for key, _values in rows]
+        values = [tuple(str(value) for value in row_values) for _key, row_values in rows]
+        foregrounds = dict(foregrounds or {})
+        if keys != self._keys:
+            self.beginResetModel()
+            self._keys = keys
+            self._values = values
+            self._foregrounds = foregrounds
+            self._hover_row = -1
+            self.endResetModel()
+            return
+
+        changed_rows = [
+            row
+            for row, value_tuple in enumerate(values)
+            if row >= len(self._values)
+            or self._values[row] != value_tuple
+            or self._row_foregrounds(row, foregrounds) != self._row_foregrounds(row, self._foregrounds)
+        ]
+        self._values = values
+        self._foregrounds = foregrounds
+        for row in changed_rows:
+            top_left = self.index(row, 0)
+            bottom_right = self.index(row, max(0, self.columnCount() - 1))
+            self.dataChanged.emit(top_left, bottom_right, [])
+
+    def update_cell_by_key(self, key: str, column: int, value: str) -> bool:
+        row = self.row_for_key(key)
+        if row < 0 or column < 0 or column >= self.columnCount():
+            return False
+        values = list(self._values[row])
+        if values[column] == value:
+            return False
+        values[column] = value
+        self._values[row] = tuple(values)
+        index = self.index(row, column)
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
+        return True
+
+    def key_at(self, row: int) -> str:
+        if 0 <= row < len(self._keys):
+            return self._keys[row]
+        return ""
+
+    def set_hover_row(self, row: int) -> None:
+        if row < 0 or row >= len(self._values):
+            row = -1
+        old_row = self._hover_row
+        if old_row == row:
+            return
+        self._hover_row = row
+        for changed_row in (old_row, row):
+            if 0 <= changed_row < len(self._values):
+                self.dataChanged.emit(
+                    self.index(changed_row, 0),
+                    self.index(changed_row, max(0, self.columnCount() - 1)),
+                    [Qt.ItemDataRole.BackgroundRole],
+                )
+
+    def row_for_key(self, key: str) -> int:
+        try:
+            return self._keys.index(str(key))
+        except ValueError:
+            return -1
+
+    def snapshot(self) -> RowSnapshot:
+        return row_snapshot(zip(self._keys, self._values))
+
+    @staticmethod
+    def _row_foregrounds(row: int, foregrounds: dict[tuple[int, int], str]) -> tuple[tuple[int, str], ...]:
+        return tuple(
+            (column, color)
+            for (fg_row, column), color in sorted(foregrounds.items())
+            if fg_row == row
+        )
 
 
 def _plain(value) -> str:
@@ -551,6 +727,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self._hover_brush = QBrush(QColor(255, 255, 255, 32))
         self._horizontal_scroll_active: set[object] = set()
         self._vertical_scroll_active: set[object] = set()
+        self._scroll_generations: dict[tuple[object, str], int] = {}
         self._scroll_tracking_widgets: set[object] = set()
 
         self.setWindowTitle("Server Monitor Dashboard")
@@ -604,7 +781,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     # ------------------------------------------------------------------ layout
     def _build_layout(self) -> None:
-        central = StarfieldBackground(self)
+        starfield_setting = os.environ.get("EXAM_QT_STARFIELD", "1").strip().lower()
+        if starfield_setting in {"0", "false", "no", "off"}:
+            central = QWidget(self)
+        else:
+            central = StarfieldBackground(self)
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(20, 16, 20, 12)
@@ -760,14 +941,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         return [self._heading_text("incidents", column, label) for column, label in self.INCIDENT_COLUMNS]
 
     def _refresh_process_headers(self) -> None:
-        header_item = self.process_tree.headerItem()
-        for index, (column, label) in enumerate(PROCESS_COLUMNS):
-            header_item.setText(index, self._heading_text("processes", column, label))
+        self.process_model.set_headers(
+            [self._heading_text("processes", column, label) for column, label in PROCESS_COLUMNS]
+        )
 
     def _refresh_incident_rule_headers(self) -> None:
-        header_item = self.incident_rules_tree.headerItem()
-        for index, (column, label) in enumerate(INCIDENT_RULE_COLUMNS):
-            header_item.setText(index, self._heading_text("incident_rules", column, label))
+        self.incident_rules_model.set_headers(
+            [self._heading_text("incident_rules", column, label) for column, label in INCIDENT_RULE_COLUMNS]
+        )
 
     def _prepare_rows_for_refresh(self, table_name: str, rows):
         previous = self._row_snapshots.get(table_name)
@@ -779,15 +960,18 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         return rows, snapshot, previous, force_rebuild
 
     def _restore_scrollbars(self, widget, vertical_value: int, horizontal_value: int) -> None:
+        vertical_generation = self._scroll_generation(widget, "vertical")
+        horizontal_generation = self._scroll_generation(widget, "horizontal")
+
         def restore(*, delayed: bool = False) -> None:
             try:
                 vertical = widget.verticalScrollBar()
                 horizontal = widget.horizontalScrollBar()
             except RuntimeError:
                 return
-            if not delayed or widget not in self._vertical_scroll_active:
+            if self._scroll_generation(widget, "vertical") == vertical_generation:
                 vertical.setValue(min(vertical_value, vertical.maximum()))
-            if not delayed or widget not in self._horizontal_scroll_active:
+            if self._scroll_generation(widget, "horizontal") == horizontal_generation:
                 horizontal.setValue(min(horizontal_value, horizontal.maximum()))
 
         restore(delayed=False)
@@ -806,12 +990,13 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             self._scroll_viewports[widget] = widget
 
     def _install_scroll_axis_tracking(self, widget, bar, active_widgets: set[object]) -> None:
-        bar.sliderPressed.connect(lambda w=widget, active=active_widgets: active.add(w))
+        axis = "horizontal" if bar.orientation() == Qt.Orientation.Horizontal else "vertical"
+        bar.sliderPressed.connect(lambda w=widget, active=active_widgets, a=axis: self._mark_scroll_active(w, active, a))
         bar.sliderReleased.connect(
             lambda w=widget, active=active_widgets: QTimer.singleShot(150, lambda: active.discard(w))
         )
         bar.actionTriggered.connect(
-            lambda _action, w=widget, active=active_widgets: self._mark_scroll_active(w, active)
+            lambda _action, w=widget, active=active_widgets, a=axis: self._mark_scroll_active(w, active, a)
         )
 
     def _install_viewport_event_filter(self, widget) -> None:
@@ -824,8 +1009,13 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         viewport.installEventFilter(self)
         self._event_filter_viewports.add(viewport)
 
-    def _mark_scroll_active(self, widget, active_widgets: set[object]) -> None:
+    def _scroll_generation(self, widget, axis: str) -> int:
+        return self._scroll_generations.get((widget, axis), 0)
+
+    def _mark_scroll_active(self, widget, active_widgets: set[object], axis: str) -> None:
         active_widgets.add(widget)
+        key = (widget, axis)
+        self._scroll_generations[key] = self._scroll_generations.get(key, 0) + 1
         QTimer.singleShot(350, lambda w=widget, active=active_widgets: active.discard(w))
 
     def _mark_wheel_scroll_active(self, widget, event) -> None:
@@ -834,12 +1024,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             if delta.isNull():
                 delta = event.angleDelta()
         except AttributeError:
-            self._mark_scroll_active(widget, self._vertical_scroll_active)
+            self._mark_scroll_active(widget, self._vertical_scroll_active, "vertical")
             return
         if abs(delta.x()) > abs(delta.y()):
-            self._mark_scroll_active(widget, self._horizontal_scroll_active)
+            self._mark_scroll_active(widget, self._horizontal_scroll_active, "horizontal")
         else:
-            self._mark_scroll_active(widget, self._vertical_scroll_active)
+            self._mark_scroll_active(widget, self._vertical_scroll_active, "vertical")
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
         if watched in self._scroll_viewports and event.type() == QEvent.Wheel:
@@ -848,27 +1038,31 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
                 self._mark_wheel_scroll_active(widget, event)
         if watched in self._hover_viewports and event.type() == QEvent.MouseMove:
             widget = self._hover_viewports.get(watched)
-            if isinstance(widget, QTableWidget):
+            if isinstance(widget, (QTableWidget, QTableView)):
                 self._set_table_hover_row(widget, widget.rowAt(event.pos().y()))
             elif isinstance(widget, QTreeWidget):
                 self._set_tree_hover_item(widget, widget.itemAt(0, event.pos().y()))
         elif event.type() == QEvent.Leave and watched in self._hover_viewports:
             widget = self._hover_viewports.get(watched)
-            if isinstance(widget, QTableWidget):
+            if isinstance(widget, (QTableWidget, QTableView)):
                 self._set_table_hover_row(widget, -1)
             elif isinstance(widget, QTreeWidget):
                 self._set_tree_hover_item(widget, None)
         return super().eventFilter(watched, event)
 
-    def _install_table_hover(self, table: QTableWidget) -> None:
+    def _install_table_hover(self, table) -> None:
         self._install_scroll_tracking(table)
         table.setMouseTracking(True)
         table.viewport().setMouseTracking(True)
         self._install_viewport_event_filter(table)
         self._hover_viewports[table.viewport()] = table
         self._hover_rows[table] = -1
-        table.itemEntered.connect(lambda item, widget=table: self._set_table_hover_row(widget, item.row()))
-        table.itemSelectionChanged.connect(lambda widget=table: self._refresh_table_hover(widget))
+        if hasattr(table, "entered"):
+            table.entered.connect(lambda index, widget=table: self._set_table_hover_row(widget, index.row()))
+        if hasattr(table, "itemEntered"):
+            table.itemEntered.connect(lambda item, widget=table: self._set_table_hover_row(widget, item.row()))
+        if hasattr(table, "itemSelectionChanged"):
+            table.itemSelectionChanged.connect(lambda widget=table: self._refresh_table_hover(widget))
 
     def _install_tree_hover(self, tree: QTreeWidget) -> None:
         self._install_scroll_tracking(tree)
@@ -880,15 +1074,23 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         tree.itemEntered.connect(lambda item, _column, widget=tree: self._set_tree_hover_item(widget, item))
         tree.itemSelectionChanged.connect(lambda widget=tree: self._refresh_tree_hover(widget))
 
-    def _set_table_hover_row(self, table: QTableWidget, row: int) -> None:
+    def _set_table_hover_row(self, table, row: int) -> None:
         previous = self._hover_rows.get(table, -1)
         if previous == row:
             return
+        if isinstance(table, QTableView):
+            model = table.model()
+            if isinstance(model, DashboardTableModel):
+                self._hover_rows[table] = row
+                model.set_hover_row(row)
+                return
         self._paint_table_hover_row(table, previous, enabled=False)
         self._hover_rows[table] = row
         self._paint_table_hover_row(table, row, enabled=True)
 
-    def _paint_table_hover_row(self, table: QTableWidget, row: int, *, enabled: bool) -> None:
+    def _paint_table_hover_row(self, table, row: int, *, enabled: bool) -> None:
+        if not isinstance(table, QTableWidget):
+            return
         if row < 0 or row >= table.rowCount():
             return
         if enabled and row in {index.row() for index in table.selectionModel().selectedRows()}:
@@ -898,7 +1100,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             if item is not None:
                 item.setBackground(self._hover_brush if enabled else QBrush())
 
-    def _refresh_table_hover(self, table: QTableWidget) -> None:
+    def _refresh_table_hover(self, table) -> None:
         row = self._hover_rows.get(table, -1)
         if row >= 0:
             self._paint_table_hover_row(table, row, enabled=False)
@@ -928,18 +1130,25 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     def _build_client_tree_area(self, parent_layout: QVBoxLayout) -> None:
         self._build_filter_bar(parent_layout, "clients", CLIENT_FILTERS, self._rebuild_client_table)
-        self.client_table = QTableWidget(0, len(CLIENT_COLUMNS))
-        self.client_table.setHorizontalHeaderLabels(self._client_headers())
+        self.client_model = DashboardTableModel(CLIENT_COLUMNS, self)
+        self.client_model.set_headers(self._client_headers())
+        self.client_table = QTableView()
+        self.client_table.setModel(self.client_model)
         self.client_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.client_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.client_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.client_table.verticalHeader().setVisible(False)
+        self.client_table.verticalHeader().setDefaultSectionSize(24)
+        self.client_table.setAlternatingRowColors(False)
+        self.client_table.setSortingEnabled(False)
         self.client_table.setFont(self._mono)
         _configure_table_columns(self.client_table, CLIENT_COLUMNS, CLIENT_COLUMN_WIDTHS)
         self.client_table.horizontalHeader().sectionClicked.connect(
             lambda index: self._set_sort("clients", CLIENT_COLUMNS[index][0], self._rebuild_client_table)
         )
-        self.client_table.itemSelectionChanged.connect(self._update_selected_client_panel)
+        self.client_table.selectionModel().selectionChanged.connect(
+            lambda _selected, _deselected: self._update_selected_client_panel()
+        )
         self._install_table_hover(self.client_table)
         parent_layout.addWidget(self.client_table, stretch=1)
 
@@ -1103,30 +1312,40 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         history_box = QGroupBox("Incident History")
         history_layout = QVBoxLayout(history_box)
         self._build_filter_bar(history_layout, "incidents", INCIDENT_FILTERS, self._rebuild_incident_table)
-        self.incident_table = QTableWidget(0, len(self.INCIDENT_COLUMNS))
-        self.incident_table.setHorizontalHeaderLabels(self._incident_headers())
+        self.incident_model = DashboardTableModel(tuple(self.INCIDENT_COLUMNS), self)
+        self.incident_model.set_headers(self._incident_headers())
+        self.incident_table = QTableView()
+        self.incident_table.setModel(self.incident_model)
         self.incident_table.setColumnHidden(0, True)
         self.incident_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.incident_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.incident_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.incident_table.verticalHeader().setVisible(False)
+        self.incident_table.verticalHeader().setDefaultSectionSize(24)
+        self.incident_table.setAlternatingRowColors(False)
+        self.incident_table.setSortingEnabled(False)
         self.incident_table.setFont(self._mono)
         _configure_table_columns(self.incident_table, self.INCIDENT_COLUMNS, INCIDENT_COLUMN_WIDTHS)
         self.incident_table.horizontalHeader().sectionClicked.connect(
             lambda index: self._set_sort("incidents", self.INCIDENT_COLUMNS[index][0], self._rebuild_incident_table)
         )
-        self.incident_table.itemSelectionChanged.connect(self._update_incident_detail)
+        self.incident_table.selectionModel().selectionChanged.connect(
+            lambda _selected, _deselected: self._update_incident_detail()
+        )
         self._install_table_hover(self.incident_table)
         history_layout.addWidget(self.incident_table)
         center_layout.addWidget(history_box, stretch=1)
 
         details_box = QGroupBox("Incident Details")
         details_layout = QVBoxLayout(details_box)
-        self.incident_detail_table = QTableWidget(0, 2)
-        self.incident_detail_table.setHorizontalHeaderLabels(["Field", "Value"])
+        self.incident_detail_model = DashboardTableModel((("field", "Field"), ("value", "Value")), self)
+        self.incident_detail_table = QTableView()
+        self.incident_detail_table.setModel(self.incident_detail_model)
         self.incident_detail_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.incident_detail_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.incident_detail_table.verticalHeader().setVisible(False)
+        self.incident_detail_table.verticalHeader().setDefaultSectionSize(24)
+        self.incident_detail_table.setAlternatingRowColors(False)
         self.incident_detail_table.setFont(self._mono)
         _configure_table_columns(
             self.incident_detail_table,
@@ -1166,22 +1385,28 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         process_box = QGroupBox("Process Definitions And Evidence")
         process_box_layout = QVBoxLayout(process_box)
 
-        self.process_tree = QTreeWidget()
-        self.process_tree.setColumnCount(len(PROCESS_COLUMNS))
-        self.process_tree.setHeaderLabels([label for _column, label in PROCESS_COLUMNS])
+        self.process_model = DashboardTableModel(PROCESS_COLUMNS, self)
+        self.process_model.set_headers([label for _column, label in PROCESS_COLUMNS])
+        self.process_tree = QTableView()
+        self.process_tree.setModel(self.process_model)
         self.process_tree.setColumnHidden(0, True)
         self.process_tree.setFont(self._mono)
         self.process_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.process_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.process_tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.process_tree.setRootIsDecorated(False)
+        self.process_tree.verticalHeader().setVisible(False)
+        self.process_tree.verticalHeader().setDefaultSectionSize(24)
+        self.process_tree.setAlternatingRowColors(False)
+        self.process_tree.setSortingEnabled(False)
         _configure_table_columns(self.process_tree, PROCESS_COLUMNS, PROCESS_COLUMN_WIDTHS)
-        self.process_tree.header().sectionClicked.connect(
+        self.process_tree.horizontalHeader().sectionClicked.connect(
             lambda index: self._set_sort("processes", PROCESS_COLUMNS[index][0], self._rebuild_process_database_tree)
         )
-        self.process_tree.itemSelectionChanged.connect(self._sync_process_buttons)
-        self.process_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_process_options_clicked())
-        self._install_tree_hover(self.process_tree)
+        self.process_tree.selectionModel().selectionChanged.connect(
+            lambda _selected, _deselected: self._sync_process_buttons()
+        )
+        self.process_tree.doubleClicked.connect(lambda _index: self._on_process_options_clicked())
+        self._install_table_hover(self.process_tree)
 
         process_box_layout.addWidget(self.process_tree)
         layout.addWidget(process_box, stretch=1)
@@ -1209,22 +1434,28 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         rules_box = QGroupBox("Incident Rules And Evidence")
         rules_box_layout = QVBoxLayout(rules_box)
 
-        self.incident_rules_tree = QTreeWidget()
-        self.incident_rules_tree.setColumnCount(len(INCIDENT_RULE_COLUMNS))
-        self.incident_rules_tree.setHeaderLabels([label for _column, label in INCIDENT_RULE_COLUMNS])
+        self.incident_rules_model = DashboardTableModel(INCIDENT_RULE_COLUMNS, self)
+        self.incident_rules_model.set_headers([label for _column, label in INCIDENT_RULE_COLUMNS])
+        self.incident_rules_tree = QTableView()
+        self.incident_rules_tree.setModel(self.incident_rules_model)
         self.incident_rules_tree.setColumnHidden(0, True)
         self.incident_rules_tree.setFont(self._mono)
         self.incident_rules_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.incident_rules_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.incident_rules_tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.incident_rules_tree.setRootIsDecorated(False)
+        self.incident_rules_tree.verticalHeader().setVisible(False)
+        self.incident_rules_tree.verticalHeader().setDefaultSectionSize(24)
+        self.incident_rules_tree.setAlternatingRowColors(False)
+        self.incident_rules_tree.setSortingEnabled(False)
         _configure_table_columns(self.incident_rules_tree, INCIDENT_RULE_COLUMNS, INCIDENT_RULE_COLUMN_WIDTHS)
-        self.incident_rules_tree.header().sectionClicked.connect(
+        self.incident_rules_tree.horizontalHeader().sectionClicked.connect(
             lambda index: self._set_sort("incident_rules", INCIDENT_RULE_COLUMNS[index][0], self._rebuild_incident_rules_tree)
         )
-        self.incident_rules_tree.itemSelectionChanged.connect(self._sync_incident_rule_buttons)
-        self.incident_rules_tree.itemDoubleClicked.connect(lambda _item, _col: self._on_incident_rule_options_clicked())
-        self._install_tree_hover(self.incident_rules_tree)
+        self.incident_rules_tree.selectionModel().selectionChanged.connect(
+            lambda _selected, _deselected: self._sync_incident_rule_buttons()
+        )
+        self.incident_rules_tree.doubleClicked.connect(lambda _index: self._on_incident_rule_options_clicked())
+        self._install_table_hover(self.incident_rules_tree)
 
         rules_box_layout.addWidget(self.incident_rules_tree)
         layout.addWidget(rules_box, stretch=1)
@@ -1296,11 +1527,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
 
     # ------------------------------------------------------------------ process database helpers
     def _selected_process_row(self) -> Optional[dict]:
-        items = self.process_tree.selectedItems()
-        if not items:
+        keys = self._selected_model_keys(self.process_tree, self.process_model)
+        if not keys:
             return None
-        item = items[0]
-        process_key = item.text(0)
+        process_key = keys[0]
         for row in self.process_database_data:
             if str(row.get("process_key", "") or "") == str(process_key):
                 return row
@@ -1316,42 +1546,21 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         selected_key = str((selected_row or {}).get("process_key", "") or "")
         vertical_value = self.process_tree.verticalScrollBar().value()
         horizontal_value = self.process_tree.horizontalScrollBar().value()
-        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("processes", self._process_tree_rows())
+        rows, snapshot, _previous, _force_rebuild = self._prepare_rows_for_refresh("processes", self._process_tree_rows())
         self._refresh_process_headers()
-        if not force_rebuild and same_row_order(previous, snapshot):
-            for index in changed_row_indexes(previous, snapshot):
-                _process_key, values = rows[index]
-                item = self.process_tree.topLevelItem(index)
-                if item is not None:
-                    for column, value in enumerate(values):
-                        item.setText(column, str(value))
-            self._row_snapshots["processes"] = snapshot
-            self._restore_scrollbars(self.process_tree, vertical_value, horizontal_value)
-            self._sync_process_buttons()
-            return
-
-        self.process_tree.blockSignals(True)
-        self._set_tree_hover_item(self.process_tree, None)
-        self.process_tree.clear()
-        restored_item = None
-        for process_key, values in rows:
-            item = QTreeWidgetItem([str(value) for value in values])
-            self.process_tree.addTopLevelItem(item)
-            if selected_key and process_key == selected_key:
-                restored_item = item
-        if restored_item is not None:
-            self.process_tree.setCurrentItem(restored_item)
-        self.process_tree.blockSignals(False)
+        self.process_model.set_rows(rows)
+        if selected_key:
+            self._select_model_keys(self.process_tree, self.process_model, {selected_key})
         self._restore_scrollbars(self.process_tree, vertical_value, horizontal_value)
         self._row_snapshots["processes"] = snapshot
         self._sync_process_buttons()
 
     # ------------------------------------------------------------------ incident rule helpers
     def _selected_incident_rule_row(self) -> Optional[dict]:
-        items = self.incident_rules_tree.selectedItems()
-        if not items:
+        keys = self._selected_model_keys(self.incident_rules_tree, self.incident_rules_model)
+        if not keys:
             return None
-        rule_key = items[0].text(0)
+        rule_key = keys[0]
         for row in self.incident_rules_data:
             if str(row.get("rule_key", "") or "") == str(rule_key):
                 return row
@@ -1366,43 +1575,52 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         selected_key = str((selected_row or {}).get("rule_key", "") or "")
         vertical_value = self.incident_rules_tree.verticalScrollBar().value()
         horizontal_value = self.incident_rules_tree.horizontalScrollBar().value()
-        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incident_rules", self._incident_rule_tree_rows())
+        rows, snapshot, _previous, _force_rebuild = self._prepare_rows_for_refresh("incident_rules", self._incident_rule_tree_rows())
         self._refresh_incident_rule_headers()
-        if not force_rebuild and same_row_order(previous, snapshot):
-            for index in changed_row_indexes(previous, snapshot):
-                _rule_key, values = rows[index]
-                item = self.incident_rules_tree.topLevelItem(index)
-                if item is not None:
-                    for column, value in enumerate(values):
-                        item.setText(column, str(value))
-            self._row_snapshots["incident_rules"] = snapshot
-            self._restore_scrollbars(self.incident_rules_tree, vertical_value, horizontal_value)
-            self._sync_incident_rule_buttons()
-            return
-
-        self.incident_rules_tree.blockSignals(True)
-        self._set_tree_hover_item(self.incident_rules_tree, None)
-        self.incident_rules_tree.clear()
-        restored_item = None
-        for rule_key, values in rows:
-            item = QTreeWidgetItem([str(value) for value in values])
-            self.incident_rules_tree.addTopLevelItem(item)
-            if selected_key and rule_key == selected_key:
-                restored_item = item
-        if restored_item is not None:
-            self.incident_rules_tree.setCurrentItem(restored_item)
-        self.incident_rules_tree.blockSignals(False)
+        self.incident_rules_model.set_rows(rows)
+        if selected_key:
+            self._select_model_keys(self.incident_rules_tree, self.incident_rules_model, {selected_key})
         self._restore_scrollbars(self.incident_rules_tree, vertical_value, horizontal_value)
         self._row_snapshots["incident_rules"] = snapshot
         self._sync_incident_rule_buttons()
 
     # ------------------------------------------------------------------ selection
+    def _selected_model_keys(self, view: QTableView, model: DashboardTableModel) -> list[str]:
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return []
+        keys: list[str] = []
+        for index in selection_model.selectedRows():
+            key = model.key_at(index.row())
+            if key:
+                keys.append(key)
+        return keys
+
+    def _select_model_keys(self, view: QTableView, model: DashboardTableModel, keys: set[str]) -> None:
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return
+        view.blockSignals(True)
+        selection_model.blockSignals(True)
+        try:
+            selection_model.clearSelection()
+            for key in keys:
+                row = model.row_for_key(key)
+                if row < 0:
+                    continue
+                index = model.index(row, 0)
+                selection_model.select(
+                    index,
+                    QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+                )
+                view.setCurrentIndex(index)
+        finally:
+            selection_model.blockSignals(False)
+            view.blockSignals(False)
+
     def _selected_client_id(self) -> Optional[str]:
-        rows = self.client_table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        item = self.client_table.item(rows[0].row(), 5)
-        return item.text() if item else None
+        keys = self._selected_model_keys(self.client_table, self.client_model)
+        return keys[0] if keys else None
 
     def _selected_client_data(self) -> tuple[Optional[str], Optional[dict]]:
         client_id = self._selected_client_id()
@@ -1459,12 +1677,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.selected_actions_button.setEnabled(bool(connected or data))
 
     def _selected_incident_ids(self) -> list[str]:
-        ids: list[str] = []
-        for row_index in {index.row() for index in self.incident_table.selectionModel().selectedRows()}:
-            item = self.incident_table.item(row_index, 0)
-            if item:
-                ids.append(item.text())
-        return ids
+        return self._selected_model_keys(self.incident_table, self.incident_model)
 
     def _selected_incidents(self) -> list[dict]:
         selected_ids = set(self._selected_incident_ids())
@@ -1509,18 +1722,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
     # ------------------------------------------------------------------ ticking
     def _update_client_remaining_cells(self, client_ids: set[str]) -> None:
         changed = False
-        for row in range(self.client_table.rowCount()):
-            id_item = self.client_table.item(row, 5)
-            if id_item is None or id_item.text() not in client_ids:
-                continue
-            remaining = _format_remaining(self.clients_data.get(id_item.text(), {}).get("remaining", 0))
-            item = self.client_table.item(row, 2)
-            if item is not None and item.text() == remaining:
-                continue
-            self._set_table_item_text(self.client_table, row, 2, remaining)
-            changed = True
+        for client_id in client_ids:
+            remaining = _format_remaining(self.clients_data.get(client_id, {}).get("remaining", 0))
+            changed = self.client_model.update_cell_by_key(client_id, 2, remaining) or changed
         if changed:
-            self._row_snapshots["clients"] = self._current_table_snapshot(self.client_table, 5)
+            self._row_snapshots["clients"] = self.client_model.snapshot()
 
     def _tick_running_timers(self) -> None:
         changed_client_ids: set[str] = set()
@@ -2116,42 +2322,16 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         selected_id = self._selected_client_id()
         vertical_value = self.client_table.verticalScrollBar().value()
         horizontal_value = self.client_table.horizontalScrollBar().value()
-        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("clients", self._client_table_rows())
-        self.client_table.setHorizontalHeaderLabels(self._client_headers())
-        if not force_rebuild and same_row_order(previous, snapshot):
-            for row in changed_row_indexes(previous, snapshot):
-                _client_id, values = rows[row]
-                for col, value in enumerate(values):
-                    foreground = None
-                    if col == 1:
-                        data = self.clients_data.get(str(values[5]), {})
-                        fg, _bg = STATE_COLORS.get(str(data.get("exam_state", "")).lower(), (M["on_surface_variant"], ""))
-                        foreground = fg
-                    self._set_table_item_text(self.client_table, row, col, str(value), foreground=foreground)
-            self._row_snapshots["clients"] = snapshot
-            self._restore_scrollbars(self.client_table, vertical_value, horizontal_value)
-            self._update_selected_client_panel()
-            return
-
-        self.client_table.blockSignals(True)
-        self._set_table_hover_row(self.client_table, -1)
-        self.client_table.setRowCount(len(rows))
-        new_row = -1
+        rows, snapshot, _previous, _force_rebuild = self._prepare_rows_for_refresh("clients", self._client_table_rows())
+        self.client_model.set_headers(self._client_headers())
+        foregrounds: dict[tuple[int, int], str] = {}
         for row, (client_id, values) in enumerate(rows):
-            for col, value in enumerate(values):
-                foreground = None
-                if col == 1:
-                    data = self.clients_data.get(str(client_id), {})
-                    fg, _bg = STATE_COLORS.get(str(data.get("exam_state", "")).lower(), (M["on_surface_variant"], ""))
-                    foreground = fg
-                self._set_table_item_text(self.client_table, row, col, str(value), foreground=foreground)
-            if client_id == selected_id:
-                new_row = row
-        if new_row >= 0:
-            self.client_table.selectRow(new_row)
-        else:
-            self.client_table.clearSelection()
-        self.client_table.blockSignals(False)
+            data = self.clients_data.get(str(client_id), {})
+            fg, _bg = STATE_COLORS.get(str(data.get("exam_state", "")).lower(), (M["on_surface_variant"], ""))
+            foregrounds[(row, 1)] = fg
+        self.client_model.set_rows(rows, foregrounds=foregrounds)
+        if selected_id:
+            self._select_model_keys(self.client_table, self.client_model, {selected_id})
         self._restore_scrollbars(self.client_table, vertical_value, horizontal_value)
         self._row_snapshots["clients"] = snapshot
         self._update_selected_client_panel()
@@ -2160,41 +2340,16 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         selected_ids = set(self._selected_incident_ids())
         vertical_value = self.incident_table.verticalScrollBar().value()
         horizontal_value = self.incident_table.horizontalScrollBar().value()
-        rows, snapshot, previous, force_rebuild = self._prepare_rows_for_refresh("incidents", self._incident_table_rows())
-        self.incident_table.setHorizontalHeaderLabels(self._incident_headers())
+        rows, snapshot, _previous, _force_rebuild = self._prepare_rows_for_refresh("incidents", self._incident_table_rows())
+        self.incident_model.set_headers(self._incident_headers())
         self._incident_tree_refreshing = True
         try:
-            if not force_rebuild and same_row_order(previous, snapshot):
-                for row in changed_row_indexes(previous, snapshot):
-                    _incident_id, values = rows[row]
-                    for col, value in enumerate(values):
-                        self._set_table_item_text(self.incident_table, row, col, str(value))
-                self._row_snapshots["incidents"] = snapshot
-                self._incident_tree_refreshing = False
-                self._restore_scrollbars(self.incident_table, vertical_value, horizontal_value)
-                self._update_incident_detail()
-                return
-
-            self.incident_table.blockSignals(True)
-            self._set_table_hover_row(self.incident_table, -1)
-            self.incident_table.setRowCount(len(rows))
-            restored_rows: list[int] = []
-            for row, (incident_id, values) in enumerate(rows):
-                for col, value in enumerate(values):
-                    self._set_table_item_text(self.incident_table, row, col, str(value))
-                if incident_id in selected_ids:
-                    restored_rows.append(row)
-            self.incident_table.clearSelection()
-            for row in restored_rows:
-                self.incident_table.selectRow(row)
-            self.incident_table.blockSignals(False)
+            self.incident_model.set_rows(rows)
+            if selected_ids:
+                self._select_model_keys(self.incident_table, self.incident_model, selected_ids)
             self._restore_scrollbars(self.incident_table, vertical_value, horizontal_value)
             self._row_snapshots["incidents"] = snapshot
         finally:
-            try:
-                self.incident_table.blockSignals(False)
-            except Exception:
-                pass
             self._incident_tree_refreshing = False
         self._update_incident_detail()
 
@@ -2209,10 +2364,11 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
             rows = _incident_detail_lines(incidents[0])
         elif incidents:
             rows = _multi_incident_detail_lines(incidents)
-        self.incident_detail_table.setRowCount(len(rows))
-        for row, (field, value) in enumerate(rows):
-            self.incident_detail_table.setItem(row, 0, QTableWidgetItem(field))
-            self.incident_detail_table.setItem(row, 1, QTableWidgetItem(value))
+        model_rows = [
+            (str(index), (field, value))
+            for index, (field, value) in enumerate(rows)
+        ]
+        self.incident_detail_model.set_rows(model_rows)
         self._restore_scrollbars(self.incident_detail_table, vertical_value, horizontal_value)
         self._sync_incident_buttons(incidents)
 
@@ -2285,7 +2441,11 @@ def run() -> int:
     crash_log_handle = _crash_log.open("w", encoding="utf-8")
     faulthandler.enable(file=crash_log_handle, all_threads=True)
     app = QApplication.instance() or QApplication(sys.argv)
-    apply_glass_theme(app)
+    starfield_setting = os.environ.get("EXAM_QT_STARFIELD", "1").strip().lower()
+    if starfield_setting in {"0", "false", "no", "off"}:
+        apply_theme(app)
+    else:
+        apply_glass_theme(app)
     use_ws_ipc = should_use_ws_ipc()
     standalone = stdin_is_standalone() and not use_ws_ipc
     gui = ServerGUI(standalone_mode=standalone)

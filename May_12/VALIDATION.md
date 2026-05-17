@@ -6,7 +6,7 @@ Date: 2026-05-12
 
 | Folder | Status |
 | --- | --- |
-| `setup/` | Created with offline wheelhouse, installer assets, FFmpeg assets, manifest, and dependency setup scripts. |
+| `setup/` | Legacy local offline asset cache only; runtime setup no longer uses scripts from this folder. |
 | `client/` | Created as standalone client bundle with no server package folder. |
 | `server/` | Created as standalone server bundle with no client package folder. |
 
@@ -23,9 +23,9 @@ Date: 2026-05-12
 
 | Check | Result |
 | --- | --- |
-| Client requirements resolved with `pip --dry-run --ignore-installed --no-index --find-links ..\setup\wheelhouse` | Passed |
-| Server requirements resolved with `pip --dry-run --ignore-installed --no-index --find-links ..\setup\wheelhouse` | Passed |
-| Setup PowerShell script parse | Passed |
+| Client requirements resolved with `pip --dry-run --ignore-installed --no-index --find-links offline-packages\wheelhouse` | Passed |
+| Server requirements resolved with `pip --dry-run --ignore-installed --no-index --find-links offline-packages\wheelhouse` | Passed |
+| Setup scripts removed from `May_12/setup` | Passed |
 | Setup `manifest.sha256` verification | Passed, 31 files |
 
 ## Import And Syntax Checks
@@ -46,4 +46,3 @@ from `May_12` after checks completed.
 
 The copied offline wheelhouse is currently Python 3.13 / Windows x64 oriented.
 Rebuild it before using Python 3.14 or a different platform.
-

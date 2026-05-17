@@ -2,7 +2,8 @@
 
 Selects the GUI backend at runtime via ``--ui {tk,qt}``.
 
-* ``--ui tk`` (default): the Tk dashboard in ``server.ui.dashboard_tk``.
+* ``--ui auto`` (default): Qt dashboard first, Tk fallback.
+* ``--ui tk``: the Tk dashboard in ``server.ui.dashboard_tk``.
 * ``--ui qt``: the Qt dashboard in ``server.ui.dashboard_qt``.
 
 Run directly via ``python -m server.gui [--ui tk|qt]``. ``server/tasks.py``
@@ -50,9 +51,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--ui",
-        choices=("tk", "qt"),
-        default="tk",
-        help="GUI backend: 'tk' (legacy Tkinter), 'qt' (PySide6).",
+        choices=("auto", "tk", "qt"),
+        default="auto",
+        help="GUI backend: 'auto' (Qt first), 'qt' (PySide6), or 'tk' (legacy Tkinter).",
     )
     parser.add_argument(
         "--ipc-transport",
@@ -65,9 +66,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    if args.ui == "qt":
-        from server.ui.dashboard_qt import run as run_qt
-        return run_qt()
+    if args.ui in {"auto", "qt"}:
+        try:
+            from server.ui.dashboard_qt import run as run_qt
+        except ImportError:
+            if args.ui == "qt":
+                raise
+        else:
+            return run_qt()
 
     from server.ui.dashboard_tk import run as run_tk
     return run_tk()

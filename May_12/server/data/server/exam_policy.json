@@ -41,7 +41,7 @@
       "auto_violation_pause": false
     },
     "unexpected_process": {
-      "enabled": false,
+      "enabled": true,
       "severity": "warning",
       "known_process_names": [],
       "known_directory_paths": [],

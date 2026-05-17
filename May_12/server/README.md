@@ -8,7 +8,8 @@ This folder is the deployable operator/server side of the project.
 | --- | --- |
 | `server/` | Server runtime, HTTP/WebSocket routes, dashboard UI, projector files, state, policy, and command logic. |
 | `common/` | Shared protocol, security, IPC, discovery, matching, and text-safety helpers required by the server. |
-| `ui/` | Shared Qt visual helpers used by the Qt dashboard. |
+| `common_ui/` | Bundled visual theme/helpers used by the server UI. |
+| `ui/` | Compatibility wrappers for bundled UI helpers. |
 | `launcher_ui/` | Server manager UI only. |
 | `data/server/` | Policy-style defaults copied from the source project. Runtime logs/artifacts are not preloaded. |
 | `allowed_users.json` | Allowed login IDs for server-side admission. |
@@ -19,14 +20,20 @@ This folder is the deployable operator/server side of the project.
 
 ## Setup
 
-From the parent `May_12` folder, run:
+Online setup:
 
 ```bat
-setup\install_server_deps.bat
+python setup.py
 ```
 
-This creates `server\.venv` and installs packages from `setup\wheelhouse` when
-available.
+Offline setup, using the default local `offline-packages` folder:
+
+```bat
+python setup.py --offline
+```
+
+Use `python setup.py --offline --source X:\offline-packages` only when the
+offline source lives outside this folder.
 
 ## Run
 
@@ -36,13 +43,15 @@ run_server_qt.bat
 run_server_cli.bat --help
 ```
 
-The run scripts prefer `server\.venv\Scripts\python.exe` and fall back to
-`python` if no local venv exists.
+The run scripts use the user-wide Python 3.13 install. They prefer `py -3.13`
+and fall back to `python` only when it resolves to Python 3.13.
 
 ## Deployment Notes
 
 - Copy this whole `server` folder to the operator/server machine.
+- Install Python 3.13 manually before running setup.
+- `setup.py` installs dependencies with `pip install --user`; no local Python
+  environment is created.
 - Edit `allowed_users.json` before an exam.
 - Server runtime data is written under this folder's `data/` tree.
 - The client bundle is not required inside this folder.
-

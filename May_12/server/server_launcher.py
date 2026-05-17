@@ -1,38 +1,61 @@
 """Exam Server Manager launcher — dispatches between Tk and Qt backends.
 
 Usage:
-    python server_launcher.py            # default: Tk
+    python server_launcher.py            # default: auto, Qt first
+    python server_launcher.py --ui auto  # Qt first, Tk fallback
     python server_launcher.py --ui tk    # explicit Tk
     python server_launcher.py --ui qt    # PySide6 Qt
 """
 
 import argparse
+import os
 import sys
+from pathlib import Path
+
+
+BUNDLE_DIR = Path(__file__).resolve().parent
+if str(BUNDLE_DIR) not in sys.path:
+    sys.path.insert(0, str(BUNDLE_DIR))
+os.chdir(BUNDLE_DIR)
+
+
+def _is_pyside6_import_error(exc: ImportError) -> bool:
+    missing = getattr(exc, "name", "") or ""
+    return missing == "PySide6" or missing.startswith("PySide6.")
+
+
+def _handle_qt_import_error(exc: ImportError, *, explicit_qt: bool) -> int:
+    if _is_pyside6_import_error(exc):
+        print(f"PySide6 is required for Qt mode: {exc}", file=sys.stderr)
+    else:
+        print(f"Qt mode failed while importing application modules: {exc}", file=sys.stderr)
+    if explicit_qt:
+        return 1
+    print("Falling back to Tk.", file=sys.stderr)
+    from launcher_ui.server_manager_tk import ServerManager
+    from common.manager_support import apply_dpi_awareness
+
+    apply_dpi_awareness()
+    app = ServerManager()
+    app.mainloop()
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Server Manager Launcher")
     parser.add_argument(
         "--ui",
-        choices=["tk", "qt"],
-        default="tk",
-        help="UI backend: tk (default) or qt (requires PySide6)",
+        choices=["auto", "tk", "qt"],
+        default="auto",
+        help="UI backend: auto (default, Qt first), qt, or tk",
     )
     args = parser.parse_args()
 
-    if args.ui == "qt":
+    if args.ui in {"auto", "qt"}:
         try:
             from launcher_ui.server_manager_qt import run
         except ImportError as exc:
-            print(f"PySide6 is required for Qt mode: {exc}", file=sys.stderr)
-            print("Falling back to Tk.", file=sys.stderr)
-            from launcher_ui.server_manager_tk import ServerManager
-            from common.manager_support import apply_dpi_awareness
-
-            apply_dpi_awareness()
-            app = ServerManager()
-            app.mainloop()
-            return 0
+            return _handle_qt_import_error(exc, explicit_qt=args.ui == "qt")
         return run()
 
     # Default: Tk

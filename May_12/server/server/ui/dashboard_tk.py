@@ -18,6 +18,8 @@ from common.manager_support import install_close_guard
 from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from common.runtime_logging import setup_runtime_logging
 from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_standalone, write_json_stdout, write_text_stderr
+from ui.tk_theme import apply_tk_theme, style_text_widget, tk_mono_font
+from ui.theme import M, STATE_COLORS
 from server.ui.dashboard_dialogs_tk import DashboardPopupMixin
 from server.ui.dashboard_table_helpers import (
     CLIENT_COLUMNS,
@@ -76,17 +78,13 @@ def _plain(value) -> str:
 
 def _tk_badge_colors(state: str) -> tuple[str, str]:
     state = str(state or "").strip().lower()
-    if state in {"running", "connected"}:
-        return "#b1c5ff", "#00296b"
-    if state in {"violation_paused", "violation", "warning"}:
-        return "#b1c5ff", "#444650"
-    if state in {"admin_paused", "paused", "disconnected_paused"}:
-        return "#dce2f4", "#232a37"
-    if state in {"submitted", "finished", "awaiting_submission"}:
-        return "#abb4d4", "#3c4661"
-    if state == "banned":
-        return "#ffffff", "#444650"
-    return "#e0e0e0", "#19202c"
+    if state == "connected":
+        state = "running"
+    if state in {"violation", "warning"}:
+        state = "violation_paused"
+    if state == "paused":
+        state = "admin_paused"
+    return STATE_COLORS.get(state, (M["on_surface_variant"], M["surface_container"]))
 
 
 def _incident_detail_lines(incident: dict) -> list[tuple[str, str]]:
@@ -214,7 +212,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         self.title("Server Monitor Dashboard")
         self.geometry("1200x760")
         self.minsize(1000, 680)
-        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        apply_tk_theme(self)
+        self.mono_font = tk_mono_font(self)
         self.header_font = tkfont.nametofont("TkDefaultFont").copy()
         self.header_font.configure(weight="bold")
         self.tree_style = ttk.Style(self)
@@ -498,6 +497,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         log_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=(10, 0))
 
         self.log_text = tk.Text(log_frame, height=7, state=tk.DISABLED, wrap=tk.NONE)
+        style_text_widget(self.log_text)
         self.log_text.configure(
             relief=tk.SUNKEN,
             borderwidth=1,
@@ -537,8 +537,8 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             textvariable=self.selected_client_badge_var,
             padx=8,
             pady=2,
-            bg="#444650",
-            fg="#dce2f4",
+            bg=M["surface_container_high"],
+            fg=M["on_surface_variant"],
         )
         self.selected_client_badge.pack(side=tk.RIGHT)
         ttk.Label(
@@ -1397,6 +1397,7 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         match_fields.columnconfigure(1, weight=1)
         ttk.Label(match_fields, text="Title Patterns").grid(row=0, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
         title_text = tk.Text(match_fields, height=3, width=78, font=self.mono_font, wrap=tk.WORD)
+        style_text_widget(title_text)
         title_text.insert("1.0", incident_rule_field_text(row, "window_title_patterns"))
         title_text.grid(row=0, column=1, sticky=tk.EW, pady=4)
         ttk.Label(match_fields, text="Match Mode").grid(row=1, column=0, sticky=tk.W, padx=(8, 8), pady=4)
@@ -1406,10 +1407,12 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
         )
         ttk.Label(match_fields, text="Processes").grid(row=2, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
         process_text = tk.Text(match_fields, height=2, width=78, font=self.mono_font, wrap=tk.NONE)
+        style_text_widget(process_text)
         process_text.insert("1.0", incident_rule_field_text(row, "process_names"))
         process_text.grid(row=2, column=1, sticky=tk.EW, pady=4)
         ttk.Label(match_fields, text="Browser Processes").grid(row=3, column=0, sticky=tk.NW, padx=(8, 8), pady=4)
         browser_text = tk.Text(match_fields, height=2, width=78, font=self.mono_font, wrap=tk.NONE)
+        style_text_widget(browser_text)
         browser_text.insert("1.0", incident_rule_field_text(row, "browser_process_names"))
         browser_text.grid(row=3, column=1, sticky=tk.EW, pady=4)
 

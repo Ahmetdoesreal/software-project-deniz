@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from common.ipc_ws import ThreadedIpcServer
+from ui.tk_theme import apply_tk_theme, style_text_widget, tk_mono_font
 
 
 def apply_dpi_awareness():
@@ -259,6 +260,7 @@ class ConsoleWindow(tk.Toplevel):
         self.title(title)
         self.geometry("980x620")
         self.withdraw()
+        apply_tk_theme(self)
         install_close_guard(self, self._hide_window, include_quit_shortcuts=False)
 
         self.status_var = tk.StringVar(value="No active session.")
@@ -272,7 +274,7 @@ class ConsoleWindow(tk.Toplevel):
         frame = ttk.Frame(self, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        mono_font = tkfont.nametofont("TkFixedFont")
+        mono_font = tk_mono_font(self)
         style = ttk.Style(self)
         style.configure("ConsoleMono.TLabel", font=mono_font)
         ttk.Label(frame, textvariable=self.status_var).pack(anchor=tk.W)
@@ -314,6 +316,7 @@ class ConsoleWindow(tk.Toplevel):
             yscrollcommand=y_scroll.set,
             xscrollcommand=x_scroll.set,
         )
+        style_text_widget(self.output_text)
         self.output_text.grid(row=0, column=0, sticky=tk.NSEW)
         y_scroll.grid(row=0, column=1, sticky=tk.NS)
         x_scroll.grid(row=1, column=0, sticky=tk.EW)

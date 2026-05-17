@@ -16,6 +16,8 @@ if str(PROJECT_DIR) not in sys.path:
 from common.manager_support import install_close_guard
 from common.ipc_ws import ThreadedIpcClient, should_use_ws_ipc
 from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_standalone, write_json_stdout
+from ui.tk_theme import apply_tk_theme, style_text_widget, tk_mono_font
+from ui.theme import M
 from client.submission import build_file_preview, format_bytes
 
 from common.runtime_logging import setup_runtime_logging
@@ -74,6 +76,7 @@ class ExamTimerGUI:
         self.root.geometry("500x320")
         self.root.minsize(460, 290)
         self.root.attributes("-topmost", True)
+        apply_tk_theme(self.root)
         install_close_guard(self.root, self.on_closing, bind_all=True)
         default_font = tkfont.nametofont("TkDefaultFont")
         self.timer_font = default_font.copy()
@@ -96,6 +99,8 @@ class ExamTimerGUI:
             anchor=tk.CENTER,
             padx=12,
             pady=10,
+            background=M["surface_container_lowest"],
+            foreground=M["primary"],
         )
         self.timer_display.pack(fill=tk.X)
 
@@ -142,6 +147,8 @@ class ExamTimerGUI:
             anchor=tk.W,
             padx=6,
             pady=3,
+            background=M["surface_container_lowest"],
+            foreground=M["on_surface_variant"],
         )
         self.footer_label.pack(fill=tk.X, pady=(10, 0))
 
@@ -347,10 +354,11 @@ class ExamTimerGUI:
 class SubmissionWindow(tk.Toplevel):
     def __init__(self, parent, submit_callback, close_callback):
         super().__init__(parent)
+        apply_tk_theme(self)
         self.submit_callback = submit_callback
         self.close_callback = close_callback
         self.selected_file = ""
-        self.mono_font = tkfont.nametofont("TkFixedFont").copy()
+        self.mono_font = tk_mono_font(self)
 
         self.title("Finish Exam")
         self.geometry("820x560")
@@ -464,6 +472,7 @@ class SubmissionWindow(tk.Toplevel):
         self.text_container.columnconfigure(0, weight=1)
         self.text_container.rowconfigure(0, weight=1)
         self.text_preview = tk.Text(self.text_container, wrap=tk.NONE, state=tk.DISABLED)
+        style_text_widget(self.text_preview)
         self.text_preview.configure(
             relief=tk.SUNKEN,
             borderwidth=1,

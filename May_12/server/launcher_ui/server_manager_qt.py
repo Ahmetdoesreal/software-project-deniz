@@ -22,7 +22,7 @@ if str(PROJECT_DIR) not in sys.path:
 def _missing_pyside6_message() -> str:
     return (
         "PySide6 is required for the Qt UI. Install it with:\n"
-        "    pip install PySide6\n"
+        "    python -m pip install --user PySide6\n"
         "Or run the legacy interface with: --ui tk"
     )
 
@@ -211,7 +211,7 @@ class ServerManager(QMainWindow):
         self.start_button = make_button("Start Server", "filled")
         self.start_button.clicked.connect(self.start_server)
         controls_layout.addWidget(self.start_button)
-        self.stop_button = make_button("Stop Server", "outlined")
+        self.stop_button = make_button("Stop Server", "danger")
         self.stop_button.clicked.connect(self.stop_server)
         controls_layout.addWidget(self.stop_button)
         self.cli_button = make_button("Open Session CLI", "text")

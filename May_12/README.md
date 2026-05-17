@@ -1,53 +1,69 @@
 # May_12 Deployment Split
 
-This folder is a clean deployment split of the current `May_04_Deniz` implementation.
+This folder keeps the student/client and operator/server bundles separate.
 
 ## Layout
 
 | Folder | Purpose |
 | --- | --- |
-| `client/` | Student/client deployment bundle. Contains client code, shared common code, client UI, client launchers, auth helpers, and client requirements. |
-| `server/` | Operator/server deployment bundle. Contains server code, shared common code, server UI, server launchers, projector files, server policy defaults, and server requirements. |
-| `setup/` | Shared dependency setup assets and scripts. Contains the offline wheelhouse, Python installer location, FFmpeg binaries, and venv install helpers. |
+| `client/` | Student/client deployment bundle with its own `setup.py`, requirements, UI, launcher, and runtime code. |
+| `server/` | Operator/server deployment bundle with its own `setup.py`, requirements, UI, launcher, and runtime code. |
 
-## Deployment Rule
+The bundles are intentionally independent. Copy `client/` to student machines
+and `server/` to the operator machine.
 
-The `client` and `server` folders are intentionally independent. Shared modules
-such as `common/` and `ui/` are duplicated so that either folder can be copied to
-another machine without depending on `May_04_Deniz/` or the other side.
+## Offline Packages
 
-Server code is not placed inside the client bundle. Client runtime code is not
-placed inside the server bundle.
-
-## Quick Start
-
-From this folder:
+On the dev PC, generate offline package folders:
 
 ```bat
-setup\install_server_deps.bat
-setup\install_client_deps.bat
+python tools\offline_package_generator.py --target all
 ```
 
-Then start:
+This writes:
+
+```text
+May_12\client\offline-packages
+May_12\server\offline-packages
+```
+
+If you already have a prepared wheelhouse/FFmpeg source, seed from it:
 
 ```bat
-server\run_server_tk.bat
-client\run_client_tk.bat
+python tools\offline_package_generator.py --target all --source X:\prepared-offline-packages
 ```
 
-Qt variants are also available:
+## Client Setup
 
 ```bat
-server\run_server_qt.bat
-client\run_client_qt.bat
+cd May_12\client
+python setup.py --offline
+run_client_qt.bat
 ```
+
+`--offline` defaults to `client\offline-packages`. Use `--source` only when
+the offline source is elsewhere.
+
+## Server Setup
+
+```bat
+cd May_12\server
+python setup.py --offline
+run_server_qt.bat
+```
+
+`--offline` defaults to `server\offline-packages`. Use `--source` only when
+the offline source is elsewhere.
 
 ## Notes
 
-- Dependency setup creates `.venv` inside the selected `client` or `server`
-  folder. It does not install packages into global Python `site-packages`.
-- The offline wheelhouse currently matches the bundled Python 3.13.x assets.
-  Rebuild the wheelhouse before targeting another Python version.
-- Runtime logs, submissions, artifacts, and client buffers are not preloaded
-  from the source project.
-
+- Python 3.13 must be installed manually before setup runs.
+- Setup never launches or installs Python.
+- Setup installs Python packages into the current user's site-packages with
+  `pip install --user`; no local Python environment is created.
+- Offline dependency installs use `offline-packages\wheelhouse` with
+  `pip --no-index`.
+- FFmpeg is loaded from `EXAM_FFMPEG_PATH` first, then
+  `client\offline-packages\ffmpeg\bin`, then normal `PATH`.
+- LAN deployment assumes local copies on each machine, with server discovery and
+  manual host fallback kept as-is.

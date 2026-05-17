@@ -8,7 +8,8 @@ This folder is the deployable student/client side of the project.
 | --- | --- |
 | `client/` | Client runtime, monitoring, buffering, submission, and timer UI code. |
 | `common/` | Shared protocol, security, IPC, discovery, matching, and text-safety helpers required by the client. |
-| `ui/` | Shared Qt visual helpers used by the Qt client UI. |
+| `common_ui/` | Bundled visual theme/helpers used by the client UI. |
+| `ui/` | Compatibility wrappers for bundled UI helpers. |
 | `launcher_ui/` | Client manager UI only. |
 | `auth_util/` | AD/local auth helper code and executable. |
 | `school_service.py` | CATS authentication helper. |
@@ -18,14 +19,20 @@ This folder is the deployable student/client side of the project.
 
 ## Setup
 
-From the parent `May_12` folder, run:
+Online setup:
 
 ```bat
-setup\install_client_deps.bat
+python setup.py
 ```
 
-This creates `client\.venv` and installs packages from `setup\wheelhouse` when
-available.
+Offline setup, using the default local `offline-packages` folder:
+
+```bat
+python setup.py --offline
+```
+
+Use `python setup.py --offline --source X:\offline-packages` only when the
+offline source lives outside this folder.
 
 ## Run
 
@@ -35,13 +42,15 @@ run_client_qt.bat
 run_client_cli.bat --help
 ```
 
-The run scripts prefer `client\.venv\Scripts\python.exe` and fall back to
-`python` if no local venv exists.
+The run scripts use the user-wide Python 3.13 install. They prefer `py -3.13`
+and fall back to `python` only when it resolves to Python 3.13.
 
 ## Deployment Notes
 
 - Copy this whole `client` folder to a student machine.
+- Install Python 3.13 manually before running setup.
+- `setup.py` installs dependencies with `pip install --user`; no local Python
+  environment is created.
 - Keep `auth_config.json` with the client if AD/auth secret settings are needed.
 - The client stores runtime files under its local `data/` folder after first run.
 - The server bundle is not required inside this folder.
-

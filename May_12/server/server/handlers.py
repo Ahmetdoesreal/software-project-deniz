@@ -291,6 +291,19 @@ def _remove_file_if_present(path: Path):
         pass
 
 
+def _replace_file_with_retries(source: Path, destination: Path, attempts: int = 6) -> tuple[Path | None, Exception | None]:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return source.replace(destination), None
+        except (PermissionError, OSError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            time.sleep(0.05 * attempt)
+    return None, last_error
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file_handle:
@@ -983,9 +996,12 @@ async def client_artifact_upload(request: web.Request) -> web.Response:
     final_destination = build_artifact_path(client_id, artifact_kind, file_part.filename)
     final_destination.parent.mkdir(parents=True, exist_ok=True)
     if final_destination != destination:
-        final_destination = destination.replace(final_destination)
-    else:
-        final_destination = destination
+        moved_destination, replace_error = _replace_file_with_retries(destination, final_destination)
+        if replace_error or moved_destination is None:
+            _remove_file_if_present(destination)
+            _remove_file_if_present(final_destination)
+            return web.json_response({"error": f"Failed to finalize artifact: {replace_error}"}, status=500)
+        final_destination = moved_destination
 
     metadata = {}
     if metadata_text:

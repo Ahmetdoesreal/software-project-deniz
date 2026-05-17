@@ -1,0 +1,12 @@
+"""Compatibility wrapper for the bundled Tk fallback theme."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+BUNDLE_DIR = Path(__file__).resolve().parents[1]
+if str(BUNDLE_DIR) not in sys.path:
+    sys.path.insert(0, str(BUNDLE_DIR))
+
+from common_ui.tk_theme import *  # noqa: F401,F403

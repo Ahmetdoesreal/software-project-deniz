@@ -2,6 +2,8 @@ import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from ui.tk_theme import style_text_widget
+
 
 SEVERITY_VALUES = ("info", "warning", "violation")
 WINDOW_TITLE_MATCH_MODES = ("contains", "exact")
@@ -118,6 +120,7 @@ class PolicySettingsMixin:
         frame.columnconfigure(0, weight=1)
         ttk.Label(frame, text=label).grid(row=0, column=0, sticky=tk.W)
         text = tk.Text(frame, height=height, wrap=tk.NONE, font=self.mono_font)
+        style_text_widget(text)
         text.grid(row=1, column=0, sticky=tk.EW, pady=(2, 0))
         scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
         scroll.grid(row=1, column=1, sticky=tk.NS, pady=(2, 0))
