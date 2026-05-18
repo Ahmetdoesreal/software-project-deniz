@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Analyze May_12 client replay files, bundles, and matching upload references.
 
-Default target:
-    May_12/data/client
+Default target is auto-detected. The script can be run from repo-root/tools,
+copied into May_12, or copied into May_12/client beside the data folder.
 
 Examples:
     python tools/analyze_client_replays.py
     python tools/analyze_client_replays.py --session 043e2a30-a7df-4422-982d-c6b8b8626d5a
     python tools/analyze_client_replays.py --session all --json client_replay_report.json
     python tools/analyze_client_replays.py --data-root X:\\May_12\\data\\client
+    cd May_12\\client && python analyze_client_replays.py
 """
 
 from __future__ import annotations
@@ -90,26 +91,121 @@ class ClientSessionReport:
     issues: list[str]
 
 
+def script_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    path = script_dir()
+    if path.name.lower() == "tools":
+        return path.parent
+    for parent in [path, *path.parents]:
+        if (parent / "May_12").is_dir():
+            return parent
+    return path
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        try:
+            key = str(path.expanduser().resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def location_roots() -> list[Path]:
+    roots: list[Path] = []
+    for base in [Path.cwd(), script_dir()]:
+        roots.append(base)
+        roots.extend(base.parents)
+    return _unique_paths(roots)
+
+
+def local_roots() -> list[Path]:
+    return _unique_paths([Path.cwd(), script_dir()])
+
+
+def _client_data_candidates_for_roots(roots: list[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(
+            [
+                root / "data" / "client",
+                root / "client" / "data" / "client",
+                root / "May_12" / "data" / "client",
+                root / "May_12" / "client" / "data" / "client",
+            ]
+        )
+    return _unique_paths(candidates)
+
+
+def client_data_candidates() -> list[Path]:
+    return _client_data_candidates_for_roots(location_roots())
+
+
+def _server_data_candidates_for_roots(roots: list[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(
+            [
+                root / "data" / "server",
+                root / "server" / "data" / "server",
+                root / "May_12" / "server" / "data" / "server",
+            ]
+        )
+    return _unique_paths(candidates)
+
+
+def server_data_candidates() -> list[Path]:
+    return _server_data_candidates_for_roots(location_roots())
 
 
 def default_data_root() -> Path:
-    direct_extract = repo_root() / "May_12" / "data" / "client"
-    if direct_extract.is_dir():
-        return direct_extract
-    return repo_root() / "May_12" / "client" / "data" / "client"
+    local_candidates = _client_data_candidates_for_roots(local_roots())
+    for candidate in local_candidates:
+        if candidate.is_dir():
+            return candidate
+
+    candidates = client_data_candidates()
+    for candidate in candidates:
+        if has_session_dirs(candidate):
+            return candidate
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
-def default_logs_root() -> Path:
-    direct_extract = repo_root() / "May_12" / "data" / "logs" / "client"
-    if direct_extract.is_dir():
-        return direct_extract
-    return repo_root() / "May_12" / "client" / "data" / "logs" / "client"
+def logs_root_for_data_root(data_root: Path) -> Path:
+    if data_root.name == "client" and data_root.parent.name == "data":
+        return data_root.parent / "logs" / "client"
+    return data_root / "logs" / "client"
 
 
 def default_server_data_root() -> Path:
-    return repo_root() / "May_12" / "server" / "data" / "server"
+    local_candidates = _server_data_candidates_for_roots(local_roots())
+    for candidate in local_candidates:
+        if (candidate / "artifacts").is_dir():
+            return candidate
+    for candidate in local_candidates:
+        if candidate.is_dir():
+            return candidate
+
+    candidates = server_data_candidates()
+    for candidate in candidates:
+        if (candidate / "artifacts").is_dir():
+            return candidate
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
 def normalize_client_data_root(path: str | Path) -> Path:
@@ -587,8 +683,8 @@ def print_session_report(report: ClientSessionReport, *, detail_limit: int):
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default=str(default_data_root()), help="Client data root.")
-    parser.add_argument("--logs-root", default=str(default_logs_root()), help="Client logs root.")
+    parser.add_argument("--data-root", default="", help="Client data root. Defaults to auto-detection.")
+    parser.add_argument("--logs-root", default="", help="Client logs root. Defaults beside the selected data root.")
     parser.add_argument("--server-data-root", default=str(default_server_data_root()), help="Server data root for replay reference checks.")
     parser.add_argument("--session", default="", help="Session UUID, or 'all'. Omit for interactive selection.")
     parser.add_argument("--detail-limit", type=int, default=12, help="Maximum detailed rows to print per section.")
@@ -600,8 +696,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    data_root = normalize_client_data_root(args.data_root)
-    logs_root = Path(args.logs_root).expanduser().resolve()
+    data_root = normalize_client_data_root(args.data_root or default_data_root())
+    logs_root = Path(args.logs_root).expanduser().resolve() if args.logs_root else logs_root_for_data_root(data_root)
     server_data_root = None if args.no_server_check else Path(args.server_data_root).expanduser().resolve()
     sessions = choose_session(data_root, args.session)
 

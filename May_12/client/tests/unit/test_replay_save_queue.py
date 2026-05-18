@@ -1,7 +1,10 @@
 import asyncio
+from pathlib import Path
 import threading
+import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from client.ws_client import ReplaySaveQueue, ReplaySaveRequest, WebSocketSession
 
@@ -53,6 +56,25 @@ class _GateRecorder(_FakeRecorder):
         return f"{request_id}.ts"
 
 
+class _SequenceRecorder(_FakeRecorder):
+    def __init__(self, results: list[str | None]):
+        super().__init__(delay=0)
+        self.results = list(results)
+
+    def save_replay(self, request_id: str | None = None):
+        with self.lock:
+            self.calls.append(str(request_id))
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if self.results:
+                return self.results.pop(0)
+            return f"{request_id}.ts"
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
 class ReplaySaveQueueTests(unittest.TestCase):
     def test_queue_processes_fifo_without_parallel_recorder_calls(self):
         async def run_scenario():
@@ -97,6 +119,49 @@ class ReplaySaveQueueTests(unittest.TestCase):
 
         self.assertEqual(recorder.calls, [_window_id(0)])
         self.assertEqual(results, [f"{_window_id(0)}.ts"] * 3)
+
+    def test_failed_replay_save_is_not_cached(self):
+        async def run_scenario():
+            recorder = _SequenceRecorder([None, "retry.ts"])
+            queue = ReplaySaveQueue(recorder, asyncio.get_running_loop())
+            try:
+                first = await queue.enqueue(request_id="one", requested_at=_requested_at(0), source="incident_evidence")[1]
+                second = await queue.enqueue(request_id="two", requested_at=_requested_at(1), source="incident_evidence")[1]
+            finally:
+                await queue.aclose()
+            return recorder, first, second
+
+        recorder, first, second = asyncio.run(run_scenario())
+
+        self.assertEqual(recorder.calls, [_window_id(0), _window_id(0)])
+        self.assertIsNone(first)
+        self.assertEqual(second, "retry.ts")
+
+    def test_incident_replay_retries_after_recorder_warmup_miss(self):
+        async def run_scenario():
+            session = object.__new__(WebSocketSession)
+            session.recorder = True
+            session.replay_save_queue = ReplaySaveQueue(
+                _SequenceRecorder([None, "warm.ts"]),
+                asyncio.get_running_loop(),
+            )
+            session.loop = asyncio.get_running_loop()
+            try:
+                with patch("client.ws_client.REPLAY_INCIDENT_SAVE_RETRY_DELAY_SECONDS", 0.01):
+                    result = await WebSocketSession._save_replay_with_timeout(
+                        session,
+                        request_id="incident-one",
+                        requested_at=_requested_at(0),
+                        source="incident_evidence",
+                    )
+            finally:
+                await session.replay_save_queue.aclose()
+            return session.replay_save_queue.recorder, result
+
+        recorder, result = asyncio.run(run_scenario())
+
+        self.assertEqual(recorder.calls, [_window_id(0), _window_id(0)])
+        self.assertEqual(result, "warm.ts")
 
     def test_final_submission_drops_queued_and_future_optional_saves(self):
         async def run_scenario():
@@ -231,7 +296,11 @@ class ReplaySaveQueueTests(unittest.TestCase):
             session = object.__new__(WebSocketSession)
             session._uploaded_requested_replays = {}
             session._requested_replay_upload_tasks = {}
+            session.loop = asyncio.get_running_loop()
             calls = []
+            temp_dir = tempfile.TemporaryDirectory()
+            replay_path = Path(temp_dir.name) / "replay_window_20260502T100000Z.ts"
+            replay_path.write_bytes(b"first replay")
 
             async def fake_upload(artifact_path: str, *, artifact_kind: str, metadata: dict | None = None):
                 calls.append((artifact_path, artifact_kind, metadata))
@@ -255,15 +324,16 @@ class ReplaySaveQueueTests(unittest.TestCase):
             ]
             results = await asyncio.gather(
                 *[
-                    WebSocketSession._upload_requested_replay(session, "replay_window_20260502T100000Z.ts", request)
+                    WebSocketSession._upload_requested_replay(session, str(replay_path), request)
                     for request in requests
                 ]
             )
             cached = await WebSocketSession._upload_requested_replay(
                 session,
-                "replay_window_20260502T100000Z.ts",
+                str(replay_path),
                 requests[0],
             )
+            temp_dir.cleanup()
             return calls, results, cached
 
         calls, results, cached = asyncio.run(run_scenario())
@@ -271,6 +341,48 @@ class ReplaySaveQueueTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(results, ["server/replay.ts"] * 3)
         self.assertEqual(cached, "server/replay.ts")
+
+    def test_requested_replay_upload_cache_checks_file_signature(self):
+        async def run_scenario():
+            session = object.__new__(WebSocketSession)
+            session._uploaded_requested_replays = {}
+            session._requested_replay_upload_tasks = {}
+            session.loop = asyncio.get_running_loop()
+            calls = []
+            temp_dir = tempfile.TemporaryDirectory()
+            replay_path = Path(temp_dir.name) / "replay_window_20260502T100000Z.ts"
+
+            async def fake_upload(artifact_path: str, *, artifact_kind: str, metadata: dict | None = None):
+                calls.append((Path(artifact_path).read_bytes(), metadata))
+                return f"server/replay-{len(calls)}.ts"
+
+            session._upload_runtime_artifact = fake_upload
+            loop = asyncio.get_running_loop()
+            request = ReplaySaveRequest(
+                request_id="one",
+                save_id="window_20260502T100000Z",
+                requested_at=_requested_at(0),
+                source="server_request",
+                future=loop.create_future(),
+                priority=2,
+                deadline_at=None,
+                optional=True,
+            )
+
+            replay_path.write_bytes(b"old replay")
+            first = await WebSocketSession._upload_requested_replay(session, str(replay_path), request)
+            replay_path.write_bytes(b"new replay with different size")
+            second = await WebSocketSession._upload_requested_replay(session, str(replay_path), request)
+            temp_dir.cleanup()
+            return calls, first, second
+
+        calls, first, second = asyncio.run(run_scenario())
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], b"old replay")
+        self.assertEqual(calls[1][0], b"new replay with different size")
+        self.assertEqual(first, "server/replay-1.ts")
+        self.assertEqual(second, "server/replay-2.ts")
 
 
 if __name__ == "__main__":

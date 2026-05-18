@@ -278,6 +278,8 @@ class ProcessDecisionDialog(QDialog):
             "definition": {
                 "definition_id": self.row.get("definition_id", ""),
                 "process_key": self.row.get("process_key", ""),
+                "original_definition_id": self.row.get("original_definition_id") or self.row.get("definition_id", ""),
+                "original_process_key": self.row.get("original_process_key") or self.row.get("process_key", ""),
                 "process_name": process_name,
                 "normalized_process_name": process_name,
                 "process_path": self.row.get("process_path", ""),

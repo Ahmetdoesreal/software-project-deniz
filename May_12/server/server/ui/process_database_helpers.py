@@ -127,6 +127,24 @@ def incident_rule_observed_window_title(row: dict) -> str:
     return ""
 
 
+def _incident_rule_identity_from_incident(incident: dict) -> tuple[str, str]:
+    definition_id = ""
+    rule_key = ""
+
+    decision = incident.get("incident_rule_decision")
+    if isinstance(decision, dict):
+        definition_id = str(decision.get("definition_id") or "").strip()
+        rule_key = str(decision.get("rule_key") or "").strip()
+
+    matched = incident.get("matched_incident_rule")
+    if isinstance(matched, dict):
+        definition_id = definition_id or str(matched.get("definition_id") or "").strip()
+        rule_key = rule_key or str(matched.get("rule_key") or "").strip()
+
+    definition_id = definition_id or str(incident.get("matched_incident_rule_id") or "").strip()
+    return definition_id, rule_key
+
+
 def incident_rule_row_from_incident(incident: dict, settings_snapshot: dict | None = None) -> dict:
     details = incident.get("details", {})
     if not isinstance(details, dict):
@@ -139,9 +157,12 @@ def incident_rule_row_from_incident(incident: dict, settings_snapshot: dict | No
         name = f"{rule_name} / title {', '.join(title_patterns[:2])}"
     else:
         name = rule_name
+    definition_id, rule_key = _incident_rule_identity_from_incident(incident)
     return {
-        "rule_key": "",
-        "definition_id": "",
+        "rule_key": rule_key,
+        "definition_id": definition_id,
+        "original_rule_key": rule_key,
+        "original_definition_id": definition_id,
         "name": name,
         "status": "unknown",
         "actions": {},
@@ -178,6 +199,8 @@ def build_process_decision_payload(
         "definition": {
             "definition_id": row.get("definition_id", ""),
             "process_key": row.get("process_key", ""),
+            "original_definition_id": row.get("original_definition_id") or row.get("definition_id", ""),
+            "original_process_key": row.get("original_process_key") or row.get("process_key", ""),
             "process_name": selected_process_name,
             "normalized_process_name": selected_process_name,
             "process_path": row.get("process_path", ""),
@@ -227,6 +250,8 @@ def build_incident_rule_decision_payload(
     definition = {
         "definition_id": row.get("definition_id", ""),
         "rule_key": row.get("rule_key", ""),
+        "original_definition_id": row.get("original_definition_id") or row.get("definition_id", ""),
+        "original_rule_key": row.get("original_rule_key") or row.get("rule_key", ""),
         "name": row.get("name", ""),
         "status": status,
         "actions": {

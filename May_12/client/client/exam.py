@@ -48,12 +48,51 @@ def _folder_has_user_content(folder: Path) -> bool:
         return True
 
 
-def _choose_target_folder(base_folder: Path, checksum: str) -> Path:
+def _managed_files_present(folder: Path, manifest: dict) -> bool:
+    files = manifest.get("files", [])
+    if not isinstance(files, list):
+        return False
+    for relative in files:
+        try:
+            target = (folder / str(relative)).resolve()
+            folder_root = folder.resolve()
+            if folder_root not in {target, *target.parents}:
+                return False
+            if not target.exists():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _matching_intact_manifest(folder: Path, checksum: str) -> dict | None:
+    manifest = _load_manifest(folder)
+    if not manifest or manifest.get("archive_sha256") != checksum:
+        return None
+    return manifest if _managed_files_present(folder, manifest) else None
+
+
+def _candidate_folder(base_folder: Path, index: int) -> Path:
+    if index <= 1:
+        return base_folder
+    return base_folder.with_name(f"{base_folder.name}_{index}")
+
+
+def _choose_target_folder(base_folder: Path, checksum: str, *, force_new: bool = False) -> Path:
     base_folder.parent.mkdir(parents=True, exist_ok=True)
+
+    if force_new:
+        start_index = 2 if base_folder.exists() else 1
+        for index in range(start_index, 100):
+            candidate = _candidate_folder(base_folder, index)
+            if not candidate.exists():
+                return candidate
+        raise RuntimeError(f"Could not choose a safe exam folder under {base_folder.parent}")
+
     if not base_folder.exists():
         return base_folder
 
-    manifest = _load_manifest(base_folder)
+    manifest = _matching_intact_manifest(base_folder, checksum)
     if manifest is not None:
         return base_folder
 
@@ -61,11 +100,11 @@ def _choose_target_folder(base_folder: Path, checksum: str) -> Path:
         return base_folder
 
     for index in range(2, 100):
-        candidate = base_folder.with_name(f"{base_folder.name}-{index}")
+        candidate = _candidate_folder(base_folder, index)
         if not candidate.exists():
             return candidate
-        candidate_manifest = _load_manifest(candidate)
-        if candidate_manifest and candidate_manifest.get("archive_sha256") == checksum:
+        candidate_manifest = _matching_intact_manifest(candidate, checksum)
+        if candidate_manifest:
             return candidate
     raise RuntimeError(f"Could not choose a safe exam folder under {base_folder.parent}")
 
@@ -134,16 +173,25 @@ def _extract_zip_safely(zip_path: Path, target_folder: Path) -> list[str]:
     return extracted
 
 
-def extract_exam_materials(zip_path: str | Path, *, now: datetime | None = None) -> dict:
+def extract_exam_materials(
+    zip_path: str | Path,
+    *,
+    now: datetime | None = None,
+    force_new: bool = False,
+) -> dict:
     zip_file = Path(zip_path).expanduser().resolve()
     content = zip_file.read_bytes()
     checksum = _sha256_bytes(content)
     exam_root = _desktop_root() / "Exam"
-    target = _choose_target_folder(exam_root / _dated_exam_folder_name(now), checksum)
+    target = _choose_target_folder(
+        exam_root / _dated_exam_folder_name(now),
+        checksum,
+        force_new=force_new,
+    )
     target.mkdir(parents=True, exist_ok=True)
 
-    manifest = _load_manifest(target)
-    if manifest and manifest.get("archive_sha256") == checksum:
+    manifest = _matching_intact_manifest(target, checksum)
+    if manifest and not force_new:
         return {
             "has_files": True,
             "zip_path": str(zip_file),
@@ -158,7 +206,7 @@ def extract_exam_materials(zip_path: str | Path, *, now: datetime | None = None)
 
     extracted_files = _extract_zip_safely(zip_file, target)
     manifest_payload = {
-        "managed_by": "May_04_Deniz_client",
+        "managed_by": "May_12_client",
         "archive_path": str(zip_file),
         "archive_sha256": checksum,
         "extracted_at": datetime.now().isoformat(timespec="seconds"),
@@ -177,9 +225,22 @@ def extract_exam_materials(zip_path: str | Path, *, now: datetime | None = None)
     }
 
 
+def stage_exam_materials(zip_path: str | Path, *, checksum: str = "") -> dict:
+    zip_file = Path(zip_path).expanduser().resolve()
+    if not checksum:
+        checksum = _sha256_bytes(zip_file.read_bytes())
+    return {
+        "has_files": True,
+        "zip_path": str(zip_file),
+        "extracted_dir": "",
+        "archive_sha256": checksum,
+        "pending_extraction": True,
+    }
+
+
 async def fetch_exam_prep(base_url: str, session_uuid: str) -> dict:
-    """Fetch exam configuration, download files, and extract them for the student."""
-    result = {"has_files": False, "zip_path": "", "extracted_dir": ""}
+    """Fetch exam configuration and stage the exam archive for later extraction."""
+    result = {"has_files": False, "zip_path": "", "extracted_dir": "", "pending_extraction": False}
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{base_url}/exam/config") as resp:
             if resp.status == 200:
@@ -198,12 +259,8 @@ async def fetch_exam_prep(base_url: str, session_uuid: str) -> dict:
                 out_path = out_dir / "exam_materials.zip"
                 out_path.write_bytes(content)
                 print(f"[EXAM] Exam files saved to {out_path}.")
-                try:
-                    result = extract_exam_materials(out_path)
-                    print(f"[EXAM] Exam files extracted to {result['extracted_dir']}.")
-                except Exception as exc:
-                    result = {"has_files": True, "zip_path": str(out_path), "extracted_dir": "", "error": str(exc)}
-                    print(f"[EXAM] Failed to extract exam files: {exc}")
+                result = stage_exam_materials(out_path, checksum=_sha256_bytes(content))
+                print("[EXAM] Exam files are staged and will be extracted when the exam starts.")
             elif resp.status == 404:
                 print("[EXAM] No exam files provided by server.")
             else:

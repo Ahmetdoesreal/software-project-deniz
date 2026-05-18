@@ -17,6 +17,7 @@ import psutil
 from common import events, protocol, security
 from common.ipc_ws import LocalIpcClient, ThreadedIpcServer, should_use_ws_ipc
 from common.text_safety import safe_console_text, sanitize_window_snapshot
+from .exam import extract_exam_materials
 from .exam_state import ExamStateLogger
 from .incidents import ClientIncidentEngine
 from .submission import validate_submission_file
@@ -41,8 +42,10 @@ REPLAY_PRIORITY_OPTIONAL_REQUEST = 2
 REPLAY_INCIDENT_SAVE_QUEUE_LIMIT = 1
 REPLAY_INCIDENT_SAVE_TIMEOUT_SECONDS = 8.0
 REPLAY_INCIDENT_SAVE_DEADLINE_SECONDS = 12.0
+REPLAY_INCIDENT_SAVE_RETRY_DELAY_SECONDS = 0.75
 REPLAY_SAVE_COALESCE_WINDOW_SECONDS = 5.0
 REPLAY_SAVE_RESULT_CACHE_SECONDS = 120.0
+REQUESTED_REPLAY_UPLOAD_CACHE_SECONDS = 120.0
 REPLAY_OPTIONAL_SAVE_QUEUE_LIMIT = 5
 REPLAY_OPTIONAL_SAVE_DEADLINE_SECONDS = 90.0
 REPLAY_QUEUE_CLOSE_TIMEOUT_SECONDS = REPLAY_SAVE_TIMEOUT_SECONDS + 5.0
@@ -373,6 +376,9 @@ class ClientGUIBridge:
         if command == "start_exam":
             print("[GUI] Start button pressed.")
             return UserCommand("start")
+        if command == "reset_exam_folder":
+            print("[GUI] Reset exam folder requested.")
+            return UserCommand("reset_exam_folder")
         if command == "finish_exam":
             selected_file = str(payload.get("archive_path", "")).strip()
             if not selected_file:
@@ -700,7 +706,7 @@ class ReplaySaveQueue:
 
     def _complete_replay_request(self, save_request: ReplaySaveRequest, replay_path: str | None, *, cache: bool):
         self._inflight_by_save_id.pop(save_request.save_id, None)
-        if cache and self._coalesces_source(save_request.source):
+        if cache and replay_path and self._coalesces_source(save_request.source):
             self._completed_by_save_id[save_request.save_id] = (replay_path, self.loop.time())
         if not save_request.future.done():
             save_request.future.set_result(replay_path)
@@ -818,8 +824,8 @@ class WebSocketSession:
         self._evidence_upload_semaphore = asyncio.Semaphore(INCIDENT_EVIDENCE_UPLOAD_CONCURRENCY)
         self._uploaded_replay_artifacts: dict[str, str] = {}
         self._replay_artifact_tasks: dict[str, asyncio.Task] = {}
-        self._uploaded_requested_replays: dict[str, str] = {}
-        self._requested_replay_upload_tasks: dict[str, asyncio.Task] = {}
+        self._uploaded_requested_replays: dict[str, tuple[str, str, float]] = {}
+        self._requested_replay_upload_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self.exam_files_info: dict = {}
         self.replay_save_queue = ReplaySaveQueue(recorder, self.loop)
         self.process_monitor = self._create_process_monitor()
@@ -845,13 +851,105 @@ class WebSocketSession:
         )
 
     def set_exam_files_info(self, info: dict | None):
-        self.exam_files_info = dict(info or {})
-        if self.exam_files_info.get("extracted_dir"):
+        self.exam_files_info = self._normalized_exam_files_info(info)
+        if self._has_exam_files_info_for_gui():
             self.gui.ensure_started()
             self.gui.send_exam_files(self.exam_files_info)
 
     def _send_cached_exam_files_info(self):
-        if self.exam_files_info.get("extracted_dir"):
+        if self._has_exam_files_info_for_gui():
+            self.gui.send_exam_files(self.exam_files_info)
+
+    @staticmethod
+    def _normalized_exam_files_info(info: dict | None) -> dict:
+        normalized = {
+            "has_files": False,
+            "zip_path": "",
+            "extracted_dir": "",
+            "archive_sha256": "",
+            "pending_extraction": False,
+            "error": "",
+        }
+        if info:
+            normalized.update(dict(info))
+        normalized["has_files"] = bool(normalized.get("has_files"))
+        normalized["zip_path"] = str(normalized.get("zip_path", "") or "")
+        normalized["extracted_dir"] = str(normalized.get("extracted_dir", "") or "")
+        normalized["archive_sha256"] = str(normalized.get("archive_sha256", "") or "")
+        normalized["pending_extraction"] = bool(normalized.get("pending_extraction"))
+        normalized["error"] = str(normalized.get("error", "") or "")
+        return normalized
+
+    def _has_exam_files_info_for_gui(self) -> bool:
+        return bool(
+            self.exam_files_info.get("has_files")
+            or self.exam_files_info.get("zip_path")
+            or self.exam_files_info.get("extracted_dir")
+            or self.exam_files_info.get("error")
+        )
+
+    async def _send_client_info(self):
+        await self._send_payload(
+            events.client_info(
+                _computer_name(),
+                exam_folder_path=str(self.exam_files_info.get("extracted_dir", "") or ""),
+                exam_files_zip_path=str(self.exam_files_info.get("zip_path", "") or ""),
+            )
+        )
+
+    async def _ensure_exam_materials_extracted(self, *, force_new: bool = False) -> tuple[bool, str]:
+        if not self.exam_files_info.get("has_files"):
+            return True, ""
+
+        zip_path = str(self.exam_files_info.get("zip_path", "") or "").strip()
+        if not zip_path:
+            message = "Exam files were announced, but no local archive path is available."
+            self.exam_files_info["error"] = message
+            self.gui.ensure_started()
+            self.gui.send_exam_files(self.exam_files_info)
+            return False, message
+
+        if not os.path.exists(zip_path):
+            message = f"Exam archive is missing: {zip_path}"
+            self.exam_files_info["error"] = message
+            self.exam_files_info["pending_extraction"] = True
+            self.gui.ensure_started()
+            self.gui.send_exam_files(self.exam_files_info)
+            return False, message
+
+        try:
+            print("[EXAM] Extracting exam files..." if not force_new else "[EXAM] Resetting exam folder...")
+            info = await self.loop.run_in_executor(
+                None,
+                lambda: extract_exam_materials(zip_path, force_new=force_new),
+            )
+        except Exception as exc:
+            message = f"Failed to extract exam files: {exc}"
+            self.exam_files_info["error"] = message
+            self.exam_files_info["pending_extraction"] = True
+            self.gui.ensure_started()
+            self.gui.send_exam_files(self.exam_files_info)
+            print(f"[EXAM] {message}")
+            return False, message
+
+        merged = dict(self.exam_files_info)
+        merged.update(info)
+        merged["pending_extraction"] = False
+        merged["error"] = ""
+        self.exam_files_info = self._normalized_exam_files_info(merged)
+        self.gui.ensure_started()
+        self.gui.send_exam_files(self.exam_files_info)
+        print(f"[EXAM] Exam files ready at {self.exam_files_info['extracted_dir']}.")
+        try:
+            await self._send_client_info()
+        except Exception as exc:
+            print(f"[EXAM] Could not publish exam folder metadata yet: {exc}")
+        return True, ""
+
+    async def reset_exam_folder(self):
+        ok, message = await self._ensure_exam_materials_extracted(force_new=True)
+        if not ok and message:
+            self.gui.ensure_started()
             self.gui.send_exam_files(self.exam_files_info)
 
     def _create_process_monitor(self):
@@ -1026,6 +1124,10 @@ class WebSocketSession:
                 await self.request_exam_start()
                 continue
 
+            if command.action == "reset_exam_folder":
+                await self.reset_exam_folder()
+                continue
+
             if command.action == "stdin":
                 text = command.value.strip().lower()
                 if text in {"start", "/start"}:
@@ -1049,6 +1151,13 @@ class WebSocketSession:
             return
 
         self.state.start_request_pending = True
+        ok, message = await self._ensure_exam_materials_extracted(force_new=False)
+        if not ok:
+            self.state.start_request_pending = False
+            self.gui.send_reset()
+            if message:
+                self.gui.send_error(message)
+            return
         await self._send_payload(events.start_exam())
         print("[EXAM] Start request sent...")
 
@@ -1074,6 +1183,10 @@ class WebSocketSession:
 
             if command.action == "finish":
                 await self.finish_exam(command.value)
+                continue
+
+            if command.action == "reset_exam_folder":
+                await self.reset_exam_folder()
                 continue
 
             if command.action != "stdin":
@@ -1114,13 +1227,7 @@ class WebSocketSession:
             print(f"[WS] Connected! Server assigned ID: {data['id']}")
             self.gui.ensure_started()
             self._send_cached_exam_files_info()
-            await self._send_payload(
-                events.client_info(
-                    _computer_name(),
-                    exam_folder_path=str(self.exam_files_info.get("extracted_dir", "") or ""),
-                    exam_files_zip_path=str(self.exam_files_info.get("zip_path", "") or ""),
-                )
-            )
+            await self._send_client_info()
             return
 
         if event == events.EXAM_POLICY:
@@ -1139,10 +1246,15 @@ class WebSocketSession:
             return
 
         if event == events.SYNC_TIME:
+            if not self.state.start_event.is_set():
+                await self._ensure_exam_materials_extracted(force_new=False)
             self.handle_sync_time(data)
             return
 
         if event == events.SESSION_STATE:
+            state_name = str(data.get("state", "waiting") or "waiting")
+            if state_name in {"running", "admin_paused", "disconnected_paused", "violation_paused", "awaiting_submission"}:
+                await self._ensure_exam_materials_extracted(force_new=False)
             self.handle_session_state(data)
             return
 
@@ -1501,9 +1613,11 @@ class WebSocketSession:
             return None
 
     async def _handle_savescreen_request(self, data: dict):
+        server_requested_at = str(data.get("requested_at", "") or "")
+        client_received_at = protocol.now_iso()
         save_request, future = self.replay_save_queue.enqueue(
             request_id=str(data.get("request_id", "") or uuid.uuid4().hex),
-            requested_at=str(data.get("requested_at", "") or protocol.now_iso()),
+            requested_at=client_received_at,
             source=str(data.get("source", "") or "server_request"),
         )
         try:
@@ -1515,16 +1629,34 @@ class WebSocketSession:
             return
 
         if replay_path:
-            await self._upload_requested_replay(replay_path, save_request)
+            await self._upload_requested_replay(
+                replay_path,
+                save_request,
+                server_requested_at=server_requested_at,
+            )
 
-    async def _upload_requested_replay(self, replay_path: str, save_request: ReplaySaveRequest) -> str | None:
+    async def _upload_requested_replay(
+        self,
+        replay_path: str,
+        save_request: ReplaySaveRequest,
+        *,
+        server_requested_at: str | None = None,
+    ) -> str | None:
         replay_save_id = save_request.save_id or self._replay_save_id_from_path(replay_path)
-        cached_path = self._uploaded_requested_replays.get(replay_save_id)
-        if cached_path:
+        replay_signature = self._file_upload_signature(replay_path)
+        if not replay_signature:
+            print(f"[UPLOAD] requested_replay file is missing or empty: {replay_path}")
+            return None
+
+        self._prune_requested_replay_upload_cache()
+        cached_upload = self._uploaded_requested_replays.get(replay_save_id)
+        if cached_upload and cached_upload[0] == replay_signature:
+            cached_path = cached_upload[1]
             print(f"[UPLOAD] requested_replay already uploaded for {replay_save_id}: {cached_path}")
             return cached_path
 
-        task = self._requested_replay_upload_tasks.get(replay_save_id)
+        task_key = (replay_save_id, replay_signature)
+        task = self._requested_replay_upload_tasks.get(task_key)
         if task is None:
             task = asyncio.create_task(
                 self._upload_runtime_artifact(
@@ -1534,15 +1666,17 @@ class WebSocketSession:
                         "source": save_request.source,
                         "request_id": save_request.request_id,
                         "requested_at": save_request.requested_at,
+                        "server_requested_at": server_requested_at or "",
                         "replay_save_id": replay_save_id,
+                        "replay_file_signature": replay_signature,
                     },
                 )
             )
-            self._requested_replay_upload_tasks[replay_save_id] = task
+            self._requested_replay_upload_tasks[task_key] = task
 
-            def _cleanup(done_task: asyncio.Task, save_id: str = replay_save_id):
-                if self._requested_replay_upload_tasks.get(save_id) is done_task:
-                    self._requested_replay_upload_tasks.pop(save_id, None)
+            def _cleanup(done_task: asyncio.Task, key: tuple[str, str] = task_key):
+                if self._requested_replay_upload_tasks.get(key) is done_task:
+                    self._requested_replay_upload_tasks.pop(key, None)
 
             task.add_done_callback(_cleanup)
         else:
@@ -1550,8 +1684,35 @@ class WebSocketSession:
 
         server_path = await asyncio.shield(task)
         if server_path:
-            self._uploaded_requested_replays[replay_save_id] = server_path
+            self._uploaded_requested_replays[replay_save_id] = (
+                replay_signature,
+                server_path,
+                self.loop.time(),
+            )
         return server_path
+
+    @staticmethod
+    def _file_upload_signature(file_path: str) -> str:
+        try:
+            info = os.stat(file_path)
+        except OSError:
+            return ""
+        if info.st_size <= 0:
+            return ""
+        mtime_ns = getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000))
+        return f"{os.path.abspath(file_path)}|{info.st_size}|{mtime_ns}"
+
+    def _prune_requested_replay_upload_cache(self):
+        if not self._uploaded_requested_replays:
+            return
+        now = self.loop.time()
+        stale = [
+            save_id
+            for save_id, (_signature, _server_path, stored_at) in self._uploaded_requested_replays.items()
+            if now - stored_at > REQUESTED_REPLAY_UPLOAD_CACHE_SECONDS
+        ]
+        for save_id in stale:
+            self._uploaded_requested_replays.pop(save_id, None)
 
     def _queue_process_snapshot(self, processes: set[tuple[int, str] | tuple[int, str, str | None]], _blacklist_version: str):
         self._schedule_background_task(self._process_local_incidents(self.incident_engine.observe_processes(processes)))
@@ -1867,22 +2028,40 @@ class WebSocketSession:
         else:
             timeout_seconds = float(REPLAY_SAVE_TIMEOUT_SECONDS)
             deadline_seconds = float(REPLAY_SAVE_TIMEOUT_SECONDS)
+        started_at = self.loop.time()
         try:
             if source == "final_submission":
                 self.replay_save_queue.begin_final_submission()
                 self._submission_step("Saving recent replay fragments...")
-            save_request, future = self.replay_save_queue.enqueue(
-                request_id=request_id,
-                requested_at=requested_at,
-                source=source,
-                deadline_seconds=deadline_seconds,
-            )
-            if future.done():
-                return await future
-            return await asyncio.wait_for(
-                asyncio.shield(future),
-                timeout=timeout_seconds,
-            )
+            while True:
+                remaining_timeout = max(0.1, timeout_seconds - (self.loop.time() - started_at))
+                save_request, future = self.replay_save_queue.enqueue(
+                    request_id=request_id,
+                    requested_at=requested_at,
+                    source=source,
+                    deadline_seconds=deadline_seconds,
+                )
+                if future.done():
+                    replay_path = await future
+                else:
+                    replay_path = await asyncio.wait_for(
+                        asyncio.shield(future),
+                        timeout=remaining_timeout,
+                    )
+                if replay_path or source != "incident_evidence":
+                    return replay_path
+                if getattr(self.replay_save_queue, "_final_submission_mode", False):
+                    return None
+
+                elapsed = self.loop.time() - started_at
+                if elapsed >= timeout_seconds:
+                    return None
+                await asyncio.sleep(
+                    min(
+                        REPLAY_INCIDENT_SAVE_RETRY_DELAY_SECONDS,
+                        max(0.0, timeout_seconds - elapsed),
+                    )
+                )
         except asyncio.TimeoutError:
             request_label = ""
             if "save_request" in locals():

@@ -9,7 +9,7 @@ Every message between server and client is a JSON object with:
 import hashlib
 import json
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 DECODE_ERROR = "__decode_error__"
@@ -83,8 +83,8 @@ def decode(raw: str) -> tuple[str, dict]:
 
 
 def now_iso() -> str:
-    """Current UTC time as ISO string."""
-    return datetime.now(timezone.utc).isoformat()
+    """Current local time as an offset-aware ISO string."""
+    return datetime.now().astimezone().isoformat()
 
 
 def extract_client_uuid(ws_url: str) -> str:

@@ -34,8 +34,8 @@ from common.stdio_compat import iter_stdin_lines, stdin_available, stdin_is_stan
 
 
 try:
-    from PySide6.QtCore import QAbstractTableModel, QEvent, QItemSelectionModel, QModelIndex, Qt, QObject, QTimer, Signal
-    from PySide6.QtGui import QBrush, QColor, QFont
+    from PySide6.QtCore import QAbstractTableModel, QEvent, QItemSelectionModel, QModelIndex, Qt, QObject, QTimer, QUrl, Signal
+    from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -161,6 +161,10 @@ _IPC_CLIENT = None
 
 def _monospace_font() -> QFont:
     return monospace_font()
+
+
+def _student_folders_root() -> Path:
+    return PROJECT_DIR / "data" / "server"
 
 
 def _format_bytes(size_bytes: int) -> str:
@@ -851,6 +855,10 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         self.policy_settings_button = make_button("Policy Settings", "tonal")
         self.policy_settings_button.clicked.connect(self.open_policy_settings_window)
         action_row.addWidget(self.policy_settings_button)
+
+        self.open_student_folders_button = make_button("Student Folders", "tonal")
+        self.open_student_folders_button.clicked.connect(self.open_student_folders)
+        action_row.addWidget(self.open_student_folders_button)
 
         self.server_info_detail_button = make_button("Detailed Info", "text")
         self.server_info_detail_button.setEnabled(False)
@@ -1773,6 +1781,17 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, QMainWindow):
         dialog = _DetailsDialog("Server Info Details", _server_info_rows(self.server_info), parent=self)
         self._register_dialog(key, dialog)
         dialog.show()
+
+    def open_student_folders(self) -> None:
+        folder = _student_folders_root()
+        try:
+            (folder / "submissions").mkdir(parents=True, exist_ok=True)
+            (folder / "artifacts").mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Student Folders", f"Could not create student folders:\n{exc}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.information(self, "Student Folders", f"Could not open folder:\n{folder}")
 
     def show_folder_info(self) -> None:
         client_id, data = self._selected_client_data()

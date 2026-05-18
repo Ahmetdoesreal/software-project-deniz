@@ -33,6 +33,28 @@ from . import session_state
 
 
 LIST_ACTIONS = {"add", "remove", "replace"}
+PROCESS_DEFINITION_IDENTITY_FIELDS = (
+    "definition_id",
+    "id",
+    "process_key",
+    "original_definition_id",
+    "original_process_key",
+    "previous_definition_id",
+    "previous_process_key",
+    "existing_definition_id",
+    "existing_process_key",
+)
+INCIDENT_RULE_IDENTITY_FIELDS = (
+    "definition_id",
+    "id",
+    "rule_key",
+    "original_definition_id",
+    "original_rule_key",
+    "previous_definition_id",
+    "previous_rule_key",
+    "existing_definition_id",
+    "existing_rule_key",
+)
 
 
 @dataclass
@@ -277,6 +299,155 @@ def incident_rules(state) -> list[dict]:
     return normalize_incident_rules(state.rule_config(INCIDENT_RULES_RULE_ID).get("definitions", []))
 
 
+def _clean_identity_value(value) -> str:
+    return str(value or "").strip()
+
+
+def _process_definition_identity_values(definition: dict | None) -> set[str]:
+    if not isinstance(definition, dict):
+        return set()
+    return {
+        clean
+        for key in PROCESS_DEFINITION_IDENTITY_FIELDS
+        for clean in (_clean_identity_value(definition.get(key)),)
+        if clean
+    }
+
+
+def _process_definition_source_incident_id(definition: dict | None) -> str:
+    if not isinstance(definition, dict):
+        return ""
+    return _clean_identity_value(definition.get("source_incident_id"))
+
+
+def _find_process_definition_by_identity(definitions: list[dict], definition: dict) -> dict | None:
+    identities = _process_definition_identity_values(definition)
+    source_incident_id = _process_definition_source_incident_id(definition)
+    source_match = None
+    for existing in definitions:
+        normalized = normalize_definition(existing)
+        existing_identities = _process_definition_identity_values(normalized)
+        if identities and identities.intersection(existing_identities):
+            return normalized
+        if source_incident_id and _process_definition_source_incident_id(normalized) == source_incident_id:
+            source_match = normalized
+    return source_match
+
+
+def _process_definition_indexes(definitions: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    by_identity: dict[str, dict] = {}
+    by_source_incident: dict[str, dict] = {}
+    for definition in definitions:
+        normalized = normalize_definition(definition)
+        for value in _process_definition_identity_values(normalized):
+            by_identity.setdefault(value, normalized)
+        source_incident_id = _process_definition_source_incident_id(normalized)
+        if source_incident_id:
+            by_source_incident.setdefault(source_incident_id, normalized)
+    return by_identity, by_source_incident
+
+
+def _saved_process_definition_for_incident(
+    incident: dict,
+    definitions_by_identity: dict[str, dict],
+    definitions_by_source_incident: dict[str, dict],
+) -> dict | None:
+    identities: set[str] = set()
+    decision = incident.get("process_decision")
+    if isinstance(decision, dict) and decision.get("saved_to_policy"):
+        identities.update(_process_definition_identity_values(decision))
+
+    matched = incident.get("matched_definition")
+    if isinstance(matched, dict):
+        identities.update(_process_definition_identity_values(matched))
+
+    for key in ("matched_definition_id", "definition_id", "process_key"):
+        value = _clean_identity_value(incident.get(key))
+        if value:
+            identities.add(value)
+
+    for value in identities:
+        if value in definitions_by_identity:
+            return definitions_by_identity[value]
+
+    incident_id = _clean_identity_value(incident.get("incident_id"))
+    if incident_id:
+        return definitions_by_source_incident.get(incident_id)
+    return None
+
+
+def _incident_rule_identity_values(definition: dict | None) -> set[str]:
+    if not isinstance(definition, dict):
+        return set()
+    return {
+        clean
+        for key in INCIDENT_RULE_IDENTITY_FIELDS
+        for clean in (_clean_identity_value(definition.get(key)),)
+        if clean
+    }
+
+
+def _incident_rule_source_incident_id(definition: dict | None) -> str:
+    if not isinstance(definition, dict):
+        return ""
+    return _clean_identity_value(definition.get("source_incident_id"))
+
+
+def _find_incident_rule_by_identity(definitions: list[dict], definition: dict) -> dict | None:
+    identities = _incident_rule_identity_values(definition)
+    source_incident_id = _incident_rule_source_incident_id(definition)
+    source_match = None
+    for existing in definitions:
+        normalized = normalize_incident_rule(existing)
+        existing_identities = _incident_rule_identity_values(normalized)
+        if identities and identities.intersection(existing_identities):
+            return normalized
+        if source_incident_id and _incident_rule_source_incident_id(normalized) == source_incident_id:
+            source_match = normalized
+    return source_match
+
+
+def _incident_rule_definition_indexes(definitions: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    by_identity: dict[str, dict] = {}
+    by_source_incident: dict[str, dict] = {}
+    for definition in definitions:
+        normalized = normalize_incident_rule(definition)
+        for value in _incident_rule_identity_values(normalized):
+            by_identity.setdefault(value, normalized)
+        source_incident_id = _incident_rule_source_incident_id(normalized)
+        if source_incident_id:
+            by_source_incident.setdefault(source_incident_id, normalized)
+    return by_identity, by_source_incident
+
+
+def _saved_incident_rule_for_incident(
+    incident: dict,
+    definitions_by_identity: dict[str, dict],
+    definitions_by_source_incident: dict[str, dict],
+) -> dict | None:
+    identities: set[str] = set()
+    decision = incident.get("incident_rule_decision")
+    if isinstance(decision, dict) and decision.get("saved_to_policy"):
+        identities.update(_incident_rule_identity_values(decision))
+
+    matched = incident.get("matched_incident_rule")
+    if isinstance(matched, dict):
+        identities.update(_incident_rule_identity_values(matched))
+
+    matched_id = _clean_identity_value(incident.get("matched_incident_rule_id"))
+    if matched_id:
+        identities.add(matched_id)
+
+    for value in identities:
+        if value in definitions_by_identity:
+            return definitions_by_identity[value]
+
+    incident_id = _clean_identity_value(incident.get("incident_id"))
+    if incident_id:
+        return definitions_by_source_incident.get(incident_id)
+    return None
+
+
 def update_process_definitions(
     state,
     definitions: list[dict],
@@ -329,23 +500,39 @@ def update_process_definitions(
 
 
 def upsert_process_definition(state, definition: dict, *, actor="admin") -> SettingsResult:
+    incoming_identity = _process_definition_identity_values(definition)
     normalized = normalize_definition(definition)
+    incoming_identity.update(_process_definition_identity_values(normalized))
     if not normalized.get("normalized_process_name"):
         return _error_result("Process definition requires an executable name.", state)
 
     current = process_definitions(state)
+    incoming_source_incident_id = _process_definition_source_incident_id(normalized)
     updated: list[dict] = []
     replaced = False
+    replacement_added = False
     for existing in current:
-        same_id = existing.get("definition_id") == normalized.get("definition_id")
-        same_key = existing.get("process_key") == normalized.get("process_key")
-        if same_id or same_key:
-            merged = {
-                **existing,
-                **normalized,
-                "created_at": existing.get("created_at") or normalized.get("created_at"),
-            }
-            updated.append(normalize_definition(merged))
+        existing_id = str(existing.get("definition_id", "") or "").strip()
+        existing_key = str(existing.get("process_key", "") or "").strip()
+        existing_source_incident_id = _process_definition_source_incident_id(existing)
+        same_id = existing_id and existing_id in incoming_identity
+        same_key = existing_key and existing_key in incoming_identity
+        same_source_incident = (
+            incoming_source_incident_id
+            and existing_source_incident_id
+            and existing_source_incident_id == incoming_source_incident_id
+        )
+        if same_id or same_key or same_source_incident:
+            if not replacement_added:
+                stable_definition_id = existing_id or normalized.get("definition_id")
+                merged = {
+                    **existing,
+                    **normalized,
+                    "definition_id": stable_definition_id,
+                    "created_at": existing.get("created_at") or normalized.get("created_at"),
+                }
+                updated.append(normalize_definition(merged))
+                replacement_added = True
             replaced = True
         else:
             updated.append(existing)
@@ -415,20 +602,9 @@ def upsert_incident_rule(state, definition: dict, *, actor="admin") -> SettingsR
     if not isinstance(definition, dict):
         return _error_result("Incident rule must be an object.", state)
 
-    incoming_identity = {
-        str(definition.get(key, "") or "").strip()
-        for key in ("definition_id", "id", "rule_key")
-        if str(definition.get(key, "") or "").strip()
-    }
+    incoming_identity = _incident_rule_identity_values(definition)
     normalized = normalize_incident_rule(definition)
-    incoming_identity.update(
-        value
-        for value in (
-            str(normalized.get("definition_id", "") or "").strip(),
-            str(normalized.get("rule_key", "") or "").strip(),
-        )
-        if value
-    )
+    incoming_identity.update(_incident_rule_identity_values(normalized))
     if not any(
         normalized.get(key)
         for key in ("rule_id", "event_type", "source", "process_names", "browser_process_names", "window_title_patterns")
@@ -436,19 +612,28 @@ def upsert_incident_rule(state, definition: dict, *, actor="admin") -> SettingsR
         return _error_result("Incident rule requires at least one match field.", state)
 
     current = incident_rules(state)
+    incoming_source_incident_id = _incident_rule_source_incident_id(normalized)
     updated: list[dict] = []
     replaced = False
     replacement_added = False
     for existing in current:
         existing_id = str(existing.get("definition_id", "") or "").strip()
         existing_key = str(existing.get("rule_key", "") or "").strip()
+        existing_source_incident_id = _incident_rule_source_incident_id(existing)
         same_id = existing_id and existing_id in incoming_identity
         same_key = existing_key and existing_key in incoming_identity
-        if same_id or same_key:
+        same_source_incident = (
+            incoming_source_incident_id
+            and existing_source_incident_id
+            and existing_source_incident_id == incoming_source_incident_id
+        )
+        if same_id or same_key or same_source_incident:
             if not replacement_added:
+                stable_definition_id = existing_id or normalized.get("definition_id")
                 merged = {
                     **existing,
                     **normalized,
+                    "definition_id": stable_definition_id,
                     "created_at": existing.get("created_at") or normalized.get("created_at"),
                 }
                 updated.append(normalize_incident_rule(merged))
@@ -523,6 +708,7 @@ def build_action_states(state, history: list[dict]) -> list[dict]:
 
 def build_process_database(state) -> list[dict]:
     definitions = process_definitions(state)
+    definitions_by_identity, definitions_by_source_incident = _process_definition_indexes(definitions)
     rows: dict[str, dict] = {}
 
     for definition in definitions:
@@ -538,14 +724,20 @@ def build_process_database(state) -> list[dict]:
         identity = process_incident_identity(incident)
         if not identity.get("normalized_process_name"):
             continue
-        matching = find_matching_definitions(
-            definitions,
-            identity.get("normalized_process_name"),
-            identity.get("normalized_process_path"),
+        definition = _saved_process_definition_for_incident(
+            incident,
+            definitions_by_identity,
+            definitions_by_source_incident,
         )
-        if matching:
-            definition = matching[0]
-        else:
+        if definition is None:
+            matching = find_matching_definitions(
+                definitions,
+                identity.get("normalized_process_name"),
+                identity.get("normalized_process_path"),
+            )
+            if matching:
+                definition = matching[0]
+        if definition is None:
             status = _status_from_incident(incident)
             definition = definition_from_incident(incident, status=status)
         process_key = definition.get("process_key") or stable_process_key(
@@ -613,6 +805,7 @@ def matching_incident_rule_incidents(state, definition: dict) -> list[dict]:
 
 def build_incident_rules_database(state) -> list[dict]:
     definitions = incident_rules(state)
+    definitions_by_identity, definitions_by_source_incident = _incident_rule_definition_indexes(definitions)
     rows: dict[str, dict] = {}
 
     for definition in definitions:
@@ -623,14 +816,20 @@ def build_incident_rules_database(state) -> list[dict]:
     for incident in state.incidents:
         if not isinstance(incident, dict):
             continue
-        matching = [
-            definition
-            for definition in definitions
-            if incident_matches_rule(incident, definition)
-        ]
-        if matching:
-            definition = matching[0]
-        else:
+        definition = _saved_incident_rule_for_incident(
+            incident,
+            definitions_by_identity,
+            definitions_by_source_incident,
+        )
+        if definition is None:
+            matching = [
+                definition
+                for definition in definitions
+                if incident_matches_rule(incident, definition)
+            ]
+            if matching:
+                definition = matching[0]
+        if definition is None:
             definition = incident_rule_from_incident(
                 incident,
                 status=_incident_rule_status_from_incident(incident),
@@ -703,7 +902,20 @@ def apply_incident_rule_decision(state, decision: dict, *, actor="admin") -> dic
     if decision.get("reason"):
         raw_definition["decision_reason"] = str(decision.get("reason") or "")
 
+    existing_definition = _find_incident_rule_by_identity(incident_rules(state), raw_definition)
+    if existing_definition:
+        if not _clean_identity_value(raw_definition.get("definition_id")):
+            raw_definition["definition_id"] = existing_definition.get("definition_id")
+        if not _clean_identity_value(raw_definition.get("original_definition_id")):
+            raw_definition["original_definition_id"] = existing_definition.get("definition_id")
+        if not _clean_identity_value(raw_definition.get("original_rule_key")):
+            raw_definition["original_rule_key"] = existing_definition.get("rule_key")
+
     definition = normalize_incident_rule(raw_definition, now=now)
+    for key in INCIDENT_RULE_IDENTITY_FIELDS:
+        value = _clean_identity_value(raw_definition.get(key))
+        if value and key not in {"definition_id", "id", "rule_key"}:
+            definition[key] = value
     if not any(
         definition.get(key)
         for key in ("rule_id", "event_type", "source", "process_names", "browser_process_names", "window_title_patterns")
@@ -812,7 +1024,20 @@ def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
     if decision.get("reason"):
         raw_definition["decision_reason"] = str(decision.get("reason") or "")
 
+    existing_definition = _find_process_definition_by_identity(process_definitions(state), raw_definition)
+    if existing_definition:
+        if not _clean_identity_value(raw_definition.get("definition_id")):
+            raw_definition["definition_id"] = existing_definition.get("definition_id")
+        if not _clean_identity_value(raw_definition.get("original_definition_id")):
+            raw_definition["original_definition_id"] = existing_definition.get("definition_id")
+        if not _clean_identity_value(raw_definition.get("original_process_key")):
+            raw_definition["original_process_key"] = existing_definition.get("process_key")
+
     definition = normalize_definition(raw_definition, now=now)
+    for key in PROCESS_DEFINITION_IDENTITY_FIELDS:
+        value = _clean_identity_value(raw_definition.get(key))
+        if value and key not in {"definition_id", "id", "process_key"}:
+            definition[key] = value
     if not definition.get("normalized_process_name"):
         return {"ok": False, "message": "Decision requires an executable name.", "errors": ["Decision requires an executable name."]}
 
@@ -833,6 +1058,8 @@ def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
                 "definition": definition,
             }
 
+    resolved_by_policy: list[dict] = []
+    should_resolve_matches = definition.get("status") == "whitelist"
     for incident in matches:
         incident["process_decision"] = {
             "definition_id": definition.get("definition_id"),
@@ -843,8 +1070,36 @@ def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
             "decided_at": now,
             "decided_by": str(actor or "admin"),
         }
+        incident_id = str(incident.get("incident_id", "") or "").strip()
+        if (
+            should_resolve_matches
+            and incident_id
+            and incident_id in state.active_incidents
+            and str(incident.get("status", "") or "") != "resolved"
+        ):
+            resolved = dict(incident)
+            resolved.update(
+                {
+                    "status": "resolved",
+                    "resolved_at": now,
+                    "event_at": now,
+                    "timestamp": now,
+                    "summary": (
+                        f"Process whitelisted by policy decision: "
+                        f"{incident.get('process_name') or definition.get('process_name') or 'unknown'}"
+                    ),
+                    "needs_evidence": False,
+                }
+            )
+            resolved_by_policy.append(resolved)
     if matches and hasattr(state, "save_incidents"):
         state.save_incidents()
+    for resolved in resolved_by_policy:
+        if hasattr(state, "append_incident"):
+            state.append_incident(resolved)
+        else:
+            state.incidents.append(resolved)
+            state.active_incidents.pop(str(resolved.get("incident_id", "") or ""), None)
 
     action_results = []
     banned_login_ids = []
@@ -891,6 +1146,7 @@ def apply_process_decision(state, decision: dict, *, actor="admin") -> dict:
         "action_states": build_action_states(state, history),
         "action_results": action_results,
         "banned_login_ids": banned_login_ids,
+        "resolved_incident_ids": [entry.get("incident_id") for entry in resolved_by_policy],
         "saved_to_policy": saved_to_policy,
     }
 
@@ -999,6 +1255,8 @@ def _empty_process_row(definition: dict) -> dict:
     return {
         "process_key": normalized.get("process_key", ""),
         "definition_id": normalized.get("definition_id", ""),
+        "original_process_key": normalized.get("process_key", ""),
+        "original_definition_id": normalized.get("definition_id", ""),
         "process_name": normalized.get("process_name") or normalized.get("normalized_process_name", ""),
         "normalized_process_name": normalized.get("normalized_process_name", ""),
         "process_path": normalized.get("process_path", ""),

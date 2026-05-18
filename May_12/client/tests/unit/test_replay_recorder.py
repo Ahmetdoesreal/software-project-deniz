@@ -77,6 +77,18 @@ class ReplayRecorderTsSaveTests(unittest.TestCase):
         self.assertEqual(replay_file.read_bytes(), b"stable")
         self.assertFalse((Path(self.recorder.requests_dir) / "request-race").exists())
 
+    def test_reused_request_id_does_not_overwrite_existing_replay(self):
+        self._write_cache(["cache_000.ts"], {"cache_000.ts": b"first"})
+        first_path = Path(self.recorder.save_replay("same-window"))
+        self._write_cache(["cache_000.ts"], {"cache_000.ts": b"second"})
+        second_path = Path(self.recorder.save_replay("same-window"))
+
+        self.assertNotEqual(first_path, second_path)
+        self.assertEqual(first_path.name, "replay_same-window.ts")
+        self.assertTrue(second_path.name.startswith("replay_same-window_"))
+        self.assertEqual(first_path.read_bytes(), b"first")
+        self.assertEqual(second_path.read_bytes(), b"second")
+
     def test_ffmpeg_resolver_precedence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -334,10 +334,11 @@ class ExamTimerGUI(QMainWindow):
         self.submission_window: Optional[SubmissionWindow] = None
         self.finish_in_progress = False
         self.exam_folder_path = ""
+        self.exam_files_zip_path = ""
 
         self.setWindowTitle("Exam Timer")
-        self.resize(500, 320)
-        self.setMinimumSize(460, 290)
+        self.resize(500, 360)
+        self.setMinimumSize(460, 330)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
         self._build_widgets()
@@ -384,6 +385,10 @@ class ExamTimerGUI(QMainWindow):
         self.exam_folder_button.setEnabled(False)
         self.exam_folder_button.clicked.connect(self.show_exam_folder)
         commands_layout.addWidget(self.exam_folder_button)
+        self.reset_exam_folder_button = make_button("Reset Exam Folder", "outlined")
+        self.reset_exam_folder_button.setEnabled(False)
+        self.reset_exam_folder_button.clicked.connect(self.reset_exam_folder)
+        commands_layout.addWidget(self.reset_exam_folder_button)
         outer.addWidget(commands_box)
 
         self.footer_label = QLabel("Ready.")
@@ -542,12 +547,33 @@ class ExamTimerGUI(QMainWindow):
             info = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             return
+        zip_path = str(info.get("zip_path", "") or "").strip()
         folder = str(info.get("extracted_dir", "") or "").strip()
+        error = str(info.get("error", "") or "").strip()
+        pending = bool(info.get("pending_extraction"))
+
+        self.exam_files_zip_path = zip_path
+        self.reset_exam_folder_button.setEnabled(bool(zip_path))
+
         if not folder:
+            self.exam_folder_path = ""
+            self.exam_folder_button.setEnabled(False)
+            if error:
+                self.footer_label.setText(error)
+            elif zip_path or pending:
+                self.footer_label.setText("Exam archive ready.")
             return
+
         self.exam_folder_path = folder
         self.exam_folder_button.setEnabled(True)
         self.footer_label.setText(f"Exam folder: {folder}")
+
+    def reset_exam_folder(self) -> None:
+        if not self.exam_files_zip_path:
+            QMessageBox.information(self, "Exam Folder", "No exam archive is available yet.")
+            return
+        _emit_command({"cmd": "reset_exam_folder"})
+        self.footer_label.setText("Reset exam folder requested.")
 
     def show_exam_folder(self) -> None:
         if not self.exam_folder_path:

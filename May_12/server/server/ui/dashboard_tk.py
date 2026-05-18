@@ -1,8 +1,10 @@
 import json
+import os
 import sys
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +60,18 @@ from server.ui.row_refresh import (
 )
 
 _IPC_CLIENT = None
+
+
+def _student_folders_root() -> Path:
+    return PROJECT_DIR / "data" / "server"
+
+
+def _open_local_folder(path: Path) -> None:
+    folder = path.expanduser().resolve()
+    if os.name == "nt":
+        os.startfile(str(folder))  # type: ignore[attr-defined]
+    else:
+        webbrowser.open(folder.as_uri())
 
 
 def _emit_command(payload: dict):
@@ -302,6 +316,14 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
             width=18,
         )
         self.policy_settings_button.pack(side=tk.LEFT)
+
+        self.open_student_folders_button = ttk.Button(
+            settings_controls,
+            text="Student Folders",
+            command=self.open_student_folders,
+            width=18,
+        )
+        self.open_student_folders_button.pack(side=tk.LEFT, padx=(12, 0))
 
         self.server_info_detail_button = ttk.Button(
             settings_controls,
@@ -1322,6 +1344,15 @@ class ServerGUI(PolicySettingsMixin, DashboardPopupMixin, tk.Tk):
     def finish_exam_globally(self):
         _emit_command({"cmd": "finish_exam_global"})
         self._append_log("[ADMIN] Requested global exam finish")
+
+    def open_student_folders(self):
+        folder = _student_folders_root()
+        try:
+            (folder / "submissions").mkdir(parents=True, exist_ok=True)
+            (folder / "artifacts").mkdir(parents=True, exist_ok=True)
+            _open_local_folder(folder)
+        except Exception as exc:
+            messagebox.showwarning("Student Folders", f"Could not open student folders:\n{exc}")
 
     def edit_policy(self):
         _emit_command({"cmd": "edit_policy"})

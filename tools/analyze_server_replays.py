@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Analyze May_12 server replay artifacts and incident bundles.
 
-Default target:
-    May_12/server/data/server
+Default target is auto-detected. The script can be run from repo-root/tools,
+copied into May_12, or copied into May_12/server beside the data folder.
 
 Examples:
     python tools/analyze_server_replays.py
     python tools/analyze_server_replays.py --session ecd1144d-49f2-405e-9466-5c7742c0d108
     python tools/analyze_server_replays.py --data-root X:\\May_12\\server\\data\\server
     python tools/analyze_server_replays.py --session all --json report.json
+    cd May_12\\server && python analyze_server_replays.py
 """
 
 from __future__ import annotations
@@ -86,16 +87,87 @@ class SessionAnalysis:
     issues: list[str]
 
 
+def script_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    path = script_dir()
+    if path.name.lower() == "tools":
+        return path.parent
+    for parent in [path, *path.parents]:
+        if (parent / "May_12").is_dir():
+            return parent
+    return path
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        try:
+            key = str(path.expanduser().resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def location_roots() -> list[Path]:
+    roots: list[Path] = []
+    for base in [Path.cwd(), script_dir()]:
+        roots.append(base)
+        roots.extend(base.parents)
+    return _unique_paths(roots)
+
+
+def local_roots() -> list[Path]:
+    return _unique_paths([Path.cwd(), script_dir()])
+
+
+def _server_data_candidates_for_roots(roots: list[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(
+            [
+                root / "data" / "server",
+                root / "server" / "data" / "server",
+                root / "May_12" / "server" / "data" / "server",
+            ]
+        )
+    return _unique_paths(candidates)
+
+
+def server_data_candidates() -> list[Path]:
+    return _server_data_candidates_for_roots(location_roots())
 
 
 def default_data_root() -> Path:
-    return repo_root() / "May_12" / "server" / "data" / "server"
+    local_candidates = _server_data_candidates_for_roots(local_roots())
+    for candidate in local_candidates:
+        if (candidate / "artifacts").is_dir():
+            return candidate
+    for candidate in local_candidates:
+        if candidate.is_dir():
+            return candidate
+
+    candidates = server_data_candidates()
+    for candidate in candidates:
+        if (candidate / "artifacts").is_dir():
+            return candidate
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
-def default_logs_root() -> Path:
-    return repo_root() / "May_12" / "server" / "data" / "logs" / "server"
+def logs_root_for_data_root(data_root: Path) -> Path:
+    if data_root.name == "server" and data_root.parent.name == "data":
+        return data_root.parent / "logs" / "server"
+    return data_root / "logs" / "server"
 
 
 def normalize_data_root(path: str | Path) -> Path:
@@ -370,7 +442,7 @@ def scan_logs(logs_root: Path, session_uuid: str, limit: int) -> list[dict[str, 
                     text = line.rstrip()
                     lowered = text.lower()
                     is_error = STATUS_500_RE.search(text) or any(term in lowered for term in ERROR_TERMS)
-                    if is_error:
+                    if is_error and session_uuid in text:
                         hits.append(
                             {
                                 "path": str(path),
@@ -501,8 +573,8 @@ def print_session_report(report: SessionAnalysis, *, detail_limit: int) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze May_12 server replay and incident bundle artifacts.")
-    parser.add_argument("--data-root", default=str(default_data_root()), help="Path to May_12/server/data/server or May_12/server.")
-    parser.add_argument("--logs-root", default=str(default_logs_root()), help="Path to May_12/server/data/logs/server.")
+    parser.add_argument("--data-root", default="", help="Path to May_12/server/data/server or May_12/server. Defaults to auto-detection.")
+    parser.add_argument("--logs-root", default="", help="Path to May_12/server/data/logs/server. Defaults beside the selected data root.")
     parser.add_argument("--session", default="", help="Session UUID to analyze, or 'all'. If omitted, asks interactively.")
     parser.add_argument("--log-lines", type=int, default=80, help="Maximum matching server log lines to collect per session.")
     parser.add_argument("--detail-limit", type=int, default=40, help="Maximum detail rows printed per section.")
@@ -512,8 +584,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    data_root = normalize_data_root(args.data_root)
-    logs_root = Path(args.logs_root).expanduser().resolve()
+    data_root = normalize_data_root(args.data_root or default_data_root())
+    logs_root = Path(args.logs_root).expanduser().resolve() if args.logs_root else logs_root_for_data_root(data_root)
 
     if not (data_root / "artifacts").is_dir():
         print(f"Server artifacts folder not found: {data_root / 'artifacts'}", file=sys.stderr)

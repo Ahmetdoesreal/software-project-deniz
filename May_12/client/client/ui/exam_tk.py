@@ -66,6 +66,7 @@ class ExamTimerGUI:
         self.status_text = tk.StringVar(value="Waiting for exam start.")
         self.footer_text = tk.StringVar(value="Ready.")
         self.exam_folder_path = ""
+        self.exam_files_zip_path = ""
 
         self._configure_window()
         self._build_widgets()
@@ -73,8 +74,8 @@ class ExamTimerGUI:
 
     def _configure_window(self):
         self.root.title("Exam Timer")
-        self.root.geometry("500x320")
-        self.root.minsize(460, 290)
+        self.root.geometry("500x360")
+        self.root.minsize(460, 330)
         self.root.attributes("-topmost", True)
         apply_tk_theme(self.root)
         install_close_guard(self.root, self.on_closing, bind_all=True)
@@ -138,6 +139,13 @@ class ExamTimerGUI:
             state=tk.DISABLED,
         )
         self.exam_folder_btn.pack(fill=tk.X, pady=(6, 0))
+        self.reset_exam_folder_btn = ttk.Button(
+            self.button_frame,
+            text="Reset Exam Folder",
+            command=self.reset_exam_folder,
+            state=tk.DISABLED,
+        )
+        self.reset_exam_folder_btn.pack(fill=tk.X, pady=(6, 0))
 
         self.footer_label = tk.Label(
             self.main_frame,
@@ -264,12 +272,33 @@ class ExamTimerGUI:
             self.submission_window.set_upload_step(text)
 
     def set_exam_files(self, info: dict):
+        zip_path = str(info.get("zip_path", "") or "").strip()
         folder = str(info.get("extracted_dir", "") or "").strip()
+        error = str(info.get("error", "") or "").strip()
+        pending = bool(info.get("pending_extraction"))
+
+        self.exam_files_zip_path = zip_path
+        self.reset_exam_folder_btn.config(state=tk.NORMAL if zip_path else tk.DISABLED)
+
         if not folder:
+            self.exam_folder_path = ""
+            self.exam_folder_btn.config(state=tk.DISABLED)
+            if error:
+                self.footer_text.set(error)
+            elif zip_path or pending:
+                self.footer_text.set("Exam archive ready.")
             return
+
         self.exam_folder_path = folder
         self.exam_folder_btn.config(state=tk.NORMAL)
         self.footer_text.set(f"Exam folder: {folder}")
+
+    def reset_exam_folder(self):
+        if not self.exam_files_zip_path:
+            messagebox.showinfo("Exam Folder", "No exam archive is available yet.")
+            return
+        _emit_command({"cmd": "reset_exam_folder"})
+        self.footer_text.set("Reset exam folder requested.")
 
     def show_exam_folder(self):
         if not self.exam_folder_path:

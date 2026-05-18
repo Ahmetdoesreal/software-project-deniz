@@ -196,6 +196,24 @@ class ClientIncidentEngine:
         )
         return True, ""
 
+    def _resolve_open_unexpected_process_incidents(self, summary: str) -> list[dict]:
+        incidents: list[dict] = []
+        now = protocol.now_iso()
+        for identity, incident in list(self._open_unexpected_process_incidents.items()):
+            resolved = dict(incident)
+            resolved["status"] = "resolved"
+            resolved["resolved_at"] = now
+            resolved["event_at"] = now
+            resolved["timestamp"] = now
+            resolved["summary"] = summary.format(
+                process_name=incident.get("process_name", "unknown"),
+            )
+            resolved["needs_evidence"] = False
+            incidents.append(resolved)
+            self._open_unexpected_process_incidents.pop(identity, None)
+            self._unexpected_seen_identities.discard(identity)
+        return incidents
+
     def observe_processes(self, processes: set[ProcessEntry]) -> list[dict]:
         incidents, suppressed_identities = self._observe_process_definitions(processes)
         blacklist_incidents, blacklist_identities = self._observe_blacklisted_processes(processes)
@@ -572,10 +590,11 @@ class ClientIncidentEngine:
     ) -> list[dict]:
         rule = self._unexpected_process_rule()
         if not rule:
-            self._open_unexpected_process_incidents = {}
             self._unexpected_seen_identities = set()
             self._unexpected_baseline_ready = False
-            return []
+            return self._resolve_open_unexpected_process_incidents(
+                "Unexpected-process rule disabled or unknown-process detection disabled: {process_name}"
+            )
         suppressed_identities = suppressed_identities or set()
         baseline_existing = bool(rule.get("baseline_existing_processes", False))
 
@@ -585,12 +604,6 @@ class ClientIncidentEngine:
         known.extend(allowed)
         known_directories = _string_list(rule.get("known_directory_paths", []))
 
-        current_names = {
-            _normalize_process_name(name)
-            for _pid, name, _username, _process_path in (_process_parts(process) for process in processes)
-            if str(name).strip()
-        }
-        current_identities = set()
         raw_processes = [
             {
                 "pid": int(raw_pid),
@@ -619,7 +632,6 @@ class ClientIncidentEngine:
                 continue
             if any(_is_path_under_directory(process_path, directory) for directory in known_directories):
                 continue
-            current_identities.add(identity)
             candidate_identities.add(identity)
             if (
                 baseline_existing
@@ -660,7 +672,7 @@ class ClientIncidentEngine:
         self._unexpected_baseline_ready = True
 
         for identity, incident in list(self._open_unexpected_process_incidents.items()):
-            if identity in current_identities or identity in current_names:
+            if identity in candidate_identities:
                 continue
             now = protocol.now_iso()
             resolved = dict(incident)
@@ -668,7 +680,7 @@ class ClientIncidentEngine:
             resolved["resolved_at"] = now
             resolved["event_at"] = now
             resolved["timestamp"] = now
-            resolved["summary"] = f"Unexpected process no longer detected: {incident.get('process_name', 'unknown')}"
+            resolved["summary"] = f"Unexpected process no longer unexpected: {incident.get('process_name', 'unknown')}"
             resolved["needs_evidence"] = False
             incidents.append(resolved)
             self._open_unexpected_process_incidents.pop(identity, None)

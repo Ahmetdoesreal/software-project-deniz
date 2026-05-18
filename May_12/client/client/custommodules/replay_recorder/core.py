@@ -217,12 +217,22 @@ class ReplayRecorder:
                 print("[RECORDER] No complete segments could be copied for replay save.")
                 return None
 
-            output_file = os.path.join(self.output_dir, f"replay_{safe_request_id}.ts")
+            output_file = self._replay_output_path(safe_request_id)
             temp_output_file = os.path.join(request_dir, f"replay_{safe_request_id}.partial.ts")
             replay_path = self._write_ts_replay(copied_segments, temp_output_file, output_file)
         finally:
             self._remove_request_dir(request_dir)
         return replay_path
+
+    def _replay_output_path(self, safe_request_id: str) -> str:
+        preferred_path = os.path.join(self.output_dir, f"replay_{safe_request_id}.ts")
+        if not os.path.exists(preferred_path):
+            return preferred_path
+
+        while True:
+            candidate = os.path.join(self.output_dir, f"replay_{safe_request_id}_{time.time_ns()}.ts")
+            if not os.path.exists(candidate):
+                return candidate
 
     def _write_ts_replay(self, copied_segments: list[str], temp_output_file: str, output_file: str) -> str | None:
         try:
