@@ -1,0 +1,48 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server Data Review</title>
+  <link rel="stylesheet" href="/web/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Server Data Review</h1>
+      <div class="root-line" id="rootLine">Loading data root...</div>
+    </div>
+    <div class="toolbar">
+      <div class="top-message" id="message"></div>
+      <button id="refreshButton" class="primary" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <div class="stats" id="stats"></div>
+      <div class="searchbar">
+        <input id="search" type="search" placeholder="Filter students, computers, IDs">
+      </div>
+      <div class="student-list" id="studentList"></div>
+    </aside>
+
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2 id="detailTitle">Select a student</h2>
+            <div class="student-sub" id="detailSub"></div>
+          </div>
+          <div class="toolbar" id="studentActions"></div>
+        </div>
+        <div class="panel-body" id="detailBody">
+          <div class="empty">No student selected.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/web/app.js"></script>
+</body>
+</html>
