@@ -4,7 +4,8 @@
       selectedId: "",
       tab: "incidents",
       activeReplayKey: "",
-      activeReplayUrl: ""
+      activeReplayUrl: "",
+      conversionTimer: null
     };
 
     const els = {
@@ -45,6 +46,37 @@
     function sourceButton(ref) {
       if (!ref) return "";
       return `<a class="button small" href="/api/source-json?ref=${url(ref)}&download=1" download>JSON</a>`;
+    }
+
+    function deltaText(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds)) return "";
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      return `${(seconds / 60).toFixed(1)}m`;
+    }
+
+    function matchReasonText(reason) {
+      if (reason === "incident_id") return "incident";
+      if (reason === "near_time") return "time";
+      return reason || "";
+    }
+
+    function replayMatchCell(matches = [], total = 0) {
+      if (!matches.length) return "";
+      const buttons = matches.slice(0, 2).map(match => {
+        const delta = deltaText(match.delta_seconds);
+        const reason = matchReasonText(match.match_reason);
+        const label = [match.converted ? "MP4" : "Replay", delta || reason].filter(Boolean).join(" ");
+        const title = match.path || [match.zip_path, match.member].filter(Boolean).join("!");
+        return `<button type="button" class="small open-replay" data-key="${esc(match.replay_key)}" title="${esc(title)}">${esc(label)}</button>`;
+      }).join("");
+      const hiddenCount = Math.max(0, Number(total || matches.length) - Math.min(matches.length, 2));
+      return `<div class="match-stack">${buttons}${hiddenCount ? `<span class="student-sub">+${esc(hiddenCount)} more</span>` : ""}</div>`;
+    }
+
+    function incidentMatchBadge(count) {
+      return count ? `<span class="badge warn">${esc(count)} incident${count === 1 ? "" : "s"}</span>` : "";
     }
 
     async function fetchJson(path, options = {}) {
@@ -219,7 +251,7 @@
         <div class="table-wrap">
           <table>
             <thead><tr>${headers.map(h => `<th style="width:${h.width || "auto"}">${esc(h.label)}</th>`).join("")}</tr></thead>
-            <tbody>${rows.map(row => `<tr>${headers.map(h => `<td>${row[h.key] ?? ""}</td>`).join("")}</tr>`).join("")}</tbody>
+            <tbody>${rows.map(row => `<tr>${headers.map(h => `<td data-label="${esc(h.label)}">${row[h.key] ?? ""}</td>`).join("")}</tr>`).join("")}</tbody>
           </table>
         </div>
       `;
@@ -232,6 +264,7 @@
         status: esc(item.status || ""),
         severity: esc(item.severity || ""),
         summary: esc(item.summary || ""),
+        replays: replayMatchCell(item.matched_replays || [], item.matched_replay_count || 0),
         source: sourceButton(item.source_ref)
       }));
       return table(
@@ -241,6 +274,7 @@
           {key: "status", label: "Status", width: "110px"},
           {key: "severity", label: "Severity", width: "90px"},
           {key: "summary", label: "Summary"},
+          {key: "replays", label: "Replay", width: "170px"},
           {key: "source", label: "Source", width: "90px"}
         ],
         rows,
@@ -254,7 +288,6 @@
         at: esc(item.timestamp || ""),
         match: `<code>${esc(item.matched_blacklist_entry || "")}</code>`,
         process: esc(item.process_name || ""),
-        pid: esc(item.pid || ""),
         user: esc(item.process_username || ""),
         path: `<code>${esc(item.process_path || "")}</code>`,
         source: sourceButton(item.source_ref)
@@ -272,7 +305,6 @@
             {key: "at", label: "Time", width: "170px"},
             {key: "match", label: "Matched", width: "130px"},
             {key: "process", label: "Process", width: "170px"},
-            {key: "pid", label: "PID", width: "80px"},
             {key: "user", label: "User", width: "150px"},
             {key: "path", label: "Path"},
             {key: "source", label: "Source", width: "90px"}
@@ -310,13 +342,12 @@
     }
 
     function renderProcesses() {
-      const rows = (state.detail.processes || []).slice(0, 500).map(item => ({
+      const rows = (state.detail.processes || []).map(item => ({
         count: esc(item.count || 0),
         process: esc(item.process_name || item.normalized_process_name || ""),
         first: esc(item.first_seen || ""),
         last: esc(item.last_seen || ""),
         user: esc(item.process_username || ""),
-        pids: esc((item.pids || []).join(", ")),
         path: `<code>${esc(item.process_path || "")}</code>`,
         source: sourceButton(item.source_ref)
       }));
@@ -327,7 +358,6 @@
           {key: "first", label: "First", width: "165px"},
           {key: "last", label: "Last", width: "165px"},
           {key: "user", label: "User", width: "150px"},
-          {key: "pids", label: "PIDs", width: "120px"},
           {key: "path", label: "Path"},
           {key: "source", label: "Source", width: "90px"}
         ],
@@ -350,31 +380,87 @@
     function renderReplays() {
       const replays = state.detail.replays || [];
       if (!replays.length) return `<div class="empty">No replay files found under server data.</div>`;
-      if (!state.activeReplayKey) {
-        state.activeReplayKey = replayKey(replays[0]);
-        state.activeReplayUrl = replayUrl(replays[0]);
-      }
-      const active = replays.find(item => replayKey(item) === state.activeReplayKey) || replays[0];
-      state.activeReplayUrl = replayUrl(active);
+      const active = state.activeReplayKey ? replays.find(item => replayKey(item) === state.activeReplayKey) : null;
+      state.activeReplayUrl = active ? replayUrl(active) : "";
       return `
         <div class="split">
           <div class="replay-list">
             ${replays.map(replay => renderReplayItem(replay)).join("")}
           </div>
-          <div>
-            <video id="replayPlayer" controls preload="metadata" src="${esc(state.activeReplayUrl)}"></video>
-            <div class="panel" style="margin-top:12px">
-              <div class="panel-body">
-                <h3>${esc(active.name || "Replay")}</h3>
-                <div class="student-sub">${esc(active.container === "zip" ? active.zip_path + "!" + active.member : active.path)}</div>
-                <div class="replay-actions">
-                  <a class="button" href="${esc(replayUrl(active, true))}" download>Download</a>
-                  ${active.container === "file" ? `<button class="primary" type="button" id="convertButton" data-path="${esc(active.path)}">Convert to compatible MP4</button>` : ""}
-                </div>
-                <div id="convertLog" class="log hidden"></div>
+          ${active ? renderReplayPlayer(active, replays) : renderReplayPlaceholder()}
+        </div>
+      `;
+    }
+
+    function renderReplayPlaceholder() {
+      return `
+        <div class="panel">
+          <div class="panel-body">
+            <div class="empty">Select a replay to load the video player.</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderReplayPlayer(active, replays) {
+      const activePath = active.container === "zip" ? active.zip_path + "!" + active.member : active.path;
+      const convertedReplay = active.converted_path
+        ? replays.find(item => item.path === active.converted_path)
+        : null;
+      const canConvert = active.container === "file" && !active.converted && !active.has_converted;
+      return `
+        <div>
+          <video id="replayPlayer" controls preload="none" src="${esc(state.activeReplayUrl)}"></video>
+          <div class="panel" style="margin-top:12px">
+            <div class="panel-body">
+              <h3>${esc(active.name || "Replay")} ${active.converted ? '<span class="badge ok">converted</span>' : ''}</h3>
+              <div class="student-sub">${esc(activePath)}</div>
+              ${active.converted && active.original_path ? `<div class="student-sub">Original: <code>${esc(active.original_path)}</code></div>` : ""}
+              ${active.has_converted ? `<div class="student-sub">Converted copy: <code>${esc(active.converted_path)}</code></div>` : ""}
+              ${active.matched_incident_count ? `<div class="student-sub">Matched incidents: ${esc(active.matched_incident_count)}</div>` : ""}
+              <div class="replay-actions">
+                <a class="button" href="${esc(replayUrl(active, true))}" download>Download</a>
+                ${convertedReplay ? `<button type="button" class="open-replay" data-key="${esc(replayKey(convertedReplay))}">Open converted</button>` : ""}
+                ${convertedReplay ? `<a class="button" href="${esc(replayUrl(convertedReplay, true))}" download>Download converted</a>` : ""}
+                ${canConvert ? `<button class="primary" type="button" id="convertButton" data-path="${esc(active.path)}">Convert to compatible MP4</button>` : ""}
               </div>
+              ${renderReplayIncidentMatches(active)}
+              <div id="convertProgress" class="progress hidden"><div id="convertProgressBar"></div></div>
+              <div id="convertLog" class="log hidden"></div>
             </div>
           </div>
+        </div>
+      `;
+    }
+
+    function renderReplayIncidentMatches(replay) {
+      const matches = replay.matched_incidents || [];
+      if (!matches.length) return "";
+      const visibleMatches = matches.slice(0, 8);
+      const rows = visibleMatches.map(match => {
+        const delta = deltaText(match.delta_seconds);
+        const reason = matchReasonText(match.match_reason);
+        return `
+          <div class="match-row">
+            <div class="match-row-main">
+              <strong>${esc(match.rule_id || "incident")}</strong>
+              <span>${esc(match.at || "")}</span>
+              <span>${esc([match.status, match.severity].filter(Boolean).join(" | "))}</span>
+              <div>${esc(match.summary || "")}</div>
+            </div>
+            <div class="match-row-actions">
+              <span class="badge">${esc(delta || reason)}</span>
+              ${sourceButton(match.source_ref)}
+            </div>
+          </div>
+        `;
+      }).join("");
+      const hiddenCount = Math.max(0, Number(replay.matched_incident_count || matches.length) - visibleMatches.length);
+      return `
+        <div class="match-list">
+          <h3>Matched incidents</h3>
+          ${rows}
+          ${hiddenCount ? `<div class="student-sub">+${esc(hiddenCount)} more matches</div>` : ""}
         </div>
       `;
     }
@@ -385,11 +471,12 @@
       const path = replay.container === "zip" ? `${replay.zip_path}!${replay.member}` : replay.path;
       return `
         <div class="replay-item${active}">
-          <div class="replay-name">${esc(replay.name || "replay")}</div>
-          <div class="student-sub">${esc(replay.kind || replay.container)} | ${esc(replay.size_label || "")} | ${esc(replay.modified_at || "")}</div>
+          <div class="replay-name">${esc(replay.name || "replay")} ${replay.converted ? '<span class="badge ok">converted</span>' : ''} ${replay.has_converted ? '<span class="badge ok">has MP4</span>' : ''} ${incidentMatchBadge(replay.matched_incident_count || 0)}</div>
+          <div class="student-sub">${esc(replay.kind || replay.container)} | ${esc(replay.size_label || "")} | ${esc(replay.replay_at || replay.modified_at || "")}</div>
           <div class="student-sub"><code>${esc(path)}</code></div>
+          ${replay.converted && replay.original_path ? `<div class="student-sub">Original: <code>${esc(replay.original_path)}</code></div>` : ""}
           <div class="replay-actions">
-            <button type="button" class="open-replay" data-key="${esc(key)}">Open</button>
+            <button type="button" class="open-replay" data-key="${esc(key)}">Load</button>
             <a class="button" href="${esc(replayUrl(replay, true))}" download>Download</a>
           </div>
         </div>
@@ -431,6 +518,7 @@
       for (const button of els.detailBody.querySelectorAll(".open-replay")) {
         button.addEventListener("click", () => {
           state.activeReplayKey = button.dataset.key;
+          state.tab = "replays";
           renderDetail();
         });
       }
@@ -443,31 +531,73 @@
     async function convertReplay(path) {
       const log = document.getElementById("convertLog");
       const button = document.getElementById("convertButton");
+      const progress = document.getElementById("convertProgress");
+      const progressBar = document.getElementById("convertProgressBar");
       if (!path || !log || !button) return;
       log.classList.remove("hidden");
-      log.textContent = "Running ffmpeg conversion...";
+      progress?.classList.remove("hidden");
+      if (progressBar) progressBar.style.width = "0%";
+      log.textContent = "Starting ffmpeg conversion...";
       button.disabled = true;
       try {
-        const result = await fetchJson("/api/convert", {
+        const job = await fetchJson("/api/convert", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({path})
         });
-        log.textContent = [
-          `Return code: ${result.returncode}`,
-          `Output: ${result.output_path}`,
-          `Seconds: ${result.seconds}`,
-          "",
-          result.stderr_tail || ""
-        ].join("\n");
-        await loadSummary(true);
-        state.activeReplayKey = result.output_path;
-        state.tab = "replays";
-        await loadStudent(state.selectedId, false);
+        await pollConversion(job);
       } catch (error) {
         log.textContent = error.message;
-      } finally {
+        progress?.classList.add("hidden");
         button.disabled = false;
+      }
+    }
+
+    async function pollConversion(job) {
+      const log = document.getElementById("convertLog");
+      const progress = document.getElementById("convertProgress");
+      const progressBar = document.getElementById("convertProgressBar");
+      const button = document.getElementById("convertButton");
+      let current = job;
+      while (current && current.id && !["done", "error"].includes(current.status)) {
+        if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, current.percent || 0))}%`;
+        if (log) {
+          log.textContent = [
+            current.message || current.status,
+            `Progress: ${current.percent || 0}%`,
+            current.output_path ? `Output: ${current.output_path}` : "",
+            "",
+            current.stderr_tail || ""
+          ].filter(Boolean).join("\n");
+        }
+        await new Promise(resolve => setTimeout(resolve, 900));
+        current = await fetchJson(`/api/convert-status?id=${url(current.id)}`);
+      }
+
+      if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, current?.percent || 100))}%`;
+      if (current?.status === "done") {
+        if (log) {
+          log.textContent = [
+            current.message || "Conversion complete.",
+            `Output: ${current.output_path}`,
+            `Seconds: ${current.seconds || 0}`,
+            "",
+            current.stderr_tail || ""
+          ].join("\n");
+        }
+        await loadSummary(true);
+        state.activeReplayKey = current.output_path;
+        state.tab = "replays";
+        await loadStudent(state.selectedId, false);
+        if (button) button.disabled = true;
+      } else if (current?.status === "error") {
+        if (log) {
+          log.textContent = [
+            current.message || "Conversion failed.",
+            current.stderr_tail || ""
+          ].join("\n");
+        }
+        if (button) button.disabled = false;
       }
     }
 

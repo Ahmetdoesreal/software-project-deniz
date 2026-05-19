@@ -8,7 +8,9 @@ under ./web, and all data access scoped to a selected data/server directory.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left, bisect_right
 import csv
+import errno
 import fnmatch
 import io
 import json
@@ -18,8 +20,11 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import uuid
 import zipfile
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -33,10 +38,33 @@ UUID_RE = re.compile(
 VIDEO_SUFFIXES = {".ts", ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
 TEXT_SCAN_LIMIT_BYTES = 96 * 1024 * 1024
 RECENT_PROCESS_LIMIT = 900
+REPLAY_INCIDENT_WINDOW_SECONDS = 90.0
+MAX_MATCHED_REPLAYS_PER_INCIDENT = 6
+MAX_MATCHED_INCIDENTS_PER_REPLAY = 12
+CLIENT_DISCONNECT_WINERRORS = {10053, 10054, 10058}
+CLIENT_DISCONNECT_ERRNOS = {
+    errno.EPIPE,
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+}
+REPLAY_WINDOW_RE = re.compile(r"replay_window_(\d{8}T\d{6}Z)", re.IGNORECASE)
+REPLAY_SAVE_ID_RE = re.compile(r"window_(\d{8}T\d{6}Z)", re.IGNORECASE)
+REPLAY_PREFIX_RE = re.compile(r"^(\d{8})_(\d{6})")
 
 mimetypes.add_type("video/mp2t", ".ts")
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("video/quicktime", ".mov")
+
+
+def is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    if isinstance(exc, OSError):
+        if getattr(exc, "winerror", None) in CLIENT_DISCONNECT_WINERRORS:
+            return True
+        if getattr(exc, "errno", None) in CLIENT_DISCONNECT_ERRNOS:
+            return True
+    return False
 
 
 def now_stamp() -> str:
@@ -112,12 +140,52 @@ def isoish(value: Any) -> str:
     return str(value or "").strip()
 
 
+def parse_timestamp(value: Any) -> datetime | None:
+    text = isoish(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d{8}T\d{6}Z", text):
+        try:
+            return datetime.strptime(text, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if re.fullmatch(r"\d{8}_\d{6}", text):
+        try:
+            return datetime.strptime(text, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def timestamp_seconds(value: Any) -> float | None:
+    parsed = parse_timestamp(value)
+    return parsed.timestamp() if parsed else None
+
+
+def timestamp_iso(value: Any) -> str:
+    parsed = parse_timestamp(value)
+    if not parsed:
+        return ""
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def incident_time(incident: dict) -> str:
     for key in ("event_at", "timestamp", "reported_at", "server_received_at", "saved_at", "queued_at"):
         value = isoish(incident.get(key))
         if value:
             return value
     return ""
+
+
+def incident_row_time(incident: dict) -> str:
+    return isoish(incident.get("at")) or incident_time(incident)
 
 
 def incident_display_row(incident: dict, source_ref: str) -> dict:
@@ -137,6 +205,45 @@ def incident_display_row(incident: dict, source_ref: str) -> dict:
         "raw_process_count": len(raw_processes) if isinstance(raw_processes, list) else 0,
         "source_ref": source_ref,
     }
+
+
+def replay_time_from_value(value: Any) -> str:
+    text = isoish(value)
+    if not text:
+        return ""
+    for pattern in (REPLAY_SAVE_ID_RE, REPLAY_WINDOW_RE):
+        match = pattern.search(text)
+        if match:
+            return timestamp_iso(match.group(1))
+    prefix = REPLAY_PREFIX_RE.match(text)
+    if prefix:
+        return timestamp_iso(f"{prefix.group(1)}_{prefix.group(2)}")
+    return timestamp_iso(text)
+
+
+def replay_time_from_name(name: str) -> str:
+    return replay_time_from_value(Path(name).name)
+
+
+def replay_time_from_sidecar(sidecar: dict, name: str) -> str:
+    metadata = sidecar.get("metadata") if isinstance(sidecar.get("metadata"), dict) else {}
+    for value in (
+        metadata.get("save_id"),
+        name,
+        sidecar.get("saved_at"),
+        sidecar.get("created_at"),
+        sidecar.get("timestamp"),
+    ):
+        replay_at = replay_time_from_value(value)
+        if replay_at:
+            return replay_at
+    return ""
+
+
+def replay_key(replay: dict) -> str:
+    if replay.get("container") == "zip":
+        return f"{replay.get('zip_path', '')}#{replay.get('member', '')}"
+    return str(replay.get("path") or "")
 
 
 def resolve_data_root(candidate: str | Path) -> Path:
@@ -336,15 +443,23 @@ class ServerDataIndex:
             lower = name.lower()
             suffix = Path(name).suffix.lower()
             if suffix in VIDEO_SUFFIXES:
+                replay_at = replay_time_from_name(name)
                 replay_entry = {
                     "container": "zip",
                     "zip_path": zip_rel,
                     "member": name,
+                    "replay_key": f"{zip_rel}#{name}",
                     "name": Path(name).name,
                     "size_bytes": int(info.file_size),
                     "size_label": bytes_label(int(info.file_size)),
                     "modified_at": "",
+                    "saved_at": "",
+                    "replay_at": replay_at,
                     "kind": "submission_bundle",
+                    "incident_id": "",
+                    "rule_id": "",
+                    "matched_incidents": [],
+                    "matched_incident_count": 0,
                 }
                 submission["replay_members"].append(replay_entry)
                 student["replays"].append(replay_entry)
@@ -358,7 +473,13 @@ class ServerDataIndex:
                 submission["runtime_files"].append(name)
                 payload = self._read_zip_json(archive, info)
                 if isinstance(payload, dict):
-                    self._scan_process_payload(student, payload, f"{zip_rel}!{name}")
+                    source = f"{zip_rel}!{name}"
+                    self._scan_process_payload(
+                        student,
+                        payload,
+                        source,
+                        self._locator_from_source(source),
+                    )
             elif lower.endswith("runtime/focused_window.jsonl") or lower.endswith("/focused_window.jsonl") or lower == "focused_window.jsonl":
                 submission["runtime_files"].append(name)
                 self._scan_zip_focus_jsonl(student, archive, info, f"{zip_rel}!{name}")
@@ -387,13 +508,23 @@ class ServerDataIndex:
             student = self._student(client_id=client_id)
             try:
                 if name == "processes.jsonl":
-                    for _line_no, payload, _raw in iter_jsonl_file(path):
+                    for line_no, payload, _raw in iter_jsonl_file(path):
                         if isinstance(payload, dict):
-                            self._scan_process_payload(student, payload, rel)
+                            self._scan_process_payload(
+                                student,
+                                payload,
+                                rel,
+                                {"type": "file_jsonl", "path": rel, "line": line_no},
+                            )
                 elif name.startswith("process_report_requested") and name.endswith(".json"):
                     payload = json_load_file(path, {})
                     if isinstance(payload, dict):
-                        self._scan_process_payload(student, payload, rel)
+                        self._scan_process_payload(
+                            student,
+                            payload,
+                            rel,
+                            {"type": "file_json", "path": rel},
+                        )
                 elif name == "focused_window.jsonl":
                     for _line_no, payload, _raw in iter_jsonl_file(path):
                         if isinstance(payload, dict):
@@ -411,31 +542,77 @@ class ServerDataIndex:
                 continue
             rel = rel_to_root(path, self.data_root)
             sidecar = json_load_file(path.with_suffix(path.suffix + ".json"), {}) or {}
+            sidecar_metadata = sidecar.get("metadata") if isinstance(sidecar.get("metadata"), dict) else {}
+            conversion_meta = read_conversion_metadata(path)
             client_id = str(sidecar.get("client_id") or student_id_from_rel(rel) or "").strip()
             login_id = str(sidecar.get("login_id") or "").strip()
             student = self._student(client_id=client_id, login_id=login_id)
+            converted = bool(conversion_meta.get("converted")) or path.name.lower().endswith("_compatible.mp4")
+            original_path = str(
+                conversion_meta.get("original_path")
+                or conversion_meta.get("converted_from")
+                or guessed_original_path(self.data_root, path)
+                or ""
+            )
+            saved_at = isoish(sidecar.get("saved_at"))
+            replay_at = replay_time_from_sidecar(sidecar, path.name)
+            incident_id = str(sidecar_metadata.get("incident_id") or sidecar.get("incident_id") or "")
+            rule_id = str(sidecar_metadata.get("rule_id") or sidecar.get("rule_id") or "")
+            metadata = {
+                key: sidecar.get(key)
+                for key in ("saved_at", "sha256", "kind", "login_id", "client_id")
+                if key in sidecar
+            }
+            for key in ("save_id", "coalesce_window_seconds", "source", "incident_id", "rule_id"):
+                if key in sidecar_metadata:
+                    metadata[key] = sidecar_metadata.get(key)
             replay = {
                 "container": "file",
                 "path": rel,
+                "replay_key": rel,
                 "name": path.name,
                 "size_bytes": self._file_size(path),
                 "size_label": bytes_label(self._file_size(path)),
                 "modified_at": self._mtime(path),
+                "saved_at": saved_at,
+                "replay_at": replay_at,
                 "kind": Path(rel).parts[2] if len(Path(rel).parts) >= 3 and Path(rel).parts[0] == "artifacts" else path.parent.name,
-                "converted": path.name.lower().endswith("_compatible.mp4"),
-                "metadata": {
-                    key: sidecar.get(key)
-                    for key in ("saved_at", "sha256", "kind", "login_id", "client_id")
-                    if key in sidecar
-                },
+                "incident_id": incident_id,
+                "rule_id": rule_id,
+                "converted": converted,
+                "original_path": original_path,
+                "has_converted": False,
+                "converted_path": "",
+                "converted_name": "",
+                "matched_incidents": [],
+                "matched_incident_count": 0,
+                "metadata": metadata,
             }
+            if conversion_meta:
+                replay["metadata"]["conversion"] = {
+                    key: conversion_meta.get(key)
+                    for key in ("converted_at", "returncode", "duration_seconds")
+                    if key in conversion_meta
+                }
             if not any(existing.get("container") == "file" and existing.get("path") == rel for existing in student["replays"]):
                 student["replays"].append(replay)
+        for student in self.students.values():
+            converted_by_original = {
+                replay.get("original_path"): replay
+                for replay in student["replays"]
+                if replay.get("container") == "file" and replay.get("converted") and replay.get("original_path")
+            }
+            for replay in student["replays"]:
+                converted_replay = converted_by_original.get(replay.get("path"))
+                if converted_replay:
+                    replay["has_converted"] = True
+                    replay["converted_path"] = converted_replay.get("path", "")
+                    replay["converted_name"] = converted_replay.get("name", "")
 
     def _scan_zip_process_jsonl(self, student: dict, archive: zipfile.ZipFile, info: zipfile.ZipInfo, source: str):
         with archive.open(info) as raw:
             text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace")
-            for raw_line in text:
+            for line_no, raw_line in enumerate(text, 1):
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -444,7 +621,12 @@ class ServerDataIndex:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(payload, dict):
-                    self._scan_process_payload(student, payload, source)
+                    self._scan_process_payload(
+                        student,
+                        payload,
+                        source,
+                        self._locator_from_source(source, line_no=line_no),
+                    )
 
     def _scan_zip_focus_jsonl(self, student: dict, archive: zipfile.ZipFile, info: zipfile.ZipInfo, source: str):
         with archive.open(info) as raw:
@@ -467,14 +649,30 @@ class ServerDataIndex:
         except Exception:
             return None
 
-    def _scan_process_payload(self, student: dict, payload: dict, source: str):
+    def _scan_process_payload(self, student: dict, payload: dict, source: str, source_locator: dict | None = None):
         timestamp = isoish(payload.get("timestamp") or payload.get("created_at"))
+        source_ref = self._register_source(
+            student,
+            "process_report",
+            payload if source_locator is None else None,
+            source,
+            f"{student.get('login_id') or student.get('client_id') or 'student'}_process_report_{len(self.source_payloads) + 1}.json",
+            locator=source_locator,
+        )
         for key, action in (("processes", "seen"), ("added", "added"), ("removed", "removed")):
             values = payload.get(key)
             if not isinstance(values, list):
                 continue
             for process in values:
-                self._record_process(student, process, timestamp, source, action=action, source_payload=process)
+                self._record_process(
+                    student,
+                    process,
+                    timestamp,
+                    source,
+                    action=action,
+                    source_ref=source_ref,
+                    source_payload=process,
+                )
 
     def _scan_focus_payload(self, student: dict, payload: dict, source: str):
         timestamp = isoish(payload.get("timestamp") or payload.get("created_at"))
@@ -667,7 +865,28 @@ class ServerDataIndex:
                 return pattern
         return ""
 
-    def _register_source(self, student: dict, kind: str, payload: Any, label: str, filename: str) -> str:
+    def _locator_from_source(self, source: str, *, line_no: int | None = None) -> dict:
+        if "!" in source:
+            zip_path, member = source.split("!", 1)
+            locator = {"type": "zip_jsonl" if line_no else "zip_json", "zip_path": zip_path, "member": member}
+            if line_no:
+                locator["line"] = line_no
+            return locator
+        locator = {"type": "file_jsonl" if line_no else "file_json", "path": source}
+        if line_no:
+            locator["line"] = line_no
+        return locator
+
+    def _register_source(
+        self,
+        student: dict,
+        kind: str,
+        payload: Any,
+        label: str,
+        filename: str,
+        *,
+        locator: dict | None = None,
+    ) -> str:
         ref = f"src{len(self.source_payloads) + 1}"
         safe_filename = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in filename).strip("._")
         self.source_payloads[ref] = {
@@ -678,11 +897,69 @@ class ServerDataIndex:
             "label": label,
             "filename": safe_filename or f"{ref}.json",
             "payload": payload,
+            "locator": locator or {},
         }
         return ref
 
     def source_json(self, ref: str) -> dict | None:
-        return self.source_payloads.get(str(ref or "").strip())
+        source = self.source_payloads.get(str(ref or "").strip())
+        if not source:
+            return None
+        if source.get("payload") is None and source.get("locator"):
+            source = dict(source)
+            source["payload"] = self._load_source_locator(source.get("locator", {}))
+        return source
+
+    def _load_source_locator(self, locator: dict) -> Any:
+        locator_type = str(locator.get("type") or "")
+        if locator_type == "file_json":
+            return json_load_file(self.data_root / str(locator.get("path") or ""), {})
+        if locator_type == "file_jsonl":
+            path = self.data_root / str(locator.get("path") or "")
+            return self._read_jsonl_line(path, int(locator.get("line", 0) or 0))
+        if locator_type == "zip_json":
+            return self._read_zip_member_json(
+                self.data_root / str(locator.get("zip_path") or ""),
+                str(locator.get("member") or ""),
+            )
+        if locator_type == "zip_jsonl":
+            return self._read_zip_member_jsonl_line(
+                self.data_root / str(locator.get("zip_path") or ""),
+                str(locator.get("member") or ""),
+                int(locator.get("line", 0) or 0),
+            )
+        return {}
+
+    def _read_jsonl_line(self, path: Path, line_no: int) -> Any:
+        if line_no <= 0 or not path.is_file():
+            return {}
+        for current_line, payload, _raw in iter_jsonl_file(path):
+            if current_line == line_no:
+                return payload if isinstance(payload, dict) else {}
+        return {}
+
+    def _read_zip_member_json(self, zip_path: Path, member: str) -> Any:
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                with archive.open(member) as raw:
+                    return json.loads(raw.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return {}
+
+    def _read_zip_member_jsonl_line(self, zip_path: Path, member: str, line_no: int) -> Any:
+        if line_no <= 0:
+            return {}
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                with archive.open(member) as raw:
+                    text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace")
+                    for current_line, raw_line in enumerate(text, 1):
+                        if current_line != line_no:
+                            continue
+                        return json.loads(raw_line)
+        except Exception:
+            return {}
+        return {}
 
     def _student(self, *, client_id: str = "", login_id: str = "") -> dict:
         client_id = str(client_id or "").strip()
@@ -722,13 +999,165 @@ class ServerDataIndex:
                 student["_process_index"].values(),
                 key=lambda item: (-int(item.get("count", 0)), str(item.get("normalized_process_name", ""))),
             )
-            student["incidents"].sort(key=incident_time, reverse=True)
+            self._match_incidents_and_replays(student)
+            student["incidents"].sort(key=incident_row_time, reverse=True)
             student["title_history"].sort(key=lambda item: item.get("timestamp", ""), reverse=True)
             student["retro_blacklist_matches"].sort(key=lambda item: item.get("timestamp", ""), reverse=True)
-            student["replays"].sort(key=lambda item: item.get("modified_at", ""), reverse=True)
+            student["replays"].sort(key=lambda item: item.get("replay_at") or item.get("modified_at", ""), reverse=True)
             student["submissions"].sort(key=lambda item: item.get("modified_at", ""), reverse=True)
             student.pop("_process_index", None)
             student.pop("_title_seen", None)
+
+    def _match_incidents_and_replays(self, student: dict):
+        incidents = student.get("incidents", [])
+        replays = student.get("replays", [])
+        if not incidents or not replays:
+            for incident in incidents:
+                incident["matched_replays"] = []
+                incident["matched_replay_count"] = 0
+            for replay in replays:
+                replay["replay_key"] = replay_key(replay)
+                replay["matched_incidents"] = []
+                replay["matched_incident_count"] = 0
+            return
+
+        replay_by_path = {
+            replay.get("path"): replay
+            for replay in replays
+            if replay.get("container") == "file" and replay.get("path")
+        }
+        for replay in replays:
+            replay["replay_key"] = replay_key(replay)
+            replay["matched_incidents"] = []
+            replay["matched_incident_count"] = 0
+            original = replay_by_path.get(replay.get("original_path"))
+            if original:
+                for key in ("incident_id", "rule_id", "replay_at", "saved_at"):
+                    if not replay.get(key) and original.get(key):
+                        replay[key] = original.get(key)
+
+        for incident in incidents:
+            incident["matched_replays"] = []
+            incident["matched_replay_count"] = 0
+
+        incidents_by_id: dict[str, list[dict]] = {}
+        timed_incidents: list[tuple[float, int, dict]] = []
+        for index, incident in enumerate(incidents):
+            incident_id = str(incident.get("incident_id") or "")
+            if incident_id:
+                incidents_by_id.setdefault(incident_id, []).append(incident)
+            seconds = timestamp_seconds(incident_row_time(incident))
+            if seconds is not None:
+                timed_incidents.append((seconds, index, incident))
+        timed_incidents.sort(key=lambda item: item[0])
+        incident_seconds = [item[0] for item in timed_incidents]
+
+        for replay in replays:
+            matches: dict[int, tuple[dict, str, float | None]] = {}
+
+            def add_match(incident: dict, reason: str, delta_seconds: float | None):
+                key = id(incident)
+                current = matches.get(key)
+                if current is None:
+                    matches[key] = (incident, reason, delta_seconds)
+                    return
+                current_reason = current[1]
+                current_delta = current[2]
+                if self._match_rank(reason, delta_seconds) < self._match_rank(current_reason, current_delta):
+                    matches[key] = (incident, reason, delta_seconds)
+
+            direct_incident_id = str(replay.get("incident_id") or "")
+            if direct_incident_id:
+                for incident in incidents_by_id.get(direct_incident_id, []):
+                    add_match(incident, "incident_id", self._min_delta_seconds(incident, replay))
+
+            for replay_seconds in self._replay_seconds_candidates(replay):
+                left = bisect_left(incident_seconds, replay_seconds - REPLAY_INCIDENT_WINDOW_SECONDS)
+                right = bisect_right(incident_seconds, replay_seconds + REPLAY_INCIDENT_WINDOW_SECONDS)
+                for incident_seconds_value, _index, incident in timed_incidents[left:right]:
+                    add_match(incident, "near_time", abs(incident_seconds_value - replay_seconds))
+
+            ordered = sorted(
+                matches.values(),
+                key=lambda item: self._match_rank(item[1], item[2]),
+            )
+            replay["matched_incident_count"] = len(ordered)
+            for incident, reason, delta_seconds in ordered[:MAX_MATCHED_INCIDENTS_PER_REPLAY]:
+                replay["matched_incidents"].append(self._incident_match_summary(incident, reason, delta_seconds))
+                incident["matched_replays"].append(self._replay_match_summary(replay, reason, delta_seconds))
+
+        for incident in incidents:
+            incident["matched_replays"].sort(key=lambda item: self._match_rank(item.get("match_reason", ""), item.get("delta_seconds")))
+            incident["matched_replay_count"] = len(incident["matched_replays"])
+            incident["matched_replays"] = incident["matched_replays"][:MAX_MATCHED_REPLAYS_PER_INCIDENT]
+
+    def _match_rank(self, reason: str, delta_seconds: Any) -> tuple[int, float]:
+        reason_rank = 0 if reason == "incident_id" else 1
+        if delta_seconds is None:
+            return (reason_rank, float("inf"))
+        try:
+            delta = float(delta_seconds)
+        except (TypeError, ValueError):
+            delta = float("inf")
+        return (reason_rank, delta)
+
+    def _replay_seconds_candidates(self, replay: dict) -> list[float]:
+        values = [
+            replay.get("replay_at"),
+            replay.get("saved_at"),
+            replay.get("modified_at"),
+        ]
+        metadata = replay.get("metadata") if isinstance(replay.get("metadata"), dict) else {}
+        values.extend([metadata.get("save_id"), metadata.get("saved_at")])
+        seconds: list[float] = []
+        seen: set[float] = set()
+        for value in values:
+            replay_at = replay_time_from_value(value) or isoish(value)
+            parsed_seconds = timestamp_seconds(replay_at)
+            if parsed_seconds is None or parsed_seconds in seen:
+                continue
+            seen.add(parsed_seconds)
+            seconds.append(parsed_seconds)
+        return seconds
+
+    def _min_delta_seconds(self, incident: dict, replay: dict) -> float | None:
+        incident_seconds = timestamp_seconds(incident_row_time(incident))
+        if incident_seconds is None:
+            return None
+        candidates = self._replay_seconds_candidates(replay)
+        if not candidates:
+            return None
+        return min(abs(incident_seconds - replay_seconds) for replay_seconds in candidates)
+
+    def _incident_match_summary(self, incident: dict, reason: str, delta_seconds: float | None) -> dict:
+        return {
+            "incident_id": incident.get("incident_id", ""),
+            "at": incident_row_time(incident),
+            "rule_id": incident.get("rule_id") or incident.get("event_type") or "",
+            "status": incident.get("status", ""),
+            "severity": incident.get("severity", ""),
+            "summary": incident.get("summary", ""),
+            "source_ref": incident.get("source_ref", ""),
+            "match_reason": reason,
+            "delta_seconds": round(delta_seconds, 1) if delta_seconds is not None else None,
+        }
+
+    def _replay_match_summary(self, replay: dict, reason: str, delta_seconds: float | None) -> dict:
+        return {
+            "replay_key": replay.get("replay_key") or replay_key(replay),
+            "container": replay.get("container", ""),
+            "path": replay.get("path", ""),
+            "zip_path": replay.get("zip_path", ""),
+            "member": replay.get("member", ""),
+            "name": replay.get("name", ""),
+            "kind": replay.get("kind", ""),
+            "replay_at": replay.get("replay_at", ""),
+            "saved_at": replay.get("saved_at", ""),
+            "converted": bool(replay.get("converted")),
+            "has_converted": bool(replay.get("has_converted")),
+            "match_reason": reason,
+            "delta_seconds": round(delta_seconds, 1) if delta_seconds is not None else None,
+        }
 
     def to_summary(self) -> dict:
         students = [self._student_summary(student) for student in self.students.values()]
@@ -780,11 +1209,11 @@ class ServerDataIndex:
                 "submitted_at": user.get("submitted_at", ""),
                 "submission_name": user.get("submission_name", ""),
             },
-            "incidents": student.get("incidents", []),
-            "title_history": [without_keys(row, {"source"}) for row in student.get("title_history", [])],
-            "processes": [without_keys(row, {"sources"}) for row in student.get("processes", [])],
+            "incidents": [without_keys(row, {"pid"}) for row in student.get("incidents", [])],
+            "title_history": [without_keys(row, {"source", "pid"}) for row in student.get("title_history", [])],
+            "processes": [without_keys(row, {"sources", "pids"}) for row in student.get("processes", [])],
             "recent_process_events": [],
-            "retro_blacklist_matches": [without_keys(row, {"source"}) for row in student.get("retro_blacklist_matches", [])],
+            "retro_blacklist_matches": [without_keys(row, {"source", "pid"}) for row in student.get("retro_blacklist_matches", [])],
             "replays": student.get("replays", []),
             "submissions": student.get("submissions", []),
             "blacklist": self.blacklist,
@@ -841,6 +1270,96 @@ def ffmpeg_path() -> str | None:
     return os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
 
 
+def ffprobe_path() -> str | None:
+    configured = os.environ.get("FFPROBE_PATH")
+    if configured:
+        return configured
+    ffmpeg = ffmpeg_path()
+    if ffmpeg:
+        candidate = Path(ffmpeg).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("ffprobe")
+
+
+def conversion_sidecar_path(output_path: Path) -> Path:
+    return output_path.with_suffix(output_path.suffix + ".conversion.json")
+
+
+def read_conversion_metadata(output_path: Path) -> dict:
+    return json_load_file(conversion_sidecar_path(output_path), {}) or {}
+
+
+def write_conversion_metadata(
+    *,
+    data_root: Path,
+    input_path: Path,
+    output_path: Path,
+    command: list[str],
+    returncode: int,
+    duration_seconds: float,
+):
+    metadata = {
+        "converted": returncode == 0,
+        "converted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "original_path": rel_to_root(input_path, data_root),
+        "converted_path": rel_to_root(output_path, data_root),
+        "command": " ".join(command),
+        "returncode": returncode,
+        "duration_seconds": round(duration_seconds, 2),
+    }
+    try:
+        conversion_sidecar_path(output_path).write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
+def compatible_output_path(input_path: Path) -> Path:
+    return input_path.with_name(f"{input_path.stem}_compatible.mp4")
+
+
+def guessed_original_path(data_root: Path, converted_path: Path) -> str:
+    if not converted_path.name.lower().endswith("_compatible.mp4"):
+        return ""
+    stem = converted_path.stem[:-len("_compatible")]
+    for suffix in (".ts", ".mov", ".mp4", ".m4v", ".mkv", ".webm", ".avi"):
+        candidate = converted_path.with_name(f"{stem}{suffix}")
+        if candidate.exists():
+            return rel_to_root(candidate, data_root)
+    return ""
+
+
+def video_duration_seconds(input_path: Path) -> float:
+    ffprobe = ffprobe_path()
+    if not ffprobe:
+        return 0.0
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(input_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if completed.returncode != 0:
+            return 0.0
+        return max(0.0, float(completed.stdout.strip() or 0))
+    except Exception:
+        return 0.0
+
+
 class AppState:
     def __init__(self, data_root: Path, cache_seconds: float = 60.0, convert_timeout: int = 1800):
         self.data_root = data_root.resolve()
@@ -848,6 +1367,8 @@ class AppState:
         self.convert_timeout = convert_timeout
         self._index: ServerDataIndex | None = None
         self._index_at = 0.0
+        self._conversion_jobs: dict[str, dict] = {}
+        self._conversion_lock = threading.Lock()
 
     def index(self, *, force: bool = False) -> ServerDataIndex:
         if force or self._index is None or time.time() - self._index_at > self.cache_seconds:
@@ -866,6 +1387,175 @@ class AppState:
         if target != root and root not in target.parents:
             raise ValueError("Path is outside data root.")
         return target
+
+    def start_conversion(self, rel: str) -> dict:
+        input_path = self.resolve_rel(rel)
+        if not input_path.is_file() or input_path.suffix.lower() not in VIDEO_SUFFIXES:
+            raise ValueError("Select a replay/video file under data/server.")
+        if input_path.name.lower().endswith("_compatible.mp4") or read_conversion_metadata(input_path).get("converted"):
+            raise ValueError("Selected replay is already a converted MP4.")
+        ffmpeg = ffmpeg_path()
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg was not found on PATH. Install ffmpeg or set FFMPEG_PATH.")
+        output_path = compatible_output_path(input_path)
+        rel_input = rel_to_root(input_path, self.data_root)
+        rel_output = rel_to_root(output_path, self.data_root)
+        if output_path.exists():
+            metadata = read_conversion_metadata(output_path)
+            if not metadata:
+                write_conversion_metadata(
+                    data_root=self.data_root,
+                    input_path=input_path,
+                    output_path=output_path,
+                    command=[],
+                    returncode=0,
+                    duration_seconds=0.0,
+                )
+            return {
+                "id": "",
+                "status": "done",
+                "percent": 100,
+                "input_path": rel_input,
+                "output_path": rel_output,
+                "media_url": f"/api/media?path={quote(rel_output)}",
+                "download_url": f"/api/download?path={quote(rel_output)}",
+                "message": "Already converted.",
+            }
+
+        job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "percent": 0,
+            "input_path": rel_input,
+            "output_path": rel_output,
+            "media_url": f"/api/media?path={quote(rel_output)}",
+            "download_url": f"/api/download?path={quote(rel_output)}",
+            "message": "Queued.",
+            "returncode": None,
+            "seconds": 0.0,
+            "stderr_tail": "",
+        }
+        with self._conversion_lock:
+            self._conversion_jobs[job_id] = job
+        thread = threading.Thread(
+            target=self._run_conversion_job,
+            args=(job_id, input_path, output_path, ffmpeg),
+            daemon=True,
+        )
+        thread.start()
+        return self.conversion_status(job_id)
+
+    def conversion_status(self, job_id: str) -> dict | None:
+        with self._conversion_lock:
+            job = self._conversion_jobs.get(str(job_id or ""))
+            return dict(job) if job else None
+
+    def _update_conversion_job(self, job_id: str, **updates):
+        with self._conversion_lock:
+            if job_id in self._conversion_jobs:
+                self._conversion_jobs[job_id].update(updates)
+
+    def _run_conversion_job(self, job_id: str, input_path: Path, output_path: Path, ffmpeg: str):
+        duration = video_duration_seconds(input_path)
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-y",
+            "-i",
+            str(input_path),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "baseline",
+            "-level",
+            "3.0",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(output_path),
+        ]
+        started = time.time()
+        tail: list[str] = []
+        self._update_conversion_job(job_id, status="running", message="Converting.", duration_seconds=duration)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    if key in {"out_time_ms", "out_time_us"} and duration > 0:
+                        try:
+                            elapsed = float(value) / 1_000_000.0
+                            percent = max(0, min(99, int((elapsed / duration) * 100)))
+                            self._update_conversion_job(job_id, percent=percent, message=f"Converting {percent}%")
+                        except ValueError:
+                            pass
+                    elif key == "progress" and value == "end":
+                        self._update_conversion_job(job_id, percent=99, message="Finalizing.")
+                    continue
+                tail.append(line)
+                tail = tail[-40:]
+                self._update_conversion_job(job_id, stderr_tail="\n".join(tail))
+            returncode = process.wait(timeout=self.convert_timeout)
+        except Exception as exc:
+            self._update_conversion_job(
+                job_id,
+                status="error",
+                message=str(exc),
+                percent=0,
+                seconds=round(time.time() - started, 2),
+            )
+            return
+
+        seconds = round(time.time() - started, 2)
+        if returncode == 0:
+            write_conversion_metadata(
+                data_root=self.data_root,
+                input_path=input_path,
+                output_path=output_path,
+                command=command,
+                returncode=returncode,
+                duration_seconds=seconds,
+            )
+            self._update_conversion_job(
+                job_id,
+                status="done",
+                percent=100,
+                message="Conversion complete.",
+                returncode=returncode,
+                seconds=seconds,
+                stderr_tail="\n".join(tail),
+            )
+        else:
+            self._update_conversion_job(
+                job_id,
+                status="error",
+                percent=0,
+                message="ffmpeg conversion failed.",
+                returncode=returncode,
+                seconds=seconds,
+                stderr_tail="\n".join(tail),
+            )
 
 
 class ServerDataHandler(BaseHTTPRequestHandler):
@@ -898,6 +1588,12 @@ class ServerDataHandler(BaseHTTPRequestHandler):
                     params.get("ref", [""])[0],
                     download=params.get("download", ["0"])[0] == "1",
                 )
+            elif parsed.path == "/api/convert-status":
+                job = self.app.conversion_status(params.get("id", [""])[0])
+                if job is None:
+                    self._json({"error": "conversion job not found"}, status=404)
+                else:
+                    self._json(job)
             elif parsed.path == "/api/export":
                 student_id = params.get("id", [""])[0]
                 self._serve_student_export(student_id)
@@ -915,6 +1611,10 @@ class ServerDataHandler(BaseHTTPRequestHandler):
                 self._json({"error": "not found"}, status=404)
         except ValueError as exc:
             self._json({"error": str(exc)}, status=400)
+        except OSError as exc:
+            if is_client_disconnect(exc):
+                return
+            self._json({"error": str(exc)}, status=500)
         except Exception as exc:
             self._json({"error": str(exc)}, status=500)
 
@@ -923,13 +1623,19 @@ class ServerDataHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/convert":
                 payload = self._read_json_body()
-                self._convert_video(str(payload.get("path") or ""))
+                self._json(self.app.start_conversion(str(payload.get("path") or "")))
             else:
                 self._json({"error": "not found"}, status=404)
         except ValueError as exc:
             self._json({"error": str(exc)}, status=400)
+        except RuntimeError as exc:
+            self._json({"error": str(exc)}, status=503)
         except subprocess.TimeoutExpired:
             self._json({"error": "ffmpeg conversion timed out"}, status=504)
+        except OSError as exc:
+            if is_client_disconnect(exc):
+                return
+            self._json({"error": str(exc)}, status=500)
         except Exception as exc:
             self._json({"error": str(exc)}, status=500)
 
@@ -943,7 +1649,7 @@ class ServerDataHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
 
     def _serve_web_file(self, request_path: str):
         web_root = self._web_root()
@@ -963,19 +1669,33 @@ class ServerDataHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
 
     def _web_root(self) -> Path:
         return Path(__file__).resolve().parent / "web"
 
     def _json(self, payload: Any, *, status: int = 200):
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        except OSError as exc:
+            if is_client_disconnect(exc):
+                return
+            raise
+        self._safe_write(body)
+
+    def _safe_write(self, body: bytes) -> bool:
+        try:
+            self.wfile.write(body)
+            return True
+        except OSError as exc:
+            if is_client_disconnect(exc):
+                return False
+            raise
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1030,7 +1750,8 @@ class ServerDataHandler(BaseHTTPRequestHandler):
                 chunk = handle.read(min(1024 * 1024, remaining))
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                if not self._safe_write(chunk):
+                    return
                 remaining -= len(chunk)
 
     def _serve_zip_member(self, zip_rel: str, member: str, *, attachment: bool):
@@ -1057,7 +1778,7 @@ class ServerDataHandler(BaseHTTPRequestHandler):
         if attachment:
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(Path(member).name)}")
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
 
     def _serve_source_json(self, ref: str, *, download: bool):
         source = self.app.index().source_json(ref)
@@ -1084,64 +1805,7 @@ class ServerDataHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
-
-    def _convert_video(self, rel: str):
-        input_path = self.app.resolve_rel(rel)
-        if not input_path.is_file() or input_path.suffix.lower() not in VIDEO_SUFFIXES:
-            raise ValueError("Select a replay/video file under data/server.")
-        ffmpeg = ffmpeg_path()
-        if not ffmpeg:
-            self._json({"error": "ffmpeg was not found on PATH. Install ffmpeg or set FFMPEG_PATH."}, status=503)
-            return
-        output_path = input_path.with_name(f"{input_path.stem}_compatible.mp4")
-        command = [
-            ffmpeg,
-            "-nostdin",
-            "-y",
-            "-i",
-            str(input_path),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-profile:v",
-            "baseline",
-            "-level",
-            "3.0",
-            "-c:a",
-            "aac",
-            "-ac",
-            "2",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ]
-        started = time.time()
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=self.app.convert_timeout,
-        )
-        rel_output = rel_to_root(output_path, self.app.data_root)
-        self.app.index(force=True)
-        self._json(
-            {
-                "ok": completed.returncode == 0,
-                "returncode": completed.returncode,
-                "input_path": rel_to_root(input_path, self.app.data_root),
-                "output_path": rel_output,
-                "download_url": f"/api/download?path={quote(rel_output)}",
-                "media_url": f"/api/media?path={quote(rel_output)}",
-                "seconds": round(time.time() - started, 2),
-                "command": " ".join(command),
-                "stderr_tail": completed.stderr[-4000:],
-            },
-            status=200 if completed.returncode == 0 else 500,
-        )
+        self._safe_write(body)
 
     def _serve_student_export(self, student_id: str):
         index = self.app.index()
@@ -1173,7 +1837,7 @@ class ServerDataHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
 
     def _write_csv(self, archive: zipfile.ZipFile, name: str, rows: list[dict]):
         output = io.StringIO()
